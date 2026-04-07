@@ -19,6 +19,7 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -50,6 +51,9 @@
 #include "../util/util_globaltime.h"
 
 namespace dxvk {
+
+  static std::atomic<SceneManager*> s_pSceneManager { nullptr };
+
   SceneManager::SceneManager(DxvkDevice* device)
     : CommonDeviceObject(device)
     , m_instanceManager(device, this)
@@ -72,9 +76,11 @@ namespace dxvk {
     if (env::getEnvVar("DXVK_RTX_CAPTURE_ENABLE_ON_FRAME") != "") {
       m_beginUsdExportFrameNum = stoul(env::getEnvVar("DXVK_RTX_CAPTURE_ENABLE_ON_FRAME"));
     }
+    s_pSceneManager.store(this, std::memory_order_release);
   }
 
   SceneManager::~SceneManager() {
+    s_pSceneManager.store(nullptr, std::memory_order_release);
   }
 
   bool SceneManager::areAllReplacementsLoaded() const {
@@ -1216,6 +1222,8 @@ namespace dxvk {
       emissiveColorConstant = opaqueMaterialData.getEmissiveColorConstant();
       enableEmissive = opaqueMaterialData.getEnableEmission();
       anisotropy = opaqueMaterialData.getAnisotropyConstant();
+
+      applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
         
       thinFilmEnable = opaqueMaterialData.getEnableThinFilm();
       alphaIsThinFilmThickness = opaqueMaterialData.getAlphaIsThinFilmThickness();
@@ -1320,6 +1328,8 @@ namespace dxvk {
       bool enableEmissive = translucentMaterialData.getEnableEmission();
       float emissiveIntensity = translucentMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
       bool isThinWalled = translucentMaterialData.getEnableThinWalled();
+
+      applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
       float thinWallThickness = translucentMaterialData.getThinWallThickness();
       bool useDiffuseLayer = translucentMaterialData.getEnableDiffuseLayer();
 
@@ -1344,6 +1354,8 @@ namespace dxvk {
       float rotationSpeed = rayPortalMaterialData.getRotationSpeed();
       bool enableEmissive = rayPortalMaterialData.getEnableEmission();
       float emissiveIntensity = rayPortalMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+
+      applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
 
       const RtRayPortalSurfaceMaterial rayPortalSurfaceMaterial{
         maskTextureIndex, maskTextureIndex2, rayPortalIndex,
@@ -1922,4 +1934,57 @@ namespace dxvk {
     m_currentFrameMeshHashes.clear();
   }
 
+  void SceneManager::setEmissiveIntensityOverride(XXH64_hash_t materialHash, float intensity) {
+    std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+    m_emissiveIntensityOverrides[materialHash] = intensity;
+  }
+
+  void SceneManager::clearEmissiveIntensityOverride(XXH64_hash_t materialHash) {
+    std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+    m_emissiveIntensityOverrides.erase(materialHash);
+  }
+
+  void SceneManager::clearAllEmissiveIntensityOverrides() {
+    std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+    m_emissiveIntensityOverrides.clear();
+  }
+
+  bool SceneManager::getEmissiveIntensityOverride(XXH64_hash_t materialHash, float& outIntensity) const {
+    std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+    auto it = m_emissiveIntensityOverrides.find(materialHash);
+    if (it != m_emissiveIntensityOverrides.end()) {
+      outIntensity = it->second;
+      return true;
+    }
+    return false;
+  }
+
+  void SceneManager::applyEmissiveOverrideIfPresent(XXH64_hash_t materialHash, float& emissiveIntensity, bool& enableEmissive) const {
+    float overrideIntensity;
+    if (getEmissiveIntensityOverride(materialHash, overrideIntensity)) {
+      emissiveIntensity = overrideIntensity;
+      enableEmissive = (overrideIntensity > 0.0f);
+    }
+  }
+
 }  // namespace nvvk
+
+extern "C" {
+  __declspec(dllexport) void __cdecl remixSetEmissiveIntensityOverride(uint64_t materialHash, float intensity) {
+    if (auto* mgr = dxvk::s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->setEmissiveIntensityOverride(static_cast<XXH64_hash_t>(materialHash), intensity);
+    }
+  }
+
+  __declspec(dllexport) void __cdecl remixClearEmissiveIntensityOverride(uint64_t materialHash) {
+    if (auto* mgr = dxvk::s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->clearEmissiveIntensityOverride(static_cast<XXH64_hash_t>(materialHash));
+    }
+  }
+
+  __declspec(dllexport) void __cdecl remixClearAllEmissiveIntensityOverrides() {
+    if (auto* mgr = dxvk::s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->clearAllEmissiveIntensityOverrides();
+    }
+  }
+}

@@ -241,6 +241,13 @@ public:
 
   bool isAntiCullingSupported() const { return m_isAntiCullingSupported; }
 
+  // Emissive intensity override: material hash -> override intensity value.
+  // A value >= 0 overrides the material's emissive intensity; intensity == 0 also disables emission.
+  void setEmissiveIntensityOverride(XXH64_hash_t materialHash, float intensity);
+  void clearEmissiveIntensityOverride(XXH64_hash_t materialHash);
+  void clearAllEmissiveIntensityOverrides();
+  bool getEmissiveIntensityOverride(XXH64_hash_t materialHash, float& outIntensity) const;
+
 private:
   enum class ObjectCacheState
   {
@@ -263,6 +270,9 @@ private:
   const RtSurfaceMaterial& createSurfaceMaterial(const MaterialData& renderMaterialData,
                                                  const DrawCallState& drawCallState,
                                                  uint32_t* out_indexInCache = nullptr);
+
+  // Applies the emissive intensity override for the given material hash, if one is registered.
+  void applyEmissiveOverrideIfPresent(XXH64_hash_t materialHash, float& emissiveIntensity, bool& enableEmissive) const;
 
   // Updates ref counts for new buffers
   void updateBufferCache(RaytraceGeometry& newGeoData);
@@ -363,6 +373,10 @@ private:
 
   // Using std::deque for pointer stability: push_back doesn't invalidate existing pointers
   std::deque<std::vector<Matrix4>> m_externalGpuInstancingTransforms;
+
+  // Emissive intensity overrides (material hash -> override intensity), protected by mutex
+  mutable dxvk::mutex m_emissiveOverrideMutex;
+  std::unordered_map<XXH64_hash_t, float> m_emissiveIntensityOverrides;
 };
 
 }  // namespace nvvk
