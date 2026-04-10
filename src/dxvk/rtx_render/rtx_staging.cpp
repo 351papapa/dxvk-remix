@@ -45,14 +45,35 @@ namespace dxvk {
     if (m_offset + size > MaxBufferSize) {
       m_offset = 0;
 
-      if (m_buffers.size() < MaxBufferCount)
-        m_buffers.push(std::move(m_buffer));
+      // Move the current buffer into the tracked pool so it is not lost
+      m_buffers.push_back(std::move(m_buffer));
 
-      if (!m_buffers.front()->isInUse() && (m_usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR) == 0) {
-        m_buffer = std::move(m_buffers.front());
-        m_buffers.pop();
-      } else {
-        m_buffer = createBuffer(MaxBufferSize);
+      // Scan all pooled buffers for one that is no longer in use and reuse it.
+      // Acceleration structure buffers must never be reused because the AS build
+      // API uses a raw VA that DXVK does not track as "in use", so isInUse() would
+      // always return false even while the GPU is still reading the data.
+      const bool isAccelStructBuffer = (m_usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR) != 0;
+      for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
+        if (!(*it)->isInUse() && !isAccelStructBuffer) {
+          m_buffer = std::move(*it);
+          m_buffers.erase(it);
+          break;
+        }
+      }
+
+      if (m_buffer == nullptr) {
+        if (m_buffers.size() < MaxTotalBuffers) {
+          // Still below the hard cap: allocate a new buffer
+          m_buffer = createBuffer(MaxBufferSize);
+        } else {
+          // At the hard cap: apply backpressure.  All buffers are still in use by the
+          // GPU, so wait for the oldest one (front) to finish — it was submitted first
+          // and is therefore most likely to complete soonest.  This will stall the CPU
+          // briefly but prevents unbounded memory growth / OOM crashes.
+          m_buffers.front()->waitIdle();
+          m_buffer = std::move(m_buffers.front());
+          m_buffers.erase(m_buffers.begin());
+        }
       }
     }
 
@@ -65,9 +86,7 @@ namespace dxvk {
   void RtxStagingDataAlloc::trim() {
     m_buffer = nullptr;
     m_offset = 0;
-
-    while (!m_buffers.empty())
-      m_buffers.pop();
+    m_buffers.clear();
   }
 
   Rc<DxvkBuffer> RtxStagingDataAlloc::createBuffer(VkDeviceSize size) {

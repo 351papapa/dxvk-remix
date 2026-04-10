@@ -1231,6 +1231,9 @@ namespace dxvk {
     m_drawCallID = 0;
     m_seenCameraPositionsPrev = std::move(m_seenCameraPositions);
 
+    // Reclaim staging buffers that are no longer in use at frame boundaries
+    m_rtStagingData.trim();
+
     m_stagedBonesCount = 0;
   }
 
