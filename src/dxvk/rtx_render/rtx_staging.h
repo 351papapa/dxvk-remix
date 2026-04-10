@@ -1,6 +1,6 @@
 #pragma once
 
-#include <queue>
+#include <vector>
 
 #include "dxvk_buffer.h"
 
@@ -19,8 +19,8 @@ namespace dxvk {
    * which was removed in upstream (commit d262bebd9090)
    */
   class RtxStagingDataAlloc {
-    constexpr static VkDeviceSize MaxBufferSize  = 1 << 25; // 32 MiB
-    constexpr static uint32_t     MaxBufferCount = 2;
+    constexpr static VkDeviceSize MaxBufferSize   = 1 << 25; // 32 MiB
+    constexpr static uint32_t     MaxTotalBuffers = 32;      // 32 * 32 MiB = 1 GiB hard cap
   public:
 
     RtxStagingDataAlloc(const Rc<DxvkDevice>& device,
@@ -69,7 +69,7 @@ namespace dxvk {
     
     const char*     m_name = nullptr;
 
-    std::queue<Rc<DxvkBuffer>> m_buffers;
+    std::vector<Rc<DxvkBuffer>> m_buffers;
 
     Rc<DxvkBuffer> createBuffer(VkDeviceSize size);
   };
