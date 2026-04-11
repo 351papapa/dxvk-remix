@@ -263,6 +263,13 @@ struct RasterGeometry {
   RasterBuffer blendWeightBuffer;
   RasterBuffer blendIndicesBuffer;
 
+  // Staging buffers with an outstanding explicit DxvkAccess::Read acquire.
+  // These are recorded in processVertices / processIndexBuffer (non-memoized path)
+  // to bridge the window between the main thread's alloc() and the CS thread's
+  // trackResource() call.  CommitGeometryToRT releases them after commitGeometryToRT
+  // returns (i.e. after trackResource has been issued).
+  std::vector<Rc<DxvkBuffer>> stagingAcquires;
+
   AxisAlignedBoundingBox boundingBox;
   Future<AxisAlignedBoundingBox> futureBoundingBox;
 
