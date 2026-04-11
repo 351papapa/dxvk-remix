@@ -85,38 +85,57 @@ namespace dxvk {
     const size_t numIndexBytes = indexCount * indexStride;
     const size_t indexOffset = indexStride * startIndex;
 
-    auto processing = [this, &indexCtx, indexCount](const size_t offset, const size_t size) -> D3D9CommonBuffer::RemixIndexBufferMemoizationData {
-      D3D9CommonBuffer::RemixIndexBufferMemoizationData result;
-
-      // Get our slice of the staging ring buffer
-      result.slice = m_rtStagingData.alloc(CACHE_LINE_SIZE, size);
-
-      // Acquire prevents the staging allocator from re-using this memory
-      result.slice.buffer()->acquire(DxvkAccess::Read);
-
-      const uint8_t* pBaseIndex = (uint8_t*) indexCtx.indexBuffer.mapPtr + offset;
-
-      T* pIndices = (T*) pBaseIndex;
-      T* pIndicesDst = (T*) result.slice.mapPtr(0);
-      copyIndices<T>(indexCount, pIndicesDst, pIndices, result.min, result.max);
-
-      return result;
-    };
-
     if (enableIndexBufferMemoization() && indexCtx.ibo != nullptr) {
-      // If we have an index buffer, we can utilize memoization
+      // Memoized path: cache processed indices in a dedicated, exact-sized host buffer.
+      // Using a dedicated buffer instead of a slice from the shared 32 MiB staging pool
+      // prevents the memoization cache from keeping large staging slabs alive across
+      // frame boundaries.  No explicit acquire/release is needed — the Rc<DxvkBuffer>
+      // lifetime is sufficient: the buffer lives as long as the cache entry and is freed
+      // automatically when the entry is evicted.
       D3D9CommonBuffer::RemixIboMemoizer& memoization = indexCtx.ibo->remixMemoization;
-      const auto result = memoization.memoize(indexOffset, numIndexBytes, processing);
+      const auto result = memoization.memoize(indexOffset, numIndexBytes,
+        [this, &indexCtx, indexCount](const size_t offset, const size_t size) -> D3D9CommonBuffer::RemixIndexBufferMemoizationData {
+          D3D9CommonBuffer::RemixIndexBufferMemoizationData r;
+
+          // Allocate an exact-sized host buffer for this IBO region.
+          DxvkBufferCreateInfo info;
+          info.size   = size;
+          info.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+          info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+          info.access = VK_ACCESS_TRANSFER_READ_BIT;
+          r.buffer = m_parent->GetDXVKDevice()->createBuffer(
+            info,
+            (VkMemoryPropertyFlags)(VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT),
+            DxvkMemoryStats::Category::AppBuffer,
+            "D3D9 memoized index buffer");
+
+          const uint8_t* pBaseIndex = static_cast<const uint8_t*>(indexCtx.indexBuffer.mapPtr) + offset;
+          T* pSrc = const_cast<T*>(reinterpret_cast<const T*>(pBaseIndex));
+          T* pDst = static_cast<T*>(DxvkBufferSlice(r.buffer).mapPtr(0));
+          copyIndices<T>(indexCount, pDst, pSrc, r.min, r.max);
+
+          return r;
+        });
+
       minIndex = result.min;
       maxIndex = result.max;
-      return result.slice;
+      return DxvkBufferSlice(result.buffer);
     }
 
-    // No index buffer (so no memoization) - this could be a DrawPrimitiveUP call (where IB data is passed inline)
-    const auto result = processing(indexOffset, numIndexBytes);
-    minIndex = result.min;
-    maxIndex = result.max;
-    return result.slice;
+    // Non-memoized path (e.g. DrawPrimitiveUP where index data is passed inline).
+    // Allocate from the transient staging pool.  The explicit acquire bridges the gap
+    // between the main thread's alloc() and the CS thread's trackResource() call.
+    // Recording the buffer in stagingAcquires ensures the acquire is released in the
+    // CommitGeometryToRT CS lambda after commitGeometryToRT (trackResource) runs.
+    DxvkBufferSlice slice = m_rtStagingData.alloc(CACHE_LINE_SIZE, numIndexBytes);
+    slice.buffer()->acquire(DxvkAccess::Read);
+    m_activeDrawCallState.geometryData.stagingAcquires.push_back(slice.buffer());
+
+    const uint8_t* pBaseIndex = static_cast<const uint8_t*>(indexCtx.indexBuffer.mapPtr) + indexOffset;
+    T* pSrc = const_cast<T*>(reinterpret_cast<const T*>(pBaseIndex));
+    T* pDst = static_cast<T*>(slice.mapPtr(0));
+    copyIndices<T>(indexCount, pDst, pSrc, minIndex, maxIndex);
+    return slice;
   }
 
   DxvkBufferSlice allocVertexCaptureBuffer(DxvkDevice* pDevice, const VkDeviceSize size) {
@@ -287,8 +306,12 @@ namespace dxvk {
           } else {
             streamCopies[element.Stream] = m_rtStagingData.alloc(CACHE_LINE_SIZE, numVertexBytes);
 
-            // Acquire prevents the staging allocator from re-using this memory
+            // Acquire bridges the gap between main-thread alloc() and CS-thread
+            // trackResource().  The buffer is recorded in stagingAcquires so the
+            // CommitGeometryToRT CS lambda can release the acquire after
+            // commitGeometryToRT (which issues the trackResource call) returns.
             streamCopies[element.Stream].buffer()->acquire(DxvkAccess::Read);
+            m_activeDrawCallState.geometryData.stagingAcquires.push_back(streamCopies[element.Stream].buffer());
 
             memcpy(streamCopies[element.Stream].mapPtr(0), (uint8_t*) ctx.mappedSlice.mapPtr + vertexOffset, numVertexBytes);
           }
@@ -736,6 +759,14 @@ namespace dxvk {
       DrawCallState drawCallState;
       if (m_drawCallStateQueue.pop(drawCallState)) {
         static_cast<RtxContext*>(ctx)->commitGeometryToRT(params, drawCallState);
+
+        // Release explicit Read acquires that were recorded in processIndexBuffer
+        // (non-memoized path) and processVertices.  commitGeometryToRT above has
+        // already called trackResource on these buffers, so GPU lifetime tracking
+        // takes over; the explicit bridge acquires are no longer needed.
+        for (auto& buf : drawCallState.geometryData.stagingAcquires) {
+          buf->release(DxvkAccess::Read);
+        }
       }
     });
   }

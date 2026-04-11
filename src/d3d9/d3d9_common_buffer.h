@@ -211,8 +211,15 @@ namespace dxvk {
 
     // NV-DXVK start: Implement memoization for some expensive CPU operations
     struct RemixIndexBufferMemoizationData {
-      DxvkBufferSlice slice;
-      uint32_t min, max;
+      // Dedicated, exact-sized host buffer that holds the processed (remapped) index
+      // data for this IBO region.  Using a dedicated buffer instead of a slice from
+      // the shared 32 MiB staging pool means:
+      //   - The buffer is sized exactly to the index region (not 32 MiB).
+      //   - It lives only as long as this cache entry; the Rc drops to zero and the
+      //     buffer is freed when the entry is evicted (no acquire/release needed).
+      //   - trim() can freely discard all staging-pool buffers at end-of-frame.
+      Rc<DxvkBuffer> buffer;
+      uint32_t min = 0, max = 0;
     };
     using RemixIboMemoizer = MemoryRegionMemoizer<RemixIndexBufferMemoizationData>;
     RemixIboMemoizer remixMemoization;
