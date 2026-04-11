@@ -396,7 +396,8 @@ void integratePathVertex(
   {  
     nrcProgressState = updateNrcOnHit(pathState, surfaceInteraction, polymorphicSurfaceMaterialInteraction);
 
-    if (nrcProgressState == NrcProgressState::TerminateImmediately)
+    // Terminate prior to resolving surface's emissive contribution if NRC indicates so and boostEmissives is not enabled.
+    if (nrcProgressState == NrcProgressState::TerminateImmediately && !cb.nrcArgs.boostEmissives)
     {
       pathState.continuePath = false;
       return;
@@ -434,8 +435,10 @@ void integratePathVertex(
   }
 
   // If the camera index changed then this ray passed through a render target. Cast a ray from the new camera.
-  if (cb.enableRaytracedRenderTarget && isRaytracedRenderTarget && pathState.bounceIteration == 1)
-  {
+  // Note: NRC TerminateImmediately with boostEmissives must take priority as a query record has already been created
+  if (cb.enableRaytracedRenderTarget && isRaytracedRenderTarget && pathState.bounceIteration == 1
+      && !(ENABLE_NRC && nrcProgressState == NrcProgressState::TerminateImmediately))
+  { 
     Ray newRay = rayCreateRenderTarget(cb.renderTargetCamera, surfaceInteraction.textureCoordinates, ray);
     pathState.origin = newRay.origin;
     pathState.direction = newRay.direction;
@@ -511,6 +514,16 @@ void integratePathVertex(
 
     const vec3 emissiveLightRadiance = emissiveLight * misWeight;
     accumulateRadiance(pathState, emissiveLightRadiance);
+  }
+
+  // When boostEmissives is enabled, defer TerminateImmediately until after emissive accumulation
+  // so that the hit surface's emissive self-emission is properly MIS-weighted.
+  // Without this, emissive lighting is lost on TerminateImmediately paths (includeDirectLighting=true)
+  // because NRC's irradiance cache poorly captures sharp emissive features.
+  if (ENABLE_NRC && nrcProgressState == NrcProgressState::TerminateImmediately && cb.nrcArgs.boostEmissives)
+  {
+    pathState.continuePath = false;
+    return;
   }
 
 // We don't need to sample lights or surface rays in the portal closest hit shader
@@ -726,12 +739,24 @@ void integratePathVertex(
         // WAR for REMIX-3705 producing NaNs here
         if (isValidValue(neeLight))
         {
+          // Note: Skip insertion when lightTask holds kInvalidLightIdx but would be
+          // inserted as a triangle task (isLightTask == false). This happens when
+          // reshuffle resilience keeps the original lightIdx to preserve task typing
+          // but no valid analytical light was sampled, leaving lightTask == 0xFFFF.
+          // See "if (hasFreshCandidates || !reshuffleResilience)"" above for more context.
+          // Inserting 0xFFFF as a triangle prefix sum ID corrupts the NEE cache and
+          // can cause an out-of-range shared memory access in the update shader.
+          // This isn't caught by if (lastID == NEE_CACHE_INVALID_ID) because
+          // 0xFFFF != 0xFFFFFF. The binary search in convertPrefixSumIDToID treats
+          // 65535 as a real prefix sum ID, producing garbage surfaceID/primitiveID.
+          const bool isLightTask = lightIdx != kInvalidLightIdx;
           if (NEE_CACHE_ENABLE && cb.neeCacheArgs.enable && 
               any(neeLight > 0) && 
-              all((pathState.pixelCoordinate & 0x3) != 1))
+              all((pathState.pixelCoordinate & 0x3) != 1) &&
+              (isLightTask || lightTask != uint(kInvalidLightIdx)))
           {
             NEECell cell = NEECache.getCell(pathState.neeCacheCellOffset);
-            cell.insertSlotTask(lightTask, neeLight, lightIdx != kInvalidLightIdx);
+            cell.insertSlotTask(lightTask, neeLight, isLightTask);
           }
       
           float16_t specularPortion = calcBt709Luminance(specularLight) / calcBt709Luminance(neeLight);
