@@ -1150,6 +1150,10 @@ namespace dxvk {
 
     std::optional<RtSurfaceMaterial> surfaceMaterial;
 
+    const float emissiveScale = (RtxOptions::emissiveIntensityEXTextures().count(renderMaterialData.getHash()) > 0)
+        ? RtxOptions::emissiveIntensityEX()
+        : RtxOptions::emissiveIntensity();
+
     if (renderMaterialDataType == MaterialDataType::Opaque || drawCallState.isUsingRaytracedRenderTarget) {
       uint32_t albedoOpacityTextureIndex = kSurfaceMaterialInvalidTextureIndex;
       uint32_t secondaryTextureIndex = kSurfaceMaterialInvalidTextureIndex;
@@ -1218,7 +1222,7 @@ namespace dxvk {
       trackTexture(opaqueMaterialData.getHeightTexture(), heightTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
       trackTexture(opaqueMaterialData.getEmissiveColorTexture(), emissiveColorTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
 
-      emissiveIntensity = opaqueMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+      emissiveIntensity = opaqueMaterialData.getEmissiveIntensity() * emissiveScale;
       emissiveColorConstant = opaqueMaterialData.getEmissiveColorConstant();
       enableEmissive = opaqueMaterialData.getEnableEmission();
       anisotropy = opaqueMaterialData.getAnisotropyConstant();
@@ -1326,7 +1330,7 @@ namespace dxvk {
       float transmittanceMeasureDistance = translucentMaterialData.getTransmittanceMeasurementDistance();
       Vector3 emissiveColorConstant = translucentMaterialData.getEmissiveColorConstant();
       bool enableEmissive = translucentMaterialData.getEnableEmission();
-      float emissiveIntensity = translucentMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+      float emissiveIntensity = translucentMaterialData.getEmissiveIntensity() * emissiveScale;
       bool isThinWalled = translucentMaterialData.getEnableThinWalled();
 
       applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
@@ -1353,7 +1357,7 @@ namespace dxvk {
       uint8_t rayPortalIndex = rayPortalMaterialData.getRayPortalIndex();
       float rotationSpeed = rayPortalMaterialData.getRotationSpeed();
       bool enableEmissive = rayPortalMaterialData.getEnableEmission();
-      float emissiveIntensity = rayPortalMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+      float emissiveIntensity = rayPortalMaterialData.getEmissiveIntensity() * emissiveScale;
 
       applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
 
