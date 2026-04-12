@@ -196,7 +196,8 @@ namespace dxvk {
     {"ignorealphaontextures","Ignore Alpha Channel of Textures (optional)", &RtxOptions::ignoreAlphaOnTexturesObject()},
     {"raytracedRenderTargetTextures","Raytraced Render Target Textures (optional)", &RtxOptions::raytracedRenderTargetTexturesObject(), ImGUI::kTextureFlagsRenderTarget},
     {"particleemittertextures","Particle Emitters (optional)", &RtxOptions::particleEmitterTexturesObject()},
-    {"smoothnormalstextures","Smooth Normals (optional)", &RtxOptions::smoothNormalsTexturesObject()}
+    {"smoothnormalstextures","Smooth Normals (optional)", &RtxOptions::smoothNormalsTexturesObject()},
+    {"emissiveintensityextextures", "Emissive Intensity EX Textures (optional)", &RtxOptions::emissiveIntensityEXTexturesObject()}
   };
 
   RemixGui::ComboWithKey<RenderPassGBufferRaytraceMode> renderPassGBufferRaytraceModeCombo {
@@ -3646,6 +3647,7 @@ namespace dxvk {
       }
 
       RemixGui::DragFloat("Emissive Intensity", &RtxOptions::emissiveIntensityObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", sliderFlags);
+      RemixGui::DragFloat("Emissive Intensity EX", &RtxOptions::emissiveIntensityEXObject(), 0.01f, 0.0f, FLT_MAX, "%.3f", sliderFlags);
       RemixGui::Separator();
       RemixGui::SliderInt("RIS Light Sample Count", &RtxOptions::risLightSampleCountObject(), 0, 64);
       RemixGui::Separator();

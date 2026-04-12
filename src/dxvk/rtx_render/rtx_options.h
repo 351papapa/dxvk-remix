@@ -336,6 +336,13 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx", bool, lowMemoryGpu, false, RtxOptionFlags::NoSave | RtxOptionFlags::UserSetting, "Enables low memory mode, where we aggressively detune caches and streaming systems to accomodate the lower memory available.");
     RTX_OPTION_ARGS("rtx", float, emissiveIntensity, 1.0f, "A general scale factor on all emissive intensity values globally. Generally per-material emissive intensities should be used, but this option may be useful for debugging without needing to author materials.",
                     args.minValue = 0.0f);
+    RTX_OPTION_ARGS("rtx", float, emissiveIntensityEX, 1.0f,
+                    "A separate emissive intensity scale factor for materials whose texture hashes are listed in rtx.emissiveIntensityEXTextures.\n"
+                    "Materials not in the list will continue to use rtx.emissiveIntensity.",
+                    args.minValue = 0.0f);
+    RTX_OPTION("rtx", fast_unordered_set, emissiveIntensityEXTextures, {},
+                    "Texture hashes for materials that should use rtx.emissiveIntensityEX instead of the global rtx.emissiveIntensity.\n"
+                    "Add material texture hashes here to give them a separate emissive intensity control.");
     RTX_OPTION_ARGS("rtx", float, fireflyFilteringLuminanceThreshold, 1000.0f, "Maximum luminance threshold for the firefly filtering to clamp to.",
                     args.minValue = 0.0f);
     RTX_OPTION("rtx", float, secondarySpecularFireflyFilteringThreshold, 1000.0f, "Firefly luminance clamping threshold for secondary specular signal.");
