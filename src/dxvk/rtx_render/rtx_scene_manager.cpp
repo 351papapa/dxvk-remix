@@ -1150,7 +1150,12 @@ namespace dxvk {
 
     std::optional<RtSurfaceMaterial> surfaceMaterial;
 
-    const float emissiveScale = (RtxOptions::emissiveIntensityEXTextures().count(renderMaterialData.getHash()) > 0)
+    const auto& exTextures = RtxOptions::emissiveIntensityEXTextures();
+    const bool useEmissiveEX =
+        exTextures.count(renderMaterialData.getHash()) > 0 ||
+        exTextures.count(drawCallState.getMaterialData().getHash()) > 0 ||
+        exTextures.count(drawCallState.getMaterialData().getColorTexture().getImageHash()) > 0;
+    const float emissiveScale = useEmissiveEX
         ? RtxOptions::emissiveIntensityEX()
         : RtxOptions::emissiveIntensity();
 
