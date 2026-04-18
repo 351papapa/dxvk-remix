@@ -1951,6 +1951,18 @@ namespace dxvk {
         std::make_shared<const std::vector<Matrix4>>(std::move(state.gpuInstancingTransforms));
     }
 
+    // Fork: API-mesh replacement lookup. If the user hashed the API mesh handle
+    // and authored a .usd replacement against it, delegate to drawReplacements
+    // and skip the persistence-tracking loop entirely (same semantics as the
+    // D3D9 draw-path, where matched replacements drive their own per-instance
+    // persistence inside drawReplacements).
+    const XXH64_hash_t meshHash = reinterpret_cast<XXH64_hash_t>(state.mesh);
+    if (std::vector<AssetReplacement>* pReplacements = m_pReplacer->getReplacementsForMesh(meshHash)) {
+      MaterialData renderMaterialData = determineMaterialData(nullptr, state.drawCall);
+      drawReplacements(ctx, &state.drawCall, pReplacements, renderMaterialData);
+      return;
+    }
+
     const auto& submeshes = m_pReplacer->accessExternalMesh(state.mesh);
 
     const XXH64_hash_t identityHash = state.computeExternalDrawIdentityHash();
@@ -1968,6 +1980,11 @@ namespace dxvk {
       state.drawCall.geometryData = submeshes[i];
       state.drawCall.geometryData.cullMode = state.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
 
+      // Fork: hoisted out of the material != nullptr branch so the object-picking
+      // metadata store below can see the resolved texture hash even when the
+      // material-specific category lookup skipped it.
+      XXH64_hash_t textureHash = 0;
+
       const MaterialData* material = m_pReplacer->accessExternalMaterial(submeshes[i].externalMaterial);
       if (material != nullptr) {
         state.drawCall.materialData.setHashOverride(material->getHash());
@@ -1975,7 +1992,6 @@ namespace dxvk {
         // Auto-apply texture categories for API-submitted content (matches D3D9 behavior).
         // For API materials, the albedo texture hash is what D3D9's setupCategoriesForTexture()
         // pattern normally keys off, so look it up directly from the material's opaque data.
-        XXH64_hash_t textureHash = 0;
         if (material->getType() == MaterialDataType::Opaque) {
           const auto& opaqueMat = material->getOpaqueMaterialData();
           if (opaqueMat.getAlbedoOpacityTexture().isValid()) {
@@ -2009,6 +2025,24 @@ namespace dxvk {
       const RtxParticleSystemDesc* pParticles = nullptr;
       if (state.optionalParticleDesc.has_value()) {
         pParticles = &state.optionalParticleDesc.value();
+      }
+
+      // Fork: object-picking metadata. Mirrors the D3D9 draw path which populates
+      // m_drawCallMeta in processDrawCallState; API draws supply their own
+      // drawCallID via remixapi_InstanceInfoObjectPickingEXT, so we hash it in
+      // directly here.
+      const bool objectPickingActive = m_device->getCommon()->getResources().getRaytracingOutput()
+        .m_primaryObjectPicking.isValid();
+      if (objectPickingActive && state.drawCall.drawCallID != 0 &&
+          textureHash != 0 && textureHash != kEmptyHash) {
+        auto meta = DrawCallMetaInfo {};
+        meta.legacyTextureHash = textureHash;
+
+        std::lock_guard lock { m_drawCallMeta.mutex };
+        auto [iter, isNew] = m_drawCallMeta.infos[m_drawCallMeta.ticker].emplace(state.drawCall.drawCallID, meta);
+        ONCE_IF_FALSE(isNew, Logger::warn(
+          "Found multiple API draw calls with the same \'objectPickingValue\'. "
+          "Some objects might not be available through object picking"));
       }
 
       RtInstance* existingInstance = (replacementInstance->prims.size() > i)
