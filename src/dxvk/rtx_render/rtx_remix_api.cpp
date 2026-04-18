@@ -2108,6 +2108,27 @@ namespace {
     return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetSharedD3D11TextureHandle(
+    void** out_sharedHandle,
+    uint32_t* out_width,
+    uint32_t* out_height) {
+    dxvk::D3D9DeviceEx* remixDevice = tryAsDxvk();
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!out_sharedHandle || !out_width || !out_height) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    // The DX11 shared-memory export backbuffer path is not ported to this
+    // fork (see gmod commit 098a7471). This code path is only exercised when
+    // the host app opts in to external-swapchain mode via
+    // dxvk_CreateD3D9(forceNoVkSwapchain=TRUE). Separate-window mode (used by
+    // Skyrim) never calls this. Return a failure so callers fall back, while
+    // keeping the vtable slot populated so the struct layout matches the
+    // header the plugin was built against.
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetVkImage(
     IDirect3DSurface9* source,
     uint64_t* out_vkImage) {
@@ -2899,6 +2920,7 @@ extern "C"
       interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
       interf.dxvk_SetDefaultOutput = remixapi_dxvk_SetDefaultOutput;
       interf.dxvk_GetTextureHash = remixapi_dxvk_GetTextureHash;
+      interf.dxvk_GetSharedD3D11TextureHandle = remixapi_dxvk_GetSharedD3D11TextureHandle;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
       interf.pick_HighlightObjects = remixapi_pick_HighlightObjects;
       interf.GetUIState = remixapi_GetUIState;
@@ -2909,7 +2931,7 @@ extern "C"
       interf.UpdateLightDefinition = remixapi_UpdateLightDefinition;
       interf.DrawScreenOverlay = remixapi_DrawScreenOverlay;
     }
-    static_assert(sizeof(interf) == 272, "Add/remove function registration");
+    static_assert(sizeof(interf) == 280, "Add/remove function registration");
 
     *out_result = interf;
     return REMIXAPI_ERROR_CODE_SUCCESS;

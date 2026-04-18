@@ -790,6 +790,11 @@ extern "C" {
     uint64_t*           out_vkSemaphoreRenderingDone,
     uint64_t*           out_vkSemaphoreResumeSemaphore);
 
+  typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_GetSharedD3D11TextureHandle)(
+    void**    out_sharedHandle,
+    uint32_t* out_width,
+    uint32_t* out_height);
+
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_dxvk_GetVkImage)(
     IDirect3DSurface9*  source,
     uint64_t*           out_vkImage);
@@ -892,6 +897,7 @@ extern "C" {
     PFN_remixapi_dxvk_CopyRenderingOutput   dxvk_CopyRenderingOutput;
     PFN_remixapi_dxvk_SetDefaultOutput      dxvk_SetDefaultOutput;
     PFN_remixapi_dxvk_GetTextureHash        dxvk_GetTextureHash;
+    PFN_remixapi_dxvk_GetSharedD3D11TextureHandle dxvk_GetSharedD3D11TextureHandle;
     // Object picking utils
     PFN_remixapi_pick_RequestObjectPicking  pick_RequestObjectPicking;
     PFN_remixapi_pick_HighlightObjects      pick_HighlightObjects;
