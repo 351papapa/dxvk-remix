@@ -380,9 +380,6 @@ extern "C" {
     REMIXAPI_CAMERA_TYPE_VIEW_MODEL,
   } remixapi_CameraType;
 
-  // TODO Sub-feature 4: implement UI state query/set. Declared here so the
-  // remixapi_Interface vtable layout matches the fork exactly; the slots are
-  // currently nullptr in the init function.
   typedef enum remixapi_UIState {
       REMIXAPI_UI_STATE_NONE = 0,
       REMIXAPI_UI_STATE_BASIC = 1,
@@ -852,9 +849,7 @@ extern "C" {
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_DestroyTexture)(
     remixapi_TextureHandle      handle);
 
-  // TODO Sub-feature 4: implement DrawScreenOverlay. Declared here so the
-  // remixapi_Interface vtable layout matches the fork exactly; the slot is
-  // currently nullptr in the init function.
+  // Screen overlay API
   typedef remixapi_ErrorCode(REMIXAPI_PTR* PFN_remixapi_DrawScreenOverlay)(
     const void*       pPixelData,
     uint32_t          width,

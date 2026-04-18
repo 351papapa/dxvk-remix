@@ -33,6 +33,9 @@
 #include "rtx_debug_view.h"
 
 #include "../dxvk_device.h"
+#include "../dxvk_objects.h"
+#include "../imgui/dxvk_imgui.h"
+#include "rtx_context.h"
 #include "rtx_texture_manager.h"
 
 #include <remix/remix_c.h>
@@ -58,6 +61,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <optional>
 #include <unordered_map>
@@ -138,11 +142,19 @@ namespace {
     uint64_t hash;
     std::vector<OwnedSurface> surfaces;
   };
+  struct PendingScreenOverlay {
+    dxvk::Rc<dxvk::DxvkBuffer> stagingBuffer;
+    uint32_t width;
+    uint32_t height;
+    VkFormat format;
+    float opacity;
+  };
   std::vector<PendingLightCreate> s_pendingLightCreates;
   std::vector<PendingLightUpdate> s_pendingLightUpdates;
   std::vector<PendingDomeUpdate>  s_pendingDomeUpdates;
   std::vector<remixapi_LightHandle> s_pendingLightDestroys;
   std::vector<PendingMeshCreate>    s_pendingMeshCreates;
+  std::optional<PendingScreenOverlay> s_pendingScreenOverlay;
   // Track handles that were updated or created this frame to prevent re-adding after deletion in the same frame
   std::unordered_set<remixapi_LightHandle> s_handlesDeletedThisFrame;
 
@@ -2436,6 +2448,24 @@ namespace {
 
       lightMgr.queueAutoInstancePersistent();
     });
+
+    // Forward any pending screen overlay to the render thread for this frame.
+    {
+      std::optional<PendingScreenOverlay> overlay;
+      {
+        std::lock_guard lock { s_mutex };
+        overlay.swap(s_pendingScreenOverlay);
+      }
+      if (overlay.has_value()) {
+        remixDevice->EmitCs([cOverlay = std::move(*overlay)](dxvk::DxvkContext* ctx) mutable {
+          static_cast<dxvk::RtxContext*>(ctx)->setScreenOverlayData(
+            std::move(cOverlay.stagingBuffer),
+            cOverlay.width, cOverlay.height,
+            cOverlay.format, cOverlay.opacity);
+        });
+      }
+    }
+
     // endScene right before present if a frame was started
     if (s_inFrame.load()) {
       auto cb = s_endCallback;
@@ -2625,6 +2655,24 @@ extern "C"
       // Ensure persistent auto-instancing happens every frame
       lightMgr.queueAutoInstancePersistent();
     });
+
+    // Forward any pending screen overlay to the render thread for this frame.
+    {
+      std::optional<PendingScreenOverlay> overlay;
+      {
+        std::lock_guard lock { s_mutex };
+        overlay.swap(s_pendingScreenOverlay);
+      }
+      if (overlay.has_value()) {
+        remixDevice->EmitCs([cOverlay = std::move(*overlay)](dxvk::DxvkContext* ctx) mutable {
+          static_cast<dxvk::RtxContext*>(ctx)->setScreenOverlayData(
+            std::move(cOverlay.stagingBuffer),
+            cOverlay.width, cOverlay.height,
+            cOverlay.format, cOverlay.opacity);
+        });
+      }
+    }
+
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -2682,6 +2730,106 @@ extern "C"
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
+  remixapi_UIState REMIXAPI_CALL remixapi_GetUIState(void) {
+    dxvk::D3D9DeviceEx* remixDevice = tryAsDxvk();
+    if (!remixDevice) {
+      return REMIXAPI_UI_STATE_NONE;
+    }
+    switch (dxvk::RtxOptions::showUI()) {
+      case dxvk::UIType::None:     return REMIXAPI_UI_STATE_NONE;
+      case dxvk::UIType::Basic:    return REMIXAPI_UI_STATE_BASIC;
+      case dxvk::UIType::Advanced: return REMIXAPI_UI_STATE_ADVANCED;
+      default:                     return REMIXAPI_UI_STATE_NONE;
+    }
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_SetUIState(remixapi_UIState state) {
+    dxvk::D3D9DeviceEx* remixDevice = tryAsDxvk();
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+
+    dxvk::UIType uiType;
+    switch (state) {
+      case REMIXAPI_UI_STATE_NONE:     uiType = dxvk::UIType::None; break;
+      case REMIXAPI_UI_STATE_BASIC:    uiType = dxvk::UIType::Basic; break;
+      case REMIXAPI_UI_STATE_ADVANCED: uiType = dxvk::UIType::Advanced; break;
+      default:
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    auto dxvkDevice = remixDevice->GetDXVKDevice();
+    if (!dxvkDevice.ptr() || !dxvkDevice->getCommon()) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    auto devLock = remixDevice->LockDevice();
+    dxvkDevice->getCommon()->getImgui().switchMenu(uiType);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawScreenOverlay(
+    const void*     pPixelData,
+    uint32_t        width,
+    uint32_t        height,
+    remixapi_Format format,
+    float           opacity) {
+
+    dxvk::D3D9DeviceEx* remixDevice = tryAsDxvk();
+    if (!remixDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+
+    // Null / zero-dim pixel data clears the overlay for this frame.
+    if (!pPixelData || width == 0 || height == 0) {
+      std::lock_guard lock { s_mutex };
+      s_pendingScreenOverlay.reset();
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+
+    VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+    switch (format) {
+      case REMIXAPI_FORMAT_R8G8B8A8_UNORM: vkFormat = VK_FORMAT_R8G8B8A8_UNORM; break;
+      case REMIXAPI_FORMAT_B8G8R8A8_UNORM: vkFormat = VK_FORMAT_B8G8R8A8_UNORM; break;
+      default:
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+
+    // 4 bytes per pixel for RGBA8/BGRA8.
+    const uint64_t dataSize = static_cast<uint64_t>(width) * height * 4;
+
+    dxvk::DxvkBufferCreateInfo stagingInfo = {};
+    stagingInfo.size = dataSize;
+    stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT;
+    stagingInfo.access = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
+
+    dxvk::Rc<dxvk::DxvkBuffer> stagingBuffer = remixDevice->GetDXVKDevice()->createBuffer(
+      stagingInfo,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      dxvk::DxvkMemoryStats::Category::RTXBuffer,
+      "Remix API screen overlay staging");
+
+    if (stagingBuffer == nullptr) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    // Copy pixel data to staging buffer
+    dxvk::DxvkBufferSlice stagingSlice { stagingBuffer };
+    memcpy(stagingSlice.mapPtr(0), pPixelData, dataSize);
+
+    {
+      std::lock_guard lock { s_mutex };
+      s_pendingScreenOverlay = PendingScreenOverlay {
+        std::move(stagingBuffer),
+        width, height,
+        vkFormat,
+        std::clamp(opacity, 0.0f, 1.0f)
+      };
+    }
+
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_InitializeLibrary(const remixapi_InitializeLibraryInfo* info,
                                                                        remixapi_Interface* out_result) {
     if (!info || info->sType != REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO) {
@@ -2726,19 +2874,13 @@ extern "C"
       interf.dxvk_GetTextureHash = remixapi_dxvk_GetTextureHash;
       interf.pick_RequestObjectPicking = remixapi_pick_RequestObjectPicking;
       interf.pick_HighlightObjects = remixapi_pick_HighlightObjects;
-      // TODO Sub-feature 4: wire up GetUIState/SetUIState. Shim to nullptr so
-      // the interface vtable layout stays byte-compatible with fork-compiled
-      // consumers at this intermediate state.
-      interf.GetUIState = nullptr;
-      interf.SetUIState = nullptr;
+      interf.GetUIState = remixapi_GetUIState;
+      interf.SetUIState = remixapi_SetUIState;
       // Optional extensions introduced alongside v0.5.1 changes
       interf.RegisterCallbacks = remixapi_RegisterCallbacks;
       interf.AutoInstancePersistentLights = remixapi_AutoInstancePersistentLights;
       interf.UpdateLightDefinition = remixapi_UpdateLightDefinition;
-      // TODO Sub-feature 4: wire up DrawScreenOverlay. Shim to nullptr so the
-      // interface vtable layout stays byte-compatible with fork-compiled
-      // consumers at this intermediate state.
-      interf.DrawScreenOverlay = nullptr;
+      interf.DrawScreenOverlay = remixapi_DrawScreenOverlay;
     }
     static_assert(sizeof(interf) == 272, "Add/remove function registration");
 
