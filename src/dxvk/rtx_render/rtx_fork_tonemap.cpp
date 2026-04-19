@@ -83,14 +83,35 @@ namespace dxvk {
     // Shared slider rendering for per-operator parameter panels.
     static void showHableFilmicSliders() {
       if (ImGui::TreeNodeEx("Hable Filmic Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
-        RemixGui::DragFloat("exposureBias",     &RtxForkHableFilmic::exposureBiasObject(),     0.05f, 0.0f,  8.0f);
-        RemixGui::DragFloat("A (shoulder)",     &RtxForkHableFilmic::shoulderStrengthObject(), 0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("B (linear)",       &RtxForkHableFilmic::linearStrengthObject(),   0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("C (linearAngle)",  &RtxForkHableFilmic::linearAngleObject(),      0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("D (toe)",          &RtxForkHableFilmic::toeStrengthObject(),      0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("E (toeNumerator)", &RtxForkHableFilmic::toeNumeratorObject(),     0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("F (toeDenom)",     &RtxForkHableFilmic::toeDenominatorObject(),   0.01f, 0.0f,  1.0f);
-        RemixGui::DragFloat("W (whitePoint)",   &RtxForkHableFilmic::whitePointObject(),       0.10f, 0.1f, 32.0f);
+        // Presets shape the A-F+W curve only; exposureBias is a fork-added control
+        // that gmod's reference presets don't cover, so it is deliberately untouched.
+        if (ImGui::Button("Preset: Uncharted 2")) {
+          RtxForkHableFilmic::shoulderStrengthObject().setDeferred(0.15f);
+          RtxForkHableFilmic::linearStrengthObject()  .setDeferred(0.50f);
+          RtxForkHableFilmic::linearAngleObject()     .setDeferred(0.10f);
+          RtxForkHableFilmic::toeStrengthObject()     .setDeferred(0.20f);
+          RtxForkHableFilmic::toeNumeratorObject()    .setDeferred(0.02f);
+          RtxForkHableFilmic::toeDenominatorObject()  .setDeferred(0.30f);
+          RtxForkHableFilmic::whitePointObject()      .setDeferred(11.2f);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Preset: Half-Life: Alyx")) {
+          RtxForkHableFilmic::shoulderStrengthObject().setDeferred(0.319f);
+          RtxForkHableFilmic::linearStrengthObject()  .setDeferred(0.5047f);
+          RtxForkHableFilmic::linearAngleObject()     .setDeferred(0.1619f);
+          RtxForkHableFilmic::toeStrengthObject()     .setDeferred(0.4667f);
+          RtxForkHableFilmic::toeNumeratorObject()    .setDeferred(0.0f);
+          RtxForkHableFilmic::toeDenominatorObject()  .setDeferred(0.7475f);
+          RtxForkHableFilmic::whitePointObject()      .setDeferred(3.9996f);
+        }
+        RemixGui::DragFloat("Exposure Bias",     &RtxForkHableFilmic::exposureBiasObject(),     0.05f, 0.0f,  8.0f);
+        RemixGui::DragFloat("Shoulder Strength", &RtxForkHableFilmic::shoulderStrengthObject(), 0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("Linear Strength",   &RtxForkHableFilmic::linearStrengthObject(),   0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("Linear Angle",      &RtxForkHableFilmic::linearAngleObject(),      0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("Toe Strength",      &RtxForkHableFilmic::toeStrengthObject(),      0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("Toe Numerator",     &RtxForkHableFilmic::toeNumeratorObject(),     0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("Toe Denominator",   &RtxForkHableFilmic::toeDenominatorObject(),   0.01f, 0.0f,  1.0f);
+        RemixGui::DragFloat("White Point",       &RtxForkHableFilmic::whitePointObject(),       0.10f, 0.1f, 32.0f);
         ImGui::TreePop();
       }
     }
@@ -110,11 +131,11 @@ namespace dxvk {
 
     static void showLottesSliders() {
       if (ImGui::TreeNodeEx("Lottes 2016 Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
-        RemixGui::DragFloat("hdrMax",   &RtxForkLottes::hdrMaxObject(),   0.10f, 1.0f,  64.0f);
-        RemixGui::DragFloat("contrast", &RtxForkLottes::contrastObject(), 0.01f, 1.0f,   3.0f);
-        RemixGui::DragFloat("shoulder", &RtxForkLottes::shoulderObject(), 0.01f, 0.5f,   2.0f);
-        RemixGui::DragFloat("midIn",    &RtxForkLottes::midInObject(),    0.01f, 0.01f,  1.0f);
-        RemixGui::DragFloat("midOut",   &RtxForkLottes::midOutObject(),   0.01f, 0.01f,  1.0f);
+        RemixGui::DragFloat("HDR Max",         &RtxForkLottes::hdrMaxObject(),   0.10f, 1.0f,  64.0f);
+        RemixGui::DragFloat("Lottes Contrast", &RtxForkLottes::contrastObject(), 0.01f, 1.0f,   3.0f);
+        RemixGui::DragFloat("Shoulder",        &RtxForkLottes::shoulderObject(), 0.01f, 0.5f,   2.0f);
+        RemixGui::DragFloat("Mid In",          &RtxForkLottes::midInObject(),    0.01f, 0.01f,  1.0f);
+        RemixGui::DragFloat("Mid Out",         &RtxForkLottes::midOutObject(),   0.01f, 0.01f,  1.0f);
         ImGui::TreePop();
       }
     }
