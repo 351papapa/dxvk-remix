@@ -254,6 +254,15 @@ AtmosphereArgs RtxAtmosphere::getAtmosphereArgs() const {
   args.timeSeconds = std::chrono::duration<float>(
                         std::chrono::steady_clock::now() - kStartTime).count();
 
+  // Sidereal sky rotation. Default axis (elevation 90, rotation 0) keeps the
+  // pre-rotation behavior; non-default values come from rtx.conf or game
+  // plugin pushes. starRotation is the only field expected to change frame-
+  // to-frame, so it is the only one flagged NoSave.
+  args.starRotation      = RtxOptions::starRotation();
+  args.starAxisElevation = RtxOptions::starAxisElevation();
+  args.starAxisRotation  = RtxOptions::starAxisRotation();
+  args.pad3              = 0.0f;
+
   // ----- Per-moon parameters (fork) -----
   for (uint32_t i = 0; i < MAX_MOONS; ++i) {
     populateMoonParams(args.moons[i], i);
