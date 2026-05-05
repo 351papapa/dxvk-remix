@@ -1340,6 +1340,10 @@ namespace dxvk {
                "Density variation across the sky [0..1]. 0 = uniform, 1 = patchy.");
     RTX_OPTION("rtx.atmosphere", float, cloudVarianceScale, 0.038f,
                "Scale of variance noise. Smaller = bigger cloud groups.");
+    RTX_OPTION("rtx.atmosphere", float, cloudVerticalProfile, 0.7f,
+               "Volumetric cloud character: 0 = flat 2D extrusion, 1 = rounded "
+               "cumulus bottoms with wispy tops + wind-shear lateral shift. "
+               "Integral normalized so total opacity stays roughly constant.");
 
     // TODO (REMIX-656): Remove this once we can transition content to new hash
     RTX_OPTION("rtx", bool, logLegacyHashReplacementMatches, false, "");

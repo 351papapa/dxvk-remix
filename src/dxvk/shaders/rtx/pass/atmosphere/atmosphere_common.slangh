@@ -457,11 +457,47 @@ vec3 evalAtmosphereRadiance(
 // altitude, sample the noise at that point, and then composite (alpha, color).
 // Returns cloud radiance premultiplied by coverage in .rgb and coverage in .a.
 
+// Compute height fraction within the cloud slab from a world-space sample
+// position. hf=0 at slab base (cloudAltitude); hf=1 at slab top
+// (cloudAltitude + cloudThickness). Saturates outside the slab.
+float computeCloudHeightFraction(vec3 samplePos, AtmosphereArgs args) {
+  vec3 planetCenter = vec3(0.0f, -args.planetRadius, 0.0f);
+  float altitudeAboveSea = length(samplePos - planetCenter) - args.planetRadius;
+  return saturate((altitudeAboveSea - args.cloudAltitude) / max(args.cloudThickness, 0.001f));
+}
+
+// Asymmetric vertical density profile: rounded cumulus bottom (sharp rise
+// from base), wispy top (gradual taper). Mixed with constant 1.0 by the
+// cloudVerticalProfile strength so 0 = no-op (current extrusion behavior),
+// 1 = full bell. Integral over [0,1] is 0.60, normalized by 1.67 so total
+// opacity stays roughly constant across the strength range.
+float cloudVerticalProfileMultiplier(float hf, AtmosphereArgs args) {
+  float bellRise = smoothstep(0.0f, 0.20f, hf);
+  float bellFall = 1.0f - smoothstep(0.40f, 1.0f, hf);
+  float bell = bellRise * bellFall;
+  const float kIntegralNorm = 1.67f;
+  return mix(1.0f, bell * kIntegralNorm, args.cloudVerticalProfile);
+}
+
 // Sample cloud density (procedural FBM) at a given horizontal world position
-// (km) on the cloud layer. Returns density in [0, 1].
-float sampleCloudDensity(vec2 worldPosKm, AtmosphereArgs args) {
+// (km) and a normalized height fraction within the cloud slab. Returns
+// density in [0, 1]. heightFraction is used for: (a) UV perturbation along
+// wind direction (wind-shear effect — different altitudes sample displaced
+// XZ patterns), and (b) vertical density profile (bell-shaped multiplier).
+// Both effects are gated by args.cloudVerticalProfile; at strength 0 the
+// function is bit-for-bit equivalent to the old XZ-only behavior.
+float sampleCloudDensity(vec2 worldPosKm, float heightFraction, AtmosphereArgs args) {
+  // UV perturbation along wind direction (zero at strength 0). cloudWindOffset
+  // is accumulated drift (direction × speed × time), so its normalized form
+  // gives the wind direction. At zero wind, fall back to a fixed diagonal so
+  // the perturb still breaks vertical extrusion.
+  vec2 windOffset = args.cloudWindOffset;
+  float windLen = length(windOffset);
+  vec2 windDir = (windLen > 0.0001f) ? (windOffset / windLen) : vec2(0.7071f, 0.7071f);
+  vec2 perturb = windDir * (heightFraction * args.cloudThickness * args.cloudVerticalProfile);
+
   // Base cloud shape — large slowly moving clumps
-  vec2 uv = worldPosKm * args.cloudScale + args.cloudWindOffset * args.cloudScale;
+  vec2 uv = (worldPosKm + perturb) * args.cloudScale + args.cloudWindOffset * args.cloudScale;
 
   // Two-octave FBM with detail layer
   float base   = fbmNoise2D(uv,             4, 90.0f);
@@ -479,6 +515,9 @@ float sampleCloudDensity(vec2 worldPosKm, AtmosphereArgs args) {
   // Remap [coverageThreshold .. 1] -> [0 .. 1].
   float coverageThreshold = mix(0.80f, 0.15f, args.cloudCoverage);
   float density = smoothstep(coverageThreshold, coverageThreshold + 0.25f, shape);
+
+  // Apply vertical profile (no-op at strength 0).
+  density *= cloudVerticalProfileMultiplier(heightFraction, args);
 
   return saturate(density);
 }
@@ -527,7 +566,10 @@ float evalCloudGroundShadow(vec3 sunDir, AtmosphereArgs args) {
   }
 
   // Sample density where the sun ray pierces the cloud layer above us.
-  float density = sampleCloudDensity(vec2(hitPos.x, hitPos.z), args);
+  // Use heightFraction=0.5 — representative middle-of-slab density for a
+  // single-sample shadow integral; integral normalization keeps brightness
+  // close to the pre-vertical-profile value at strength 1.
+  float density = sampleCloudDensity(vec2(hitPos.x, hitPos.z), 0.5f, args);
   float transmittance = exp(-density * args.cloudDensity * 2.0f);
 
   // Strength slider attenuates the effect so it can be tuned.
@@ -1421,8 +1463,10 @@ float sampleCloudSunTransmittance(vec3 cloudHitPos, vec3 sunDir, AtmosphereArgs 
 
   for (int i = 0; i < kTaps; ++i) {
     vec3 p = cloudHitPos + sunDir * (kStepKm * float(i + 1));
-    // Project to horizontal plane at cloud altitude
-    float d = sampleCloudDensity(vec2(p.x, p.z), args);
+    // Project to horizontal plane and compute heightFraction at the tap.
+    // Taps that march above the slab top get hf=1 → bell→0 → density=0,
+    // which is correct (no clouds outside the slab).
+    float d = sampleCloudDensity(vec2(p.x, p.z), computeCloudHeightFraction(p, args), args);
     opticalDepth += d;
   }
 
@@ -1528,7 +1572,8 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
     float t = tEntry + stepLen * (float(i) + 0.5f);  // sample at center of step
     vec3 samplePos = viewDir * t;
 
-    float density = sampleCloudDensity(vec2(samplePos.x, samplePos.z), sampleArgs);
+    float hf = computeCloudHeightFraction(samplePos, sampleArgs);
+    float density = sampleCloudDensity(vec2(samplePos.x, samplePos.z), hf, sampleArgs);
     density *= horizonFade;
     if (density < 0.001f) continue;
 

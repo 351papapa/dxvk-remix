@@ -300,7 +300,7 @@ AtmosphereArgs RtxAtmosphere::getAtmosphereArgs() const {
     args.cloudViewSamples = RtxOptions::cloudViewSamples();
     args.cloudVariance = RtxOptions::cloudVariance();
     args.cloudVarianceScale = RtxOptions::cloudVarianceScale();
-    args.pad7 = 0.0f;
+    args.cloudVerticalProfile = RtxOptions::cloudVerticalProfile();
     args.pad8 = 0.0f;
   }
 
