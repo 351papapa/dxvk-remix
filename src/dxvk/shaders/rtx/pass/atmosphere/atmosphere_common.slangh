@@ -468,8 +468,11 @@ float sampleCloudDensity(vec2 worldPosKm, AtmosphereArgs args) {
   float detail = fbmNoise2D(uv * 4.0f + vec2(5.3f, 2.1f), 3, 95.0f);
 
   // Combine base and detail. Base dominates the overall shape; detail
-  // roughens the edges without creating noisy isolated puffs.
-  float shape = base * 0.75f + detail * 0.25f;
+  // roughens the edges without creating noisy isolated puffs. Detail term
+  // also fades when cloudScale is small (large clouds) — at low scales the
+  // detail layer just adds visible grain, so we drop it.
+  float detailFade = smoothstep(0.005f, 0.05f, args.cloudScale);
+  float shape = base * 0.75f + detail * args.cloudDetailWeight * detailFade;
 
   // Coverage threshold: low coverage keeps clouds sparse; high coverage
   // (overcast) pushes everything above the threshold so the sky fills in.
@@ -1428,70 +1431,74 @@ float sampleCloudSunTransmittance(vec3 cloudHitPos, vec3 sunDir, AtmosphereArgs 
   return exp(-opticalDepth * kStepKm * sigma);
 }
 
-// Evaluate cloud contribution for a view direction.
-// Returns (rgb = cloud radiance, a = alpha/coverage [0..1]) in Y-up space.
+// Evaluate cloud contribution for a view direction via limited ray-march
+// through a cloud slab. Returns (rgb = cloud radiance, a = alpha) in Y-up.
+//
+// Algorithm:
+//  1. Intersect base shell (cloudAltitude) and top shell (cloudAltitude +
+//     cloudThickness) to get [tEntry, tExit] for the slab.
+//  2. Sample low-frequency variance noise once at the entry point and use it
+//     to modulate effective coverage (creates non-uniform sky).
+//  3. Step through the slab cloudViewSamples times. At each sample:
+//       - Sample density (with effective coverage)
+//       - Compute sun illumination (4-tap shadow + atmospheric transmittance)
+//       - Add ambient + sky-bounce shadow tint + sun-coupled warm tint
+//       - Accumulate using analytical Beer-Lambert
+//  4. Early-exit when transmittance drops below 0.01.
+//  5. Night moonlight contribution is constant per ray (computed outside
+//     the sample loop, applied at each step).
 vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
-  if (args.cloudEnabled < 0.5f || args.cloudCoverage < 0.01f) {
+  if (args.cloudEnabled < 0.5f || args.cloudCoverage < 0.01f || args.cloudViewSamples == 0u) {
     return vec4(0.0f);
   }
 
-  float t;
-  vec3 hitPos;
-  if (!intersectCloudLayer(viewDir, args, t, hitPos)) {
-    return vec4(0.0f);
-  }
+  // Looking below the horizon: no cloud layer above us.
+  if (viewDir.y <= 0.001f) return vec4(0.0f);
 
-  // Sample density at the hit point (horizontal XZ plane)
-  float density = sampleCloudDensity(vec2(hitPos.x, hitPos.z), args);
-  if (density < 0.01f) {
-    return vec4(0.0f);
-  }
+  // Slab geometry
+  vec3 planetCenter = vec3(0.0f, -args.planetRadius, 0.0f);
+  float baseRadius = args.planetRadius + args.cloudAltitude;
+  float topRadius  = args.planetRadius + args.cloudAltitude + args.cloudThickness;
 
-  // Fade out clouds near the horizon to avoid a hard edge where the cloud
-  // sphere tangents the viewer. Use the elevation angle.
-  float horizonFade = smoothstep(0.02f, 0.15f, viewDir.y);
-  density *= horizonFade;
+  float t0base, t1base, t0top, t1top;
+  if (!intersectSphere(vec3(0.0f), viewDir, planetCenter, baseRadius, t0base, t1base)) return vec4(0.0f);
+  if (!intersectSphere(vec3(0.0f), viewDir, planetCenter, topRadius,  t0top,  t1top))  return vec4(0.0f);
 
-  // ---- Lighting ----
+  // Camera at sea level inside both spheres; we want the "far" hits (positive t).
+  float tEntry = t1base;
+  float tExit  = t1top;
+  if (tEntry >= tExit || tExit <= 0.0f) return vec4(0.0f);
+  // tEntry can be negative if camera is already above cloud base; clamp to start march at the camera.
+  tEntry = max(tEntry, 0.0f);
+
+  // Variance mask sampled once per ray
+  vec3 entryPos = viewDir * tEntry;
+  vec2 entryXZ = vec2(entryPos.x, entryPos.z);
+  float varianceN = fbmNoise2D(entryXZ * args.cloudVarianceScale, 2, 130.0f);
+  float variance = mix(1.0f, varianceN, args.cloudVariance);
+
+  // Build local args copy with modified coverage for sampling
+  AtmosphereArgs sampleArgs = args;
+  sampleArgs.cloudCoverage = saturate(args.cloudCoverage * variance);
+
+  // Pre-compute lighting terms invariant per sample
   vec3 sunDir = normalize(args.sunDirection);
   float cosTheta = dot(viewDir, sunDir);
-
-  // HG phase function for forward-scatter / silver lining
   float phase = hgPhase(cosTheta, args.cloudAnisotropy);
-
-  // Cloud self-shadowing: sun transmittance through cloud layer
-  float sunTransmittance = sampleCloudSunTransmittance(hitPos, sunDir, args);
-
-  // Sun illuminance reaching the cloud top (atmospheric attenuation).
-  // We call getTransmittanceToSun with isZUp=false because we already
-  // converted to Y-up space in evalSkyRadiance before invoking evalClouds.
-  vec3 airTrans = getTransmittanceToSun(hitPos, args, false);
-
-  // Diffuse top-lighting term: sun elevation at the cloud top. Soft floor so
-  // the top of a cloud at low sun still receives some light (multi-scatter
-  // approximation) rather than going black at golden hour.
   float lambert = saturate(sunDir.y * 0.8f + 0.2f);
-
-  // Combined lighting: a Lambertian diffuse core plus a phase-function
-  // forward-scatter bump that becomes visible when you look toward the sun
-  // (silver lining). Keep the coefficients small since they're multiplied by
-  // sunIlluminance which already has real-world scale.
   const float kDiffuseGain = 0.35f;
   const float kPhaseGain   = 0.20f;
   float lightResponse = kDiffuseGain * lambert + kPhaseGain * phase;
 
-  // Direct sun: attenuated by atmospheric transmittance and cloud self-shadow
-  vec3 directLight = args.sunIlluminance * airTrans * sunTransmittance * lightResponse;
+  // Pre-compute warm tint (constant per ray)
+  float lowSunFactor = saturate(1.0f - sunDir.y * 3.0f);
+  float warmFactor = max(cosTheta, 0.0f);
+  vec3 warmAdd = args.sunIlluminance * lowSunFactor * warmFactor * 0.3f * args.cloudSunsetWarmth;
 
-  // Ambient sky contribution keeps the shadow side from going black
-  vec3 ambient = args.sunIlluminance * airTrans * 0.04f;
-
-  // Night light: faint contribution from each enabled moon plus airglow tint.
-  // Per-moon loop: each moon emits independently (reflected sunlight from each
-  // body), so contributions sum. Cheap — 4 unrolled iterations.
+  // Pre-compute night light (constant per ray, applied per sample)
   vec3 nightLight = vec3(0.0f);
   {
-    float sunElev = args.sunDirection.y;
+    float sunElev = sunDir.y;
     float nightFactor = smoothstep(0.02f, -0.05f, sunElev);
     if (nightFactor > 0.001f) {
       for (uint mi = 0u; mi < MAX_MOONS; ++mi) {
@@ -1503,17 +1510,52 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
         nightLight += m.color * m.brightness * 0.0015f
                     * moonDot * phaseGlow * nightFactor;
       }
-      // Add faint night sky airglow tint so dark clouds aren't pitch black
       nightLight += args.nightSkyColor * args.nightSkyBrightness * nightFactor * 0.5f;
     }
   }
 
-  vec3 cloudLit = args.cloudColor * (directLight + ambient) + nightLight;
+  // Horizon fade applied uniformly per ray
+  float horizonFade = smoothstep(0.02f, 0.15f, viewDir.y);
 
-  // Alpha = density * density multiplier (clamped)
-  float alpha = saturate(density * args.cloudDensity);
+  // Ray-march
+  float stepLen = (tExit - tEntry) / float(args.cloudViewSamples);
+  vec3 accumRadiance = vec3(0.0f);
+  float transmittance = 1.0f;
 
-  return vec4(cloudLit, alpha);
+  for (uint i = 0u; i < args.cloudViewSamples; ++i) {
+    if (transmittance < 0.01f) break;  // early-exit (free perf win)
+
+    float t = tEntry + stepLen * (float(i) + 0.5f);  // sample at center of step
+    vec3 samplePos = viewDir * t;
+
+    float density = sampleCloudDensity(vec2(samplePos.x, samplePos.z), sampleArgs);
+    density *= horizonFade;
+    if (density < 0.001f) continue;
+
+    // Per-sample lighting
+    float sunTransmittance = sampleCloudSunTransmittance(samplePos, sunDir, sampleArgs);
+    vec3 airTrans = getTransmittanceToSun(samplePos, args, false);
+    vec3 directLight = args.sunIlluminance * airTrans * sunTransmittance * lightResponse;
+    vec3 ambient = args.sunIlluminance * airTrans * 0.04f;
+
+    // Sky-bounce shadow tint: shadowed parts get faint blue contribution
+    float shadowFraction = 1.0f - sunTransmittance;
+    vec3 shadowTintAdd = args.cloudShadowTint * args.cloudShadowTintStrength
+                       * shadowFraction * args.sunIlluminance * 0.05f;
+
+    vec3 sampleColor = args.cloudColor * (directLight + ambient)
+                     + nightLight + shadowTintAdd + warmAdd;
+
+    // Beer-Lambert step (analytical integration of constant emission)
+    float effectiveDensity = density * args.cloudDensity;
+    float stepTransmittance = exp(-effectiveDensity * stepLen);
+    vec3 stepRadiance = sampleColor * (1.0f - stepTransmittance);
+    accumRadiance += stepRadiance * transmittance;
+    transmittance *= stepTransmittance;
+  }
+
+  float alpha = 1.0f - transmittance;
+  return vec4(accumRadiance, alpha);
 }
 
 // Main evaluation function - computes atmosphere directly instead of using sky view LUT
