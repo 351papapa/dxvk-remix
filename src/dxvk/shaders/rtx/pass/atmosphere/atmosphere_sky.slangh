@@ -590,7 +590,7 @@ vec3 evalMoonDisk(vec3 viewDir, uint moonIdx, AtmosphereArgs args, out float dis
 
 // Sample cloud density along the sun direction from a cloud hit point.
 // Used to self-shadow the clouds. Reuses the main-sample's typeLocal /
-// coverageLocal across all 4 sun-shadow taps — spec rationale: noise
+// coverageLocal across all 2 sun-shadow taps — spec rationale: noise
 // wavelength (~2km at default scale) is large compared to the 1.6km tap
 // span, so the approximation is visually adequate.
 float sampleCloudSunTransmittance(vec3 cloudHitPos, vec3 sunDir,
@@ -598,8 +598,8 @@ float sampleCloudSunTransmittance(vec3 cloudHitPos, vec3 sunDir,
                                   AtmosphereArgs args) {
   if (sunDir.y <= 0.01f) return 1.0f;  // Sun near/below horizon: no meaningful shadow
 
-  const int kTaps = 4;
-  const float kStepKm = 0.4f;
+  const int kTaps = 2;
+  const float kStepKm = 0.8f;
   float opticalDepth = 0.0f;
 
   for (int i = 0; i < kTaps; ++i) {
