@@ -280,20 +280,6 @@ initializer list and can't be lifted into a separate TU.
 
 ---
 
-## src/dxvk/rtx_render/rtx_atmosphere.cpp
-
-**Pre-refactor fork footprint:** +0 / -0 LOC (file is fork-introduced; no upstream content modified at fork-point audit 2026-04-18)
-**Current fork footprint:** +9 / -5 net LOC (cloud spatial-variation mirror block, 2026-05-06)
-
-**Category:** index-only
-
-**Rationale:** `rtx_atmosphere.cpp` is entirely fork-introduced (no upstream original exists at fork-point), so only the host-side mirror block that copies RTX_OPTIONs into `AtmosphereArgs` is tracked here. The mirror assignments are structurally inseparable from `RtxAtmosphere::getAtmosphereArgs()` and cannot be extracted.
-
-- **Inline tweak** at cloud-mirror block in `RtxAtmosphere::getAtmosphereArgs()` (cloud spatial-variation host-side mirroring) — +9 / -5 net LOC.
-  *Mirrors the seven new spatial-variation RTX_OPTIONs (`cloudTypeMean`, `cloudTypeSpread`, `cloudTypeNoiseScale`, `cloudCoverageMean`, `cloudCoverageSpread`, `cloudCoverageNoiseScale`, `cloudAnvilBias`) plus a `pad4 = 0.0f` alignment slot into `AtmosphereArgs`. Removes mirroring for the four retired options (`cloudCoverage`, `cloudVariance`, `cloudVarianceScale`, `cloudVerticalProfile`). Spec 2026-05-06.*
-
----
-
 ## src/dxvk/rtx_render/rtx_camera_manager.cpp
 
 **Pre-refactor fork footprint:** +10 / -10 LOC (audit 2026-04-18)
