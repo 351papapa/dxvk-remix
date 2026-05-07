@@ -132,6 +132,22 @@ namespace fork_hooks {
     if (cloudNoise3D.isValid()) {
       ctx.bindResourceView(BINDING_ATMOSPHERE_CLOUD_NOISE_3D, cloudNoise3D.view, nullptr);
     }
+
+    // Bind a linear/REPEAT sampler for the cloud noise volume.
+    // REPEAT matches the tilable wraparound logic in sampleCloudDensityTextured
+    // (frac-based texcoord) so the hardware sampler and the shader math agree.
+    // Created per-bind (cheap — DxvkDevice caches identical samplers).
+    {
+      DxvkSamplerCreateInfo samplerInfo = {};
+      samplerInfo.magFilter    = VK_FILTER_LINEAR;
+      samplerInfo.minFilter    = VK_FILTER_LINEAR;
+      samplerInfo.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+      samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      Rc<DxvkSampler> cloudNoiseSampler = ctx.m_device->createSampler(samplerInfo);
+      ctx.bindResourceSampler(BINDING_ATMOSPHERE_CLOUD_NOISE_SAMPLER, cloudNoiseSampler);
+    }
   }
 
   // ---------------------------------------------------------------------------
