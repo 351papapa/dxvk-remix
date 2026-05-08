@@ -735,7 +735,13 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
         if (m.enabled < 0.5f) continue;
         vec3 moonDir = normalize(m.direction);
         float moonDot = max(dot(moonDir, vec3(0.0f, 1.0f, 0.0f)), 0.0f);
-        float phaseGlow = 1.0f - abs(cos(m.phase * 2.0f * kPi));
+        // phaseGlow: smooth 0..1 raised-cosine oscillation peaking at full moon
+        // (phase=0.5) and falling to zero at new moon (phase=0 / phase=1).
+        // Earlier `1 - abs(cos(phase * 2π))` was off by a factor of two on the
+        // angular argument, producing the inverted shape (peaked at quarters,
+        // zero at full) — defaulting all moonlit-cloud, ambient-airglow, and
+        // moon-halo contributions to zero at the default phase=0.5.
+        float phaseGlow = 0.5f - 0.5f * cos(m.phase * 2.0f * kPi);
         nightLight += m.color * m.brightness * 0.0015f
                     * moonDot * phaseGlow * nightFactor;
 
@@ -963,7 +969,9 @@ vec3 evalSkyRadiance(
         float glowFalloff = angularDist / glowRadius;
         float glow = exp(-glowFalloff * glowFalloff * 6.0f);  // Tighter Gaussian
         // Scale by brightness and phase (fuller = brighter glow)
-        float phaseGlow = 1.0f - abs(cos(m.phase * 2.0f * kPi));
+        // phaseGlow: full at full moon (0.5), zero at new (0 / 1). See the
+        // matching definition in evalClouds; mirrored here for the disk halo.
+        float phaseGlow = 0.5f - 0.5f * cos(m.phase * 2.0f * kPi);
         phaseGlow = max(phaseGlow, 0.05f);  // minimal glow at new moon
         vec3 glowColor = m.color * m.brightness * 0.003f * glow * phaseGlow * moonFade;
         radiance += glowColor;
