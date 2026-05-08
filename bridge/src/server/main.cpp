@@ -55,6 +55,7 @@
 #include <d3d9.h>
 #include <assert.h>
 #include <map>
+#include <vector>
 #include <atomic>
 #include <array>
 
@@ -3162,7 +3163,58 @@ void ProcessDeviceCommandQueue() {
                                               "most recently created by client application.");
         break;
       }
-      
+
+      case RemixApi_SetGameValue:
+      {
+        void* key_ptr = nullptr;
+        const uint32_t key_size = DeviceBridge::getReaderChannel().data->pull(&key_ptr);
+        std::string key_str((const char*) key_ptr, key_size);
+
+        void* value_ptr = nullptr;
+        const uint32_t value_size = DeviceBridge::getReaderChannel().data->pull(&value_ptr);
+        std::string value_str((const char*) value_ptr, value_size);
+
+        remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+        if (remixapi::g_remix.SetGameValue) {
+          result = remixapi::g_remix.SetGameValue(key_str.c_str(), value_str.c_str());
+        } else {
+          Logger::err("[RemixApi_SetGameValue] SetGameValue function pointer is null in g_remix.");
+        }
+
+        ServerMessage c(Commands::Bridge_Response, currentUID);
+        c.send_data(static_cast<uint32_t>(result));
+        break;
+      }
+
+      case RemixApi_GetGameValue:
+      {
+        void* key_ptr = nullptr;
+        const uint32_t key_size = DeviceBridge::getReaderChannel().data->pull(&key_ptr);
+        std::string key_str((const char*) key_ptr, key_size);
+        const uint32_t in_buf_size = DeviceBridge::get_data();
+
+        remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+        uint32_t actual_size = 0;
+
+        if (remixapi::g_remix.GetGameValue) {
+          // First call: size query (in_buffer_size=0, out_buffer=nullptr).
+          result = remixapi::g_remix.GetGameValue(key_str.c_str(), nullptr, 0, &actual_size);
+        } else {
+          Logger::err("[RemixApi_GetGameValue] GetGameValue function pointer is null in g_remix.");
+        }
+
+        ServerMessage c(Commands::Bridge_Response, currentUID);
+        c.send_data(static_cast<uint32_t>(result));
+        c.send_data(actual_size);
+        if (result == REMIXAPI_ERROR_CODE_SUCCESS && actual_size > 0 && in_buf_size >= actual_size) {
+          // Caller's buffer is large enough — send the value bytes.
+          std::vector<char> buf(actual_size);
+          remixapi::g_remix.GetGameValue(key_str.c_str(), buf.data(), actual_size, &actual_size);
+          c.send_data(actual_size, buf.data());
+        }
+        break;
+      }
+
       default:
         break;
       }
