@@ -462,6 +462,7 @@ extern "C" {
       interf.SetUIState                   = remixapi_SetUIState;
       interf.AutoInstancePersistentLights = remixapi_AutoInstancePersistentLights;
       interf.UpdateLightDefinition        = remixapi_UpdateLightDefinition;
+      interf.GetGameValue                 = remixapi_GetGameValue;
       // interf.dxvk_GetExternalSwapchain = remixapi_dxvk_GetExternalSwapchain;
       // interf.dxvk_GetVkImage = remixapi_dxvk_GetVkImage;
       // interf.dxvk_CopyRenderingOutput = remixapi_dxvk_CopyRenderingOutput;
@@ -538,6 +539,25 @@ extern "C" {
       Logger::warn("[remixapi_UpdateLightDefinition] Bridge stub: no-op. "
                    "Light-definition updates are not yet plumbed through the bridge — "
                    "lights created via CreateLight cannot be updated from 32-bit clients yet.");
+      warned = true;
+    }
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
+
+  DLLEXPORT remixapi_ErrorCode __stdcall remixapi_GetGameValue(
+    const char* key,
+    char*       out_buffer,
+    uint32_t    in_buffer_size,
+    uint32_t*   out_actual_size) {
+    (void) key;
+    (void) out_buffer;
+    (void) in_buffer_size;
+    (void) out_actual_size;
+    static bool warned = false;
+    if (!warned) {
+      Logger::warn("[remixapi_GetGameValue] Bridge stub: no-op. "
+                   "Game-state reads are not yet plumbed through the bridge — "
+                   "GetGameValue is only available from 64-bit (direct d3d9.dll) clients.");
       warned = true;
     }
     return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
