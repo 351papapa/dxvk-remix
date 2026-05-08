@@ -27,6 +27,7 @@
 #include "rtx_options.h"
 #include "rtx_global_volumetrics.h"
 #include "imgui/imgui.h"
+#include "rtx_imgui.h"               // RemixGui::DragFloat, DragFloat3, SetTooltipToLastWidgetOnHover
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,11 @@
 // Anonymous-namespace helpers
 // ---------------------------------------------------------------------------
 namespace dxvk { namespace fork_weather { namespace {
+
+  // --- Active blender singleton ---
+  // Set by WeatherBlender ctor, cleared by dtor. Only one RtxContext is alive
+  // at a time, so at most one WeatherBlender exists during normal operation.
+  WeatherBlender* g_activeBlender = nullptr;
 
   // --- Math helpers ---
 
@@ -593,6 +599,19 @@ namespace dxvk { namespace fork_weather { namespace {
 namespace dxvk { namespace fork_weather {
 
   // ---------------------------------------------------------------------------
+  // WeatherBlender ctor/dtor — maintain the file-scoped active-blender pointer.
+  // ---------------------------------------------------------------------------
+  WeatherBlender::WeatherBlender() {
+    g_activeBlender = this;
+  }
+
+  WeatherBlender::~WeatherBlender() {
+    if (this == g_activeBlender) {
+      g_activeBlender = nullptr;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // update — per-frame entry point.
   //
   // Lifecycle:
@@ -697,10 +716,152 @@ namespace dxvk { namespace fork_weather {
   }
 
   // ---------------------------------------------------------------------------
-  // showImguiSettings — placeholder for Task 4.
+  // showImguiSettings — full ImGui weather-preset panel.
+  //
+  // Layout:
+  //  1. Combo — 13 entries: "(none / dormant)" + 12 preset names.
+  //  2. Float slider — Blend Duration (sec), 0–600.
+  //  3. "Apply Preset" button — writes __weather.blend_seconds and
+  //     __weather.target to GameStateStore.
+  //  4. Separator.
+  //  5. "Pause Weather Blender" checkbox (m_paused), with tooltip.
+  //  6. Read-only state display (current / target / previous / blend progress).
+  //  7. "Tune Preset Defaults" collapsing tree — per-preset slider blocks.
   // ---------------------------------------------------------------------------
   void WeatherBlender::showImguiSettings() {
-    ImGui::TextDisabled("(Weather UI lands in Task 4)");
+    constexpr ImGuiSliderFlags sliderFlags = ImGuiSliderFlags_AlwaysClamp;
+
+    // ---- 1. Preset selection combo (13 entries: dormant + 12 named) ----
+    static const char* kPresetNames[] = {
+      "(none / dormant)",
+      "clear", "partlyCloudy", "overcast", "hazy", "foggy", "drizzle",
+      "rainstorm", "thunderstorm", "snow", "blizzard", "sandstorm", "smoggy"
+    };
+    constexpr int kPresetCount = static_cast<int>(IM_ARRAYSIZE(kPresetNames));
+
+    // Map current m_targetPresetName to combo index; 0 = dormant.
+    static int s_selectedIndex = 0;
+    if (!m_targetPresetName.empty()) {
+      for (int i = 1; i < kPresetCount; ++i) {
+        if (m_targetPresetName == kPresetNames[i]) {
+          s_selectedIndex = i;
+          break;
+        }
+      }
+    } else {
+      s_selectedIndex = 0;
+    }
+
+    ImGui::Combo("Target Preset", &s_selectedIndex, kPresetNames, kPresetCount);
+
+    // ---- 2. Blend Duration slider ----
+    static float s_blendDuration = 30.0f;
+    ImGui::SliderFloat("Blend Duration (sec)", &s_blendDuration, 0.0f, 600.0f, "%.1f");
+
+    // ---- 3. Apply Preset button ----
+    if (ImGui::Button("Apply Preset")) {
+      // Write blend_seconds as float string.
+      char durBuf[32];
+      std::snprintf(durBuf, sizeof(durBuf), "%.6f", s_blendDuration);
+      fork_game_state::GameStateStore::get().set("__weather.blend_seconds", durBuf);
+
+      // Write target preset name (empty string for dormant).
+      const char* targetName = (s_selectedIndex == 0) ? "" : kPresetNames[s_selectedIndex];
+      fork_game_state::GameStateStore::get().set("__weather.target", targetName);
+    }
+
+    // ---- 4. Separator ----
+    ImGui::Separator();
+
+    // ---- 5. Pause checkbox ----
+    ImGui::Checkbox("Pause Weather Blender", &m_paused);
+    RemixGui::SetTooltipToLastWidgetOnHover(
+      "When checked, the blender stops writing to RTX_OPTIONs. "
+      "Manual edits to the underlying sliders persist undisturbed.");
+
+    // ---- 6. Read-only state display ----
+    {
+      const char* currentDisplay  = m_targetPresetName.empty()  ? "(dormant)" : m_targetPresetName.c_str();
+      const char* targetDisplay   = m_targetPresetName.empty()  ? "(dormant)" : m_targetPresetName.c_str();
+      const char* previousDisplay = m_previousPresetName.empty() ? "(dormant)" : m_previousPresetName.c_str();
+
+      float currentT = 0.0f;
+      if (!m_targetPresetName.empty() && m_blendDurationSec > 0.001f) {
+        currentT = saturate((m_currentTimeSec - m_blendStartTimeSec) / m_blendDurationSec);
+      }
+
+      ImGui::TextDisabled("Current: %s", currentDisplay);
+      ImGui::TextDisabled("Target: %s",  targetDisplay);
+      ImGui::TextDisabled("Previous: %s", previousDisplay);
+      ImGui::TextDisabled("Blend progress: %.3f", currentT);
+    }
+
+    // ---- 7. Tune Preset Defaults tree ----
+    if (ImGui::TreeNode("Tune Preset Defaults")) {
+      // Combo for the preset to tune (12 entries, no dormant option).
+      static const char* kTunePresetNames[] = {
+        "clear", "partlyCloudy", "overcast", "hazy", "foggy", "drizzle",
+        "rainstorm", "thunderstorm", "snow", "blizzard", "sandstorm", "smoggy"
+      };
+      constexpr int kTuneCount = static_cast<int>(IM_ARRAYSIZE(kTunePresetNames));
+      static int s_tuneIndex = 0;
+      ImGui::Combo("Preset to Tune", &s_tuneIndex, kTunePresetNames, kTuneCount);
+
+      // Macro: expand 29 DragFloat / DragFloat3 calls for a given preset name.
+      // Uses the RtxOptions::<presetName>_<fieldName>Object() accessor pattern.
+#define WEATHER_PRESET_SLIDERS(P)                                                                     \
+      /* Cloud (19) */                                                                                \
+      RemixGui::DragFloat("Cloud Density",              &RtxOptions::P##_cloudDensityObject(),              0.05f,  0.0f,  10.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Coverage Mean",              &RtxOptions::P##_cloudCoverageMeanObject(),          0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Coverage Spread",            &RtxOptions::P##_cloudCoverageSpreadObject(),        0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Coverage Noise Scale",       &RtxOptions::P##_cloudCoverageNoiseScaleObject(),    0.0001f,0.0f,   0.05f,  "%.4f",  sliderFlags); \
+      RemixGui::DragFloat("Type Mean",                  &RtxOptions::P##_cloudTypeMeanObject(),              0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Type Spread",                &RtxOptions::P##_cloudTypeSpreadObject(),            0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Type Noise Scale",           &RtxOptions::P##_cloudTypeNoiseScaleObject(),        0.0001f,0.0f,   0.05f,  "%.4f",  sliderFlags); \
+      RemixGui::DragFloat("Anvil Bias",                 &RtxOptions::P##_cloudAnvilBiasObject(),             0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Wind Shear Strength",        &RtxOptions::P##_cloudWindShearStrengthObject(),     0.05f,  0.0f,   2.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat3("Cloud Color",               &RtxOptions::P##_cloudColorObject(),                 0.01f,  0.0f,   1.5f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Wind Speed",                 &RtxOptions::P##_cloudWindSpeedObject(),             0.005f, 0.0f,   1.0f,   "%.3f",  sliderFlags); \
+      RemixGui::DragFloat("Wind Direction",             &RtxOptions::P##_cloudWindDirectionObject(),         1.0f,   0.0f, 360.0f,   "%.0f",  sliderFlags); \
+      RemixGui::DragFloat("Shadow Strength",            &RtxOptions::P##_cloudShadowStrengthObject(),        0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Anisotropy",                 &RtxOptions::P##_cloudAnisotropyObject(),            0.01f, -1.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Thickness",                  &RtxOptions::P##_cloudThicknessObject(),             0.05f,  0.0f,  10.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Detail Weight",              &RtxOptions::P##_cloudDetailWeightObject(),          0.01f,  0.0f,   2.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat3("Shadow Tint",               &RtxOptions::P##_cloudShadowTintObject(),            0.01f,  0.0f,   1.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Shadow Tint Strength",       &RtxOptions::P##_cloudShadowTintStrengthObject(),    0.05f,  0.0f,   2.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Sunset Warmth",              &RtxOptions::P##_cloudSunsetWarmthObject(),          0.05f,  0.0f,   2.0f,   "%.2f",  sliderFlags); \
+      /* Atmosphere (3) */                                                                            \
+      RemixGui::DragFloat("Air Density",                &RtxOptions::P##_airDensityObject(),                 0.05f,  0.0f,   5.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Aerosol Density",            &RtxOptions::P##_aerosolDensityObject(),             0.05f,  0.0f,   5.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat3("Sun Illuminance",           &RtxOptions::P##_sunIlluminanceObject(),             0.5f,   0.0f, 100.0f,   "%.1f",  sliderFlags); \
+      /* Sky/moon mood (3) */                                                                        \
+      RemixGui::DragFloat("Night Sky Brightness",       &RtxOptions::P##_nightSkyBrightnessObject(),         0.001f, 0.0f,   1.0f,   "%.3f",  sliderFlags); \
+      RemixGui::DragFloat("Moon NEE Strength",          &RtxOptions::P##_moonNeeStrengthObject(),            0.05f,  0.0f,  10.0f,   "%.2f",  sliderFlags); \
+      RemixGui::DragFloat("Moon Atm Coupling",          &RtxOptions::P##_moonAtmosphericCouplingStrengthObject(), 0.05f, 0.0f, 10.0f, "%.2f", sliderFlags); \
+      /* Volumetric (4) */                                                                           \
+      RemixGui::DragFloat3("Transmittance Color",       &RtxOptions::P##_transmittanceColorObject(),         0.005f, 0.0f,   1.0f,   "%.3f",  sliderFlags); \
+      RemixGui::DragFloat("Transmittance Distance (m)", &RtxOptions::P##_transmittanceMeasurementDistanceMetersObject(), 5.0f, 1.0f, 2000.0f, "%.0f", sliderFlags); \
+      RemixGui::DragFloat3("Single Scattering Albedo",  &RtxOptions::P##_singleScatteringAlbedoObject(),     0.005f, 0.0f,   1.0f,   "%.3f",  sliderFlags); \
+      RemixGui::DragFloat("Volumetric Anisotropy",      &RtxOptions::P##_volumetricAnisotropyObject(),       0.01f, -1.0f,   1.0f,   "%.2f",  sliderFlags)
+
+      const char* tunePreset = kTunePresetNames[s_tuneIndex];
+      if      (tunePreset == std::string("clear"))         { WEATHER_PRESET_SLIDERS(clear); }
+      else if (tunePreset == std::string("partlyCloudy"))  { WEATHER_PRESET_SLIDERS(partlyCloudy); }
+      else if (tunePreset == std::string("overcast"))      { WEATHER_PRESET_SLIDERS(overcast); }
+      else if (tunePreset == std::string("hazy"))          { WEATHER_PRESET_SLIDERS(hazy); }
+      else if (tunePreset == std::string("foggy"))         { WEATHER_PRESET_SLIDERS(foggy); }
+      else if (tunePreset == std::string("drizzle"))       { WEATHER_PRESET_SLIDERS(drizzle); }
+      else if (tunePreset == std::string("rainstorm"))     { WEATHER_PRESET_SLIDERS(rainstorm); }
+      else if (tunePreset == std::string("thunderstorm"))  { WEATHER_PRESET_SLIDERS(thunderstorm); }
+      else if (tunePreset == std::string("snow"))          { WEATHER_PRESET_SLIDERS(snow); }
+      else if (tunePreset == std::string("blizzard"))      { WEATHER_PRESET_SLIDERS(blizzard); }
+      else if (tunePreset == std::string("sandstorm"))     { WEATHER_PRESET_SLIDERS(sandstorm); }
+      else if (tunePreset == std::string("smoggy"))        { WEATHER_PRESET_SLIDERS(smoggy); }
+
+#undef WEATHER_PRESET_SLIDERS
+
+      ImGui::TreePop();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -796,12 +957,15 @@ namespace dxvk { namespace fork_hooks {
     }
   }
 
-  // Renders the weather preset UI inside the existing atmosphere ImGui tree.
-  // Real UI implementation lands in Task 4.
-  // For now this is a no-op so the linker is satisfied when Task 4 wires the
-  // call site in showAtmosphereUI.
+  // Renders the weather preset panel inside a CollapsingHeader, delegating to
+  // the active WeatherBlender's showImguiSettings(). No-op when no blender
+  // is live (tests, pre-RtxContext-init).
   void showWeatherUI() {
-    // No-op stub. Task 4 replaces this body with the full ImGui surface.
+    if (auto* b = fork_weather::g_activeBlender) {
+      if (ImGui::CollapsingHeader("Weather Presets")) {
+        b->showImguiSettings();
+      }
+    }
   }
 
 } }  // namespace dxvk::fork_hooks

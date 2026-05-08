@@ -154,7 +154,8 @@ namespace dxvk { namespace fork_weather {
   // -------------------------------------------------------------------------
   class WeatherBlender {
   public:
-    WeatherBlender() = default;
+    WeatherBlender();
+    ~WeatherBlender();
 
     // Called once per frame from fork_hooks::updateWeatherBlender (Task 3).
     void update(float deltaTimeSeconds);
