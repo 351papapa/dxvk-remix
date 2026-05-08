@@ -759,13 +759,13 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
         // moon-halo contributions to zero at the default phase=0.5.
         float phaseGlow = 0.5f - 0.5f * cos(m.phase * 2.0f * kPi);
         // Phase 2 (2026-05-08): nightLight ambient airglow uses sharedFactor
-        // for sun-following-ness consistency. Magnitude factor 0.0015
-        // preserved as the stylistic ambient-bounce strength.
-        // Phase 3 (2026-05-08): args.cloudMoonBrightness applied as per-path
-        // stylistic multiplier; ambient airglow shares the cloud knob since
-        // both lift the cloud volume's perceived brightness in tandem.
+        // for sun-following-ness consistency.
+        // Phase 3 Task 1 (2026-05-08): args.cloudMoonBrightness applied as per-path
+        // stylistic multiplier; ambient airglow shares the cloud knob.
+        // Phase 3 Task 2 (2026-05-08): magnitude factor 0.0015 exposed as
+        // args.moonAmbientAirglow for in-game tuning.
         vec3 sharedFactorAmbient = computeMoonSharedFactor(m, args, m.color);
-        nightLight += sharedFactorAmbient * 0.0015f
+        nightLight += sharedFactorAmbient * args.moonAmbientAirglow
                     * moonDot * phaseGlow * args.cloudMoonBrightness * nightFactor;
 
         // Directional contribution — only moons above horizon matter for
@@ -782,9 +782,11 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args) {
           //   kMoonAnisotropy   0.85 (vs sun's 0.60)  -- sharper HG peak
           // Result: peak (cloud in front of moon) responds at ~1.13;
           // off-axis (60deg from moon) at ~0.09 -- a ~13x contrast.
-          const float kMoonDiffuseGain = 0.10f;
-          const float kMoonPhaseGain   = 0.30f;
-          const float kMoonAnisotropy  = 0.85f;
+          // Phase 3 Task 2 (2026-05-08): exposed as RTX_OPTIONs for in-game
+          // tuning of silver-lining shape. Defaults preserved.
+          const float kMoonDiffuseGain = args.moonCloudDiffuseGain;
+          const float kMoonPhaseGain   = args.moonCloudPhaseGain;
+          const float kMoonAnisotropy  = args.moonCloudAnisotropy;
           float moonLambert  = saturate(moonDir.y * 0.8f + 0.2f);
           float moonCosTheta = dot(viewDir, moonDir);
           float moonPhase    = hgPhase(moonCosTheta, kMoonAnisotropy);
@@ -1034,7 +1036,8 @@ vec3 evalSkyRadiance(
         //   m.color × m.brightness × 0.0015 ≈ 0.88 × 4.0 × 0.0015 ≈ 5.3e-3 × glow
         // Halo drops ~5× at default m.brightness. Recoverable via
         // m.brightness=4.0 if user prefers current visual.
-        const float kHaloMagnitude = 0.0015f;
+        // Phase 3 Task 2 (2026-05-08): exposed as args.moonHaloMagnitude.
+        const float kHaloMagnitude = args.moonHaloMagnitude;
         // Phase 3 (2026-05-08): args.haloMoonBrightness is the per-path stylistic
         // multiplier on halo glow (default 5.0 = matches pre-Phase-2 halo magnitude
         // at m.brightness=1.0 under FNV tonemapper).

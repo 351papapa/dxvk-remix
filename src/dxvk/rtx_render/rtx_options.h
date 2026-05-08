@@ -1343,6 +1343,29 @@ namespace dxvk {
                "Default 5.0 = matches pre-Phase-2 halo magnitude at m.brightness=1.0 under "
                "FNV tonemapper; 1.0 = physically-pure; 0 = no halo.");
 
+    // ----- Moon cloud-look + halo shape constants (fork, Phase 3 Task 2) -----
+    // Tunable shape parameters for cloud-moon silver-lining contrast and halo glow.
+    // Defaults preserve current calibrated values; exposed for in-game tuning.
+    RTX_OPTION("rtx.atmosphere", float, moonCloudDiffuseGain, 0.10f,
+               "Cloud-moon Lambert diffuse weight controlling off-axis cloud illumination. "
+               "Lower = stronger contrast (off-axis clouds dimmer relative to peak). "
+               "Higher = more uniform cloud lighting. Default 0.10.");
+    RTX_OPTION("rtx.atmosphere", float, moonCloudPhaseGain, 0.30f,
+               "Cloud-moon HG phase weight controlling peak silver-lining intensity. "
+               "Higher = brighter cloud directly in front of moon. Default 0.30.");
+    RTX_OPTION("rtx.atmosphere", float, moonCloudAnisotropy, 0.85f,
+               "Henyey-Greenstein anisotropy for cloud-moon forward scatter. Higher = "
+               "sharper silver-lining peak (concentrated on cloud directly in front of "
+               "moon); lower = softer falloff. Default 0.85.");
+    RTX_OPTION("rtx.atmosphere", float, moonHaloMagnitude, 0.0015f,
+               "Disk halo Gaussian strength multiplier. Tuned alongside haloMoonBrightness; "
+               "use this for the underlying SHAPE strength and haloMoonBrightness for the "
+               "tonemapper-correction multiplier. Default 0.0015.");
+    RTX_OPTION("rtx.atmosphere", float, moonAmbientAirglow, 0.0015f,
+               "Ambient airglow per-moon strength contribution to nightLight. The cloud "
+               "volume gets a uniform sky-bounce from each enabled moon scaled by this "
+               "constant. Default 0.0015.");
+
     // Cloud parameters (procedural FBM cloud layer)
     RTX_OPTION("rtx.atmosphere", bool, cloudEnabled, true, "Enable procedural cloud rendering.");
     RTX_OPTION("rtx.atmosphere", float, cloudDensity, 1.80f, "Cloud opacity/density multiplier.");

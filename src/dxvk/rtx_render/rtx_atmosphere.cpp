@@ -292,6 +292,16 @@ AtmosphereArgs RtxAtmosphere::getAtmosphereArgs() const {
   args.padMoonNee1                     = 0.0f;
   args.padMoonNee2                     = 0.0f;
 
+  // ----- Moon cloud-look + halo shape constants (fork, Phase 3 Task 2) -----
+  args.moonCloudDiffuseGain            = RtxOptions::moonCloudDiffuseGain();
+  args.moonCloudPhaseGain              = RtxOptions::moonCloudPhaseGain();
+  args.moonCloudAnisotropy             = RtxOptions::moonCloudAnisotropy();
+  args.moonHaloMagnitude               = RtxOptions::moonHaloMagnitude();
+  args.moonAmbientAirglow              = RtxOptions::moonAmbientAirglow();
+  args.padCloudLook0                   = 0.0f;
+  args.padCloudLook1                   = 0.0f;
+  args.padCloudLook2                   = 0.0f;
+
   // Cloud parameters
   {
     args.cloudColor = RtxOptions::cloudColor();

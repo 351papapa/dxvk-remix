@@ -115,6 +115,20 @@ struct AtmosphereArgs {
   float padMoonNee1;
   float padMoonNee2;
 
+  // ----- Moon cloud-look + halo shape constants (fork, Phase 3 Task 2) -----
+  // Tunable shape parameters for cloud-moon silver-lining contrast and halo glow.
+  // Defaults preserve current calibrated values; exposed via RTX_OPTION + ImGui
+  // for in-game tuning of cloud-moon look without rebuilding shaders.
+  float moonCloudDiffuseGain;             // Cloud-moon Lambert diffuse weight (silver-lining off-axis darkening)
+  float moonCloudPhaseGain;               // Cloud-moon HG phase weight (silver-lining peak boost)
+  float moonCloudAnisotropy;              // HG g for cloud-moon forward scatter (silver-lining sharpness)
+  float moonHaloMagnitude;                // Disk halo Gaussian strength (was kHaloMagnitude in atmosphere_sky.slangh)
+
+  float moonAmbientAirglow;               // Ambient airglow per-moon strength (was 0.0015 literal in nightLight)
+  float padCloudLook0;                    // 16-byte alignment
+  float padCloudLook1;
+  float padCloudLook2;
+
   // ----- Cloud parameters (fork: procedural FBM cloud layer at fixed altitude) -----
   vec3 cloudColor;          // Cloud base color (typically white)
   float cloudDensity;       // Overall opacity/density multiplier
