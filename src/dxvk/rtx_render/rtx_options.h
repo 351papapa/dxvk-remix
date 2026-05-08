@@ -1325,23 +1325,27 @@ namespace dxvk {
 
     // ----- Per-path moon stylistic multipliers (fork, Phase 3) -----
     // These are tonemapper-correction stylistic axes layered on top of the unified
-    // physical irradiance scaffold from Phase 2. Defaults empirically calibrated to
-    // approximate pre-Phase-2 visibility under FNV's tonemapper at m.brightness=1.0
-    // (the new physical-neutral default). Set to 1.0 for architecturally-pure
-    // physical baseline; raise for tonemapper-aware visibility.
-    RTX_OPTION("rtx.atmosphere", float, surfaceMoonBrightness, 8.0f,
+    // physical irradiance scaffold from Phase 2. Defaults are empirically tuned by
+    // in-game testing on 2026-05-08 against the Fallout: New Vegas test scene at
+    // m.brightness=1.0 (the new physical-neutral default). Set all three to 1.0
+    // for architecturally-pure physical baseline; the shipped defaults represent
+    // the offset between physical-correct and what the FNV tonemapper makes
+    // visually readable.
+    RTX_OPTION("rtx.atmosphere", float, surfaceMoonBrightness, 50.0f,
                "Per-path stylistic multiplier on surface NEE (ground moonlight). "
-               "Default 8.0 = empirical baseline for visible ground under FNV tonemapper "
+               "Default 50.0 = user-tested baseline for visible ground under FNV tonemapper "
                "at m.brightness=1.0; 1.0 = physically-pure (very dim under typical tonemappers); "
                "raise for brighter ground.");
-    RTX_OPTION("rtx.atmosphere", float, cloudMoonBrightness, 24.0f,
+    RTX_OPTION("rtx.atmosphere", float, cloudMoonBrightness, 2.0f,
                "Per-path stylistic multiplier on cloud-moon directional lighting + ambient airglow. "
-               "Default 24.0 = matches pre-Phase-2 silver-lining magnitude at m.brightness=1.0 under "
-               "FNV tonemapper; 1.0 = physically-pure; 0 = no moon-cloud illumination.");
-    RTX_OPTION("rtx.atmosphere", float, haloMoonBrightness, 5.0f,
+               "Default 2.0 = user-tested baseline for cloud silver-lining under FNV tonemapper "
+               "at m.brightness=1.0; 1.0 = physically-pure; 0 = no moon-cloud illumination. "
+               "Higher values produce a stronger silver-lining peak on the cloud directly in front "
+               "of the moon.");
+    RTX_OPTION("rtx.atmosphere", float, haloMoonBrightness, 15.0f,
                "Per-path stylistic multiplier on disk halo Gaussian glow. "
-               "Default 5.0 = matches pre-Phase-2 halo magnitude at m.brightness=1.0 under "
-               "FNV tonemapper; 1.0 = physically-pure; 0 = no halo.");
+               "Default 15.0 = user-tested baseline for visible halo glow under FNV tonemapper "
+               "at m.brightness=1.0; 1.0 = physically-pure; 0 = no halo.");
 
     // ----- Moon cloud-look + halo shape constants (fork, Phase 3 Task 2) -----
     // Tunable shape parameters for cloud-moon silver-lining contrast and halo glow.

@@ -466,26 +466,27 @@ namespace fork_hooks {
 
         RemixGui::DragFloat("Surface Brightness",
                             &RtxOptions::surfaceMoonBrightnessObject(),
-                            0.5f, 0.0f, 50.0f, "%.1f", sliderFlags);
+                            1.0f, 0.0f, 200.0f, "%.1f", sliderFlags);
         RemixGui::SetTooltipToLastWidgetOnHover(
             "Per-path stylistic multiplier on surface NEE (ground moonlight). "
-            "Default 8.0 = empirical visibility baseline under FNV tonemapper at "
-            "m.brightness=1.0. Set to 1.0 for physically-pure (very dim).");
+            "Default 50.0 = user-tested visibility baseline under FNV tonemapper "
+            "at m.brightness=1.0. Set to 1.0 for physically-pure (very dim).");
 
         RemixGui::DragFloat("Cloud Brightness",
                             &RtxOptions::cloudMoonBrightnessObject(),
-                            0.5f, 0.0f, 100.0f, "%.1f", sliderFlags);
+                            0.1f, 0.0f, 50.0f, "%.2f", sliderFlags);
         RemixGui::SetTooltipToLastWidgetOnHover(
             "Per-path stylistic multiplier on cloud-moon lighting (directional silver-"
-            "lining + ambient airglow). Default 24.0 = matches pre-Phase-2 silver-"
-            "lining magnitude at m.brightness=1.0. Set to 1.0 for physically-pure.");
+            "lining + ambient airglow). Default 2.0 = user-tested baseline at "
+            "m.brightness=1.0. Set to 1.0 for physically-pure; higher for stronger "
+            "silver-lining peak on the cloud directly in front of the moon.");
 
         RemixGui::DragFloat("Halo Brightness",
                             &RtxOptions::haloMoonBrightnessObject(),
-                            0.5f, 0.0f, 50.0f, "%.1f", sliderFlags);
+                            0.5f, 0.0f, 100.0f, "%.1f", sliderFlags);
         RemixGui::SetTooltipToLastWidgetOnHover(
             "Per-path stylistic multiplier on the disk halo Gaussian glow. "
-            "Default 5.0 = matches pre-Phase-2 halo magnitude at m.brightness=1.0. "
+            "Default 15.0 = user-tested baseline at m.brightness=1.0. "
             "Set to 1.0 for physically-pure.");
 
         if (ImGui::TreeNode("Cloud-Look & Halo Shape")) {
