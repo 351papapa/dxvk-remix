@@ -619,20 +619,20 @@ float sampleCloudSunTransmittance(vec3 cloudHitPos, vec3 sunDir,
   const float kStepKm = 0.8f;
   float opticalDepth = 0.0f;
 
-  // Channel y of the FAST sample — decorrelated from the view-march jitter
-  // (channel x) under spatial filtering. The +0.5 offset centers the two
-  // strata on [0.5, 1.5)*kStepKm and [1.5, 2.5)*kStepKm so the mean tap
-  // distances are 0.8 and 1.6 km — identical to the original deterministic
-  // taps in expectation, preserving the cloudDensity tuning that the old
-  // shadow march was calibrated against. Without this offset, jittered taps
-  // landed near s=0 (the cloud hit point itself) where density saturates,
-  // adding up to ~+1.0 to optical depth and producing 2-5× too-dark shadows
-  // at high cloudDensity — Beer-Lambert's exponential cliff makes that
-  // visible as crushed-black cloud bodies where they should read as bright.
-  float shadowJitter = fastJitter(pixelCoord, frameIdx).y;
-
+  // Shadow march intentionally deterministic. Earlier commits jittered the
+  // tap positions via fastJitter().y, but with only 2 taps the per-pixel
+  // variance in optical depth feeds Beer-Lambert's exp(-x) — a convex
+  // function — and Jensen's inequality (E[exp(-X)] > exp(-E[X])) biases the
+  // shadow estimate brighter than deterministic by an amount that scales
+  // with cloudDensity. At cloudDensity = 1 the bias is small; at the user's
+  // preferred cloudDensity = 2 it's large enough to wash out lit cumulus.
+  // The view-march jitter (channel x of the same fastJitter call) is fine
+  // because it accumulates linearly across many samples; only the shadow
+  // estimator's exponential nonlinearity creates this trap. The pixelCoord
+  // and frameIdx params are retained on the function signature for callers'
+  // convenience even though they go unused here.
   for (int i = 0; i < kTaps; ++i) {
-    vec3 p = cloudHitPos + sunDir * (kStepKm * (float(i) + 0.5f + shadowJitter));
+    vec3 p = cloudHitPos + sunDir * (kStepKm * float(i + 1));
     // Project to horizontal plane and compute heightFraction at the tap.
     // Taps that march above the slab top get hf=1 → bell→0 → density=0,
     // which is correct (no clouds outside the slab).
