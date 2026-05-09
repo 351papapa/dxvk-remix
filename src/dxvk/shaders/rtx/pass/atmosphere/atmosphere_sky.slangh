@@ -852,11 +852,12 @@ vec4 evalClouds(vec3 viewDir, AtmosphereArgs args, uint2 pixelCoord, uint frameI
   // Horizon fade applied uniformly per ray
   float horizonFade = smoothstep(0.02f, 0.15f, viewDir.y);
 
-  // Ray-march. Per-pixel hash jitter on the fractional step offset breaks
-  // the visible band-rings at low sample counts into noise that DLSS / temporal
-  // averaging blurs out — much cheaper than bumping cloudViewSamples.
+  // Ray-march. Per-pixel FAST-noise jitter on the fractional step offset breaks
+  // the visible band-rings into a blue-noise pattern that DLSS / temporal
+  // averaging converges cleanly. Channel x is the view march; channel y is
+  // reserved for sun-shadow tap jitter inside sampleCloudSunTransmittance.
   float stepLen = (tExit - tEntry) / float(args.cloudViewSamples);
-  float jitter = hash31(viewDir);  // [0, 1) per pixel
+  float jitter = fastJitter(pixelCoord, frameIdx).x;  // [0, 1) per pixel, FAST-noise stratified
   vec3 accumRadiance = vec3(0.0f);
   float transmittance = 1.0f;
 
