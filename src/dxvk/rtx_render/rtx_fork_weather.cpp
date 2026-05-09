@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <unordered_set>
 
@@ -112,6 +113,131 @@ namespace dxvk { namespace fork_weather { namespace {
     out.singleScatteringAlbedo                = lerpV3(a.singleScatteringAlbedo, b.singleScatteringAlbedo, t);
     out.volumetricAnisotropy                  = lerp(a.volumetricAnisotropy, b.volumetricAnisotropy, t);
     return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drift math — sum of incommensurate sines. Cheap, deterministic, smooth.
+  //
+  // driftNoise1D returns approximately [-1, 1] for any phase. Three inner
+  // periods (1.0, 1.527, 0.701) chosen so the sum doesn't repeat for many
+  // hours of phase advance.
+  //
+  // The two-layer model (fast 30s + slow 300s) is summed in
+  // driftOffsetForField with weights 0.4 / 0.6.
+  // ---------------------------------------------------------------------------
+
+  constexpr float kDriftFastPeriodSec = 30.0f;
+  constexpr float kDriftSlowPeriodSec = 300.0f;
+
+  float driftNoise1D(float phaseSeconds, float periodSeconds, float fieldSeed) {
+    constexpr float kTwoPi = 6.28318530718f;
+    const float p = phaseSeconds / periodSeconds;
+    return 0.50f * std::sin(kTwoPi * (p / 1.000f) + fieldSeed * 1.000f)
+         + 0.30f * std::sin(kTwoPi * (p / 1.527f) + fieldSeed * 1.731f)
+         + 0.20f * std::sin(kTwoPi * (p / 0.701f) + fieldSeed * 2.331f);
+  }
+
+  // Per-field two-layer drift offset, normalized to ~[-relativeAmp, +relativeAmp].
+  float driftOffsetForField(int fieldIndex, float phaseSeconds, float relativeAmp) {
+    constexpr float kFieldSeedStep = 0.6180f;  // golden-ratio-ish for low correlation
+    const float seedFast = static_cast<float>(fieldIndex) * kFieldSeedStep;
+    const float seedSlow = static_cast<float>(fieldIndex) * kFieldSeedStep + 100.0f;
+    const float nFast = driftNoise1D(phaseSeconds, kDriftFastPeriodSec, seedFast);
+    const float nSlow = driftNoise1D(phaseSeconds, kDriftSlowPeriodSec, seedSlow);
+    const float nTotal = 0.4f * nFast + 0.6f * nSlow;
+    return nTotal * relativeAmp;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drift field table — 9 of 29 WeatherSnapshot fields drift.
+  //
+  // Color, optical, sky/moon, atmosphere, volumetric, and noise-scale fields
+  // are intentionally excluded (drift would look sickly, break calibration,
+  // or re-tile the cloud field — see spec section "Drift fields").
+  //
+  // amplitudeMode:
+  //   Proportional — final delta is delta_table * intensity * field_value
+  //                  (relativeAmp interpreted as fraction of midpoint)
+  //   AbsoluteDeg  — final delta is delta_table * intensity, applied as
+  //                  degrees with modulo-360 wrap (used for cloudWindDirection)
+  //
+  // clampMin / clampMax: post-modulation clamp. -kInf / +kInf disables a side.
+  // ---------------------------------------------------------------------------
+
+  enum class DriftMode { Proportional, AbsoluteDeg };
+
+  struct DriftFieldEntry {
+    const char* name;          // diagnostic only
+    int         fieldIndex;    // unique per field, drives noise seed
+    DriftMode   mode;
+    float       relativeAmp;   // proportional: fraction; absolute: degrees
+    float       clampMin;
+    float       clampMax;
+    float (*getter)(const WeatherSnapshot& s);
+    void  (*setter)(WeatherSnapshot& s, float v);
+  };
+
+  // Per-field accessor pairs (one set per drifting field).
+  #define DRIFT_FIELD_ACCESSORS(field) \
+    [](const WeatherSnapshot& s) -> float { return s.field; }, \
+    [](WeatherSnapshot& s, float v)      { s.field = v; }
+
+  static const float kInf = std::numeric_limits<float>::infinity();
+
+  static const DriftFieldEntry kDriftTable[] = {
+    // name                    idx  mode                       relAmp   min     max
+    { "cloudCoverageMean",      0,   DriftMode::Proportional,   0.15f,   0.0f,   1.0f,    DRIFT_FIELD_ACCESSORS(cloudCoverageMean)   },
+    { "cloudCoverageSpread",    1,   DriftMode::Proportional,   0.25f,   0.0f,   1.0f,    DRIFT_FIELD_ACCESSORS(cloudCoverageSpread) },
+    { "cloudTypeMean",          2,   DriftMode::Proportional,   0.10f,   0.0f,   1.0f,    DRIFT_FIELD_ACCESSORS(cloudTypeMean)       },
+    { "cloudTypeSpread",        3,   DriftMode::Proportional,   0.20f,   0.0f,   1.0f,    DRIFT_FIELD_ACCESSORS(cloudTypeSpread)     },
+    { "cloudDensity",           4,   DriftMode::Proportional,   0.10f,   0.0f,   kInf,    DRIFT_FIELD_ACCESSORS(cloudDensity)        },
+    { "cloudThickness",         5,   DriftMode::Proportional,   0.08f,   0.0f,   kInf,    DRIFT_FIELD_ACCESSORS(cloudThickness)      },
+    { "cloudWindSpeed",         6,   DriftMode::Proportional,   0.30f,   0.0f,   kInf,    DRIFT_FIELD_ACCESSORS(cloudWindSpeed)      },
+    { "cloudWindDirection",     7,   DriftMode::AbsoluteDeg,   10.0f,   -kInf,  kInf,    DRIFT_FIELD_ACCESSORS(cloudWindDirection)  },
+    { "cloudAnvilBias",         8,   DriftMode::Proportional,   0.15f,   0.0f,   kInf,    DRIFT_FIELD_ACCESSORS(cloudAnvilBias)      },
+  };
+
+  static constexpr int kDriftFieldCount = static_cast<int>(sizeof(kDriftTable) / sizeof(kDriftTable[0]));
+  static_assert(kDriftFieldCount == 9, "Drift table must have exactly 9 entries (per spec)");
+
+  // ---------------------------------------------------------------------------
+  // applyDriftToSnapshot — mutate interp in place by adding per-field drift
+  // offsets. intensity scales the entire modulation; intensity == 0 short-
+  // circuits and leaves interp untouched.
+  // ---------------------------------------------------------------------------
+  void applyDriftToSnapshot(WeatherSnapshot& interp, float phaseSeconds, float intensity) {
+    if (intensity <= 0.0f) {
+      return;
+    }
+
+    for (int i = 0; i < kDriftFieldCount; ++i) {
+      const DriftFieldEntry& e = kDriftTable[i];
+      const float driftRaw = driftOffsetForField(e.fieldIndex, phaseSeconds, e.relativeAmp);
+      const float driftScaled = driftRaw * intensity;
+
+      const float v = e.getter(interp);
+      float vOut;
+      switch (e.mode) {
+        case DriftMode::Proportional:
+          vOut = v + driftScaled * v;
+          break;
+        case DriftMode::AbsoluteDeg: {
+          float w = std::fmod(v + driftScaled, 360.0f);
+          if (w < 0.0f) w += 360.0f;
+          vOut = w;
+          break;
+        }
+        default:
+          vOut = v;
+          break;
+      }
+
+      // Clamp (no-op when both ends are +/-kInf).
+      if (vOut < e.clampMin) vOut = e.clampMin;
+      if (vOut > e.clampMax) vOut = e.clampMax;
+
+      e.setter(interp, vOut);
+    }
   }
 
   // --- GameStateStore wrappers ---
