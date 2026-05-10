@@ -1,0 +1,96 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+
+/*
+ * Bindings for the cloud_shadow_map.comp.slang compute pass.
+ * Spec: docs/superpowers/specs/2026-05-09-cloud-shadow-map-design.md
+ *
+ * The shadow map dispatch uses its own minimal binding set:
+ *   - the R8 output texture
+ *   - the existing cloud-noise 3D SRV / sampler (read-only, shared with the
+ *     main atmosphere pipeline -- only the binding indices are reused, not
+ *     a full atmosphere_bindings.slangh include).
+ *   - a push constant carrying just the cloud-march subset of AtmosphereArgs
+ *     plus the per-dispatch shadow-map anchor.
+ *
+ * Keeping the binding surface tiny (vs. CONSTANT_BUFFER<AtmosphereArgs>) is
+ * deliberate: the bake doesn't need transmittance LUTs, sky-view LUT, fast
+ * noise, history textures, etc. and we don't want the dispatch to drag those
+ * descriptor slots into its layout.
+ */
+#pragma once
+
+#include "rtx/pass/common_binding_indices.h"
+
+// Output: the shadow map texture (R8 UNORM, written texel-by-texel).
+layout(binding = BINDING_CLOUD_SHADOW_MAP_OUTPUT, r8)
+RWTexture2D<float> CloudShadowMapOutput;
+
+// Input: the existing 3D cloud noise (sampled at each tap to evaluate density
+// via atmosphere_common::sampleCloudDensityTextured, which takes the texture
+// and sampler as parameters -- so we just reuse the indices here without
+// pulling in atmosphere_bindings.slangh).
+layout(binding = BINDING_ATMOSPHERE_CLOUD_NOISE_3D)
+Texture3D<float> AtmosphereCloudNoise3D;
+
+layout(binding = BINDING_ATMOSPHERE_CLOUD_NOISE_SAMPLER)
+SamplerState AtmosphereCloudNoise3DSampler;
+
+// Per-dispatch push constant: the cloud-march-relevant subset of
+// AtmosphereArgs (everything sampleCloudDensityTextured /
+// computeCloudHeightFraction / cloudPlanetRadius reach into) plus the
+// per-dispatch anchor (snapped origin in world space, texel size, resolution).
+//
+// Layout is hand-padded to 16-byte rows to keep std430 / Vulkan push-constant
+// alignment unambiguous. Total = 96 bytes (well under the 128 byte minimum
+// guaranteed push-constant range).
+struct CloudShadowMapPushArgs {
+  // ---- AtmosphereArgs subset for the cloud march ----
+  vec3  sunDirection;           // Y-up, normalized
+  float planetRadius;           // km, real planet radius (curvature-adjusted radius derived in shader)
+
+  float cloudAltitude;          // km, slab base altitude above sea level
+  float cloudThickness;         // km, slab vertical extent
+  float cloudCurvature;         // [0..1], dome tightness (0 = Earth-scale, 1 = tight dome)
+  float cloudDensity;           // overall density / opacity multiplier
+
+  float cloudCoverageMean;      // [0..1] mean coverage
+  float cloudCoverageSpread;    // [0..1] amplitude of coverage variation
+  float cloudCoverageNoiseScale;// region-size frequency for coverage noise
+  float cloudTypeMean;          // [0..1] mean type (0=stratus, 1=cumulus)
+
+  float cloudTypeSpread;        // [0..1] amplitude of type variation
+  float cloudTypeNoiseScale;    // region-size frequency for type noise
+  float cloudNoiseTileKm;       // world-space tile period for the 3D noise
+  float cloudAnvilBias;         // [0..1] cumulus top inflation strength
+
+  vec2  cloudWindOffset;        // accumulated wind UV offset (km), passed through to sampleCloudDensityTextured
+  vec2  mapOriginXZ;            // bottom-left world XZ corner of the map
+
+  float texelSize;              // world-space size of one texel (m or km depending on game unit; matches AtmosphereArgs.cloudShadowMapTexelSize)
+  uint  resolution;             // texture resolution (square; e.g. 512)
+  float pad0;
+  float pad1;
+};
+
+layout(push_constant)
+ConstantBuffer<CloudShadowMapPushArgs> cb;
