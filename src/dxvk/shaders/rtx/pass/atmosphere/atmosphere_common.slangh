@@ -635,25 +635,20 @@ float evalCloudGroundShadow(vec3 sunDir, AtmosphereArgs args) {
     return 1.0f;  // Sun direction doesn't pierce the cloud layer (below horizon etc.)
   }
 
-  // Compute local type and coverage at the cloud-hit point. Independent
-  // smoothNoise2D evals with separate seeds so the two fields are
-  // spatially decorrelated (Nubis weather-texture style).
+  // Drive the shadow magnitude from coverageLocal (weather-anchored coverage
+  // with spatial noise jitter) rather than a per-voxel 3D-texture density
+  // sample at the single sun-direction hit point. The single-point sample
+  // made the shadow depth a lottery — a sparse noise spot at the hit
+  // returned near-zero density even when the camera was under thick
+  // overcast, so cloudShadowStrength had little visible effect. coverageLocal
+  // is anchored to args.cloudCoverageMean (the weather preset's overall
+  // coverage) and modulated by smooth 2D noise, so the shadow scales with
+  // how cloudy the sky actually is and still drifts smoothly with wind.
   vec2 hitXZ = vec2(hitPos.x, hitPos.z);
-  float typeNoise     = smoothNoise2D(hitXZ * args.cloudTypeNoiseScale,     200.0f);
   float coverageNoise = smoothNoise2D(hitXZ * args.cloudCoverageNoiseScale, 250.0f);
-  float typeLocal     = saturate(args.cloudTypeMean     + (typeNoise     - 0.5f) * args.cloudTypeSpread);
   float coverageLocal = saturate(args.cloudCoverageMean + (coverageNoise - 0.5f) * args.cloudCoverageSpread);
 
-  // Sample at the type-aware peak height of the bell, not mid-slab. The
-  // cloudTypeProfile plateau midpoint slides as plateau widens with type:
-  // riseEnd = 0.10 + 0.10*type, fallStart = 0.20 + 0.55*type
-  // → midpoint = 0.15 + 0.325*type (stratus 0.15, stratocumulus 0.31, cumulus 0.475).
-  // Sampling at any hf in the plateau gives profile=1.0; midpoint is the
-  // most conservative choice given the noise sampling jitter at the call site.
-  float hfPeak = 0.15f + 0.325f * typeLocal;
-  float density = sampleCloudDensityTextured(hitPos, hfPeak, typeLocal, coverageLocal, args,
-                                              AtmosphereCloudNoise3D, AtmosphereCloudNoise3DSampler);
-  float transmittance = exp(-density * args.cloudDensity * 2.0f);
+  float transmittance = exp(-coverageLocal * args.cloudDensity * 4.0f);
 
   return mix(1.0f, transmittance, args.cloudShadowStrength);
 #endif
