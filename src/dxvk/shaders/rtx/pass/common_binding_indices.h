@@ -66,6 +66,20 @@
 // the raw cloud value.
 #define BINDING_ATMOSPHERE_CLOUD_HISTORY_PREV    206
 #define BINDING_ATMOSPHERE_CLOUD_HISTORY_CURR    207
+// Cloud history frame-id ping-pong (fork). R16_UINT screen-space pair carrying
+// the frame index at which each pixel of the cloud-history color buffer was
+// last written by the sky-miss path. Read at lookup time and compared against
+// `(frameIdx - 1) & 0xFFFF` to reject stale history at pixels that were
+// foreground-occluded last frame (their color slot retains pre-occlusion
+// values because the sky-miss path didn't run there to refresh them). Without
+// this, the temporal smoother's existing alpha-only disocclusion guard mis-
+// identifies stale-but-nonzero history as valid and produces ~30-frame bright
+// ghost trails when foreground geometry moves through bright sky / emissives.
+// Clear value 0xFFFF is a "never written" sentinel; the only frame-id
+// collision is once every ~18 minutes at 60fps when frameIdx wraps to
+// 0xFFFF — a single rejected blend at affected pixels, imperceptible.
+#define BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_PREV 212
+#define BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_CURR 213
 // Cloud-occluded sky-ambient transmittance LUT (fork). 2D (azimuth, elevation)
 // R16F texture baked per frame from camera position: for each direction, marches
 // the cloud slab and stores the directional cloud transmittance in [0, 1].
@@ -142,6 +156,8 @@
   TEXTURE2DARRAY(BINDING_ATMOSPHERE_FAST_NOISE)                     \
   TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_HISTORY_PREV)                  \
   RW_TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_HISTORY_CURR)                \
+  TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_PREV)          \
+  RW_TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_CURR)       \
   TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_SKY_TRANSMITTANCE_LUT)          \
   TEXTURE2D(BINDING_ATMOSPHERE_CLOUD_RENDER_RT)                     \
   TEXTURE3D(BINDING_ATMOSPHERE_CLOUD_D_SUN)                         \

@@ -243,6 +243,18 @@ namespace fork_hooks {
       if (cloudCurr.isValid()) {
         ctx.bindResourceView(BINDING_ATMOSPHERE_CLOUD_HISTORY_CURR, cloudCurr.view, nullptr);
       }
+
+      // R16_UINT frame-id companion (fork — 2026-05-13). Same lifecycle as the
+      // color pair; carries last-refresh frame index per pixel so the shader's
+      // age check can reject stale history at foreground-occluded slots.
+      auto cloudFrameIdPrev = ctx.m_atmosphere->getPreviousCloudHistoryFrameId();
+      auto cloudFrameIdCurr = ctx.m_atmosphere->getCurrentCloudHistoryFrameId();
+      if (cloudFrameIdPrev.isValid()) {
+        ctx.bindResourceView(BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_PREV, cloudFrameIdPrev.view, nullptr);
+      }
+      if (cloudFrameIdCurr.isValid()) {
+        ctx.bindResourceView(BINDING_ATMOSPHERE_CLOUD_HISTORY_FRAME_ID_CURR, cloudFrameIdCurr.view, nullptr);
+      }
     }
 
     // Bind a linear/REPEAT sampler for the cloud noise volume.

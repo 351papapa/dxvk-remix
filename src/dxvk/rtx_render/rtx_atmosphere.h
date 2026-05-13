@@ -202,6 +202,21 @@ public:
   const Resources::Resource& getPreviousCloudHistory() const { return m_cloudHistory[m_cloudHistorySwap ? 0u : 1u]; }
 
   /**
+   * \brief Get the current frame's cloud-history frame-id buffer (write target this frame).
+   *
+   * R16_UINT companion to getCurrentCloudHistory; carries the frame index at
+   * which each pixel was last written by the sky-miss path. Read at lookup
+   * time by evalSkyRadiance to reject stale history at foreground-occluded
+   * pixels.
+   */
+  const Resources::Resource& getCurrentCloudHistoryFrameId() const { return m_cloudHistoryFrameId[m_cloudHistorySwap ? 1u : 0u]; }
+
+  /**
+   * \brief Get the previous frame's cloud-history frame-id buffer (read source this frame).
+   */
+  const Resources::Resource& getPreviousCloudHistoryFrameId() const { return m_cloudHistoryFrameId[m_cloudHistorySwap ? 0u : 1u]; }
+
+  /**
    * \brief Get current atmosphere parameters
    */
   AtmosphereArgs getAtmosphereArgs() const;
@@ -294,6 +309,16 @@ private:
   // is the WRITE target (this frame's accumulator), getPreviousCloudHistory
   // is the READ source (last frame's accumulator).
   Resources::Resource m_cloudHistory[2];
+  // R16_UINT companion ping-pong (fork — 2026-05-13) carrying the frame index
+  // at which each pixel of m_cloudHistory was last refreshed by the sky-miss
+  // path. Read by evalSkyRadiance's age-check disocclusion guard to reject
+  // stale history at pixels that were foreground-occluded last frame (their
+  // m_cloudHistory slot retains pre-occlusion radiance because nothing
+  // refreshes it). Without this, the alpha-only guard misidentifies stale
+  // bright values as valid history and produces ~30-frame ghost trails.
+  // Same extent/lifecycle as m_cloudHistory; cleared to 0xFFFF "never written"
+  // sentinel at allocation.
+  Resources::Resource m_cloudHistoryFrameId[2];
   VkExtent3D          m_cloudHistoryExtent = { 0u, 0u, 0u };
   bool                m_cloudHistorySwap = false;
   // Frame ID at which the swap last advanced. UINT32_MAX is a sentinel meaning

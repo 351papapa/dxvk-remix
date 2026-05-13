@@ -1134,6 +1134,36 @@ void RtxAtmosphere::ensureCloudHistoryResources(Rc<DxvkContext> ctx, const VkExt
     );
   }
 
+  // R16_UINT companion ping-pong (fork — 2026-05-13). Holds the frame index
+  // (mod 0x10000) at which each pixel of the color ping-pong was last
+  // refreshed by the sky-miss path. Cleared to 0xFFFF "never written" so the
+  // shader's age check rejects history at pixels that have never been
+  // written by the smoother (including foreground-occluded ones whose color
+  // slot retains pre-occlusion radiance). Drives the disocclusion fix for
+  // the bright-trail ghosting under the 2026-05-13 Nubis Cubed work — see
+  // atmosphere_sky.slangh's age-channel comment block for the mechanism.
+  VkClearColorValue frameIdClearValue{};
+  frameIdClearValue.uint32[0] = 0xFFFFu;
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    const char* frameIdNames[2] = {
+      "Atmosphere Cloud History Frame ID 0",
+      "Atmosphere Cloud History Frame ID 1",
+    };
+    m_cloudHistoryFrameId[i] = Resources::createImageResource(
+      ctx,
+      frameIdNames[i],
+      extent,
+      VK_FORMAT_R16_UINT,
+      1, // numLayers
+      VK_IMAGE_TYPE_2D,
+      VK_IMAGE_VIEW_TYPE_2D,
+      0, // imageCreateFlags
+      VK_IMAGE_USAGE_STORAGE_BIT, // extraUsageFlags
+      frameIdClearValue,
+      1 // mipLevels
+    );
+  }
+
   m_cloudHistoryExtent = extent;
 }
 
