@@ -2035,10 +2035,15 @@ bool intersectCloudSlabBottomFromBelow(vec3 originYUp, vec3 dirYUp,
 // worldPos is in engine-native game units (the same frame the G-buffer
 // MinimalSurfaceInteraction::position exposes). sunDir is unitless. The
 // helper converts game-units → km internally via args.worldUnitsPerKm
-// (populated CPU-side from RtxOptions::sceneScale) and re-expresses the
-// surface position camera-relative for the voxel-grid UVW lookup (the
-// grid is camera-centered with horizontal tile-wrap; see
-// cloudVoxelWorldToUVW above).
+// (populated CPU-side from RtxOptions::sceneScale) and passes the
+// world-absolute km position straight through cloudVoxelWorldToUVW. The
+// voxel grid is WORLD-ANCHORED at the [-halfExtent, +halfExtent] box, and
+// cloudVoxelWorldToUVW frac()-wraps horizontally so the cloud-noise
+// tile-period (12 km default, == cloudVoxelGridExtentKm) maps to one tile
+// of the grid. args.cameraWorldPosYUpKm is kept in the args struct for
+// future use (e.g. a camera-centered bake variant in a follow-up) but is
+// NOT subtracted here — doing so produced uniform-shadow degenerate lookups
+// against the world-anchored bake (caught during the C6 visual gate).
 float sampleCloudGroundShadow_OptionB_impl(vec3 worldPos, vec3 sunDir,
                                             AtmosphereArgs args, bool isZUp,
                                             Texture3D<float> dSunTex,
@@ -2076,13 +2081,17 @@ float sampleCloudGroundShadow_OptionB_impl(vec3 worldPos, vec3 sunDir,
   }
   const vec3 cloudEntryPosKm = worldPosKm + tToEntry * sunDirYUp;
 
-  // Sample D_sun at the slab-entry voxel. cloudVoxelWorldToUVW expects
-  // a camera-centered Y-up km position because the voxel grid was baked
-  // camera-centered (see cloudVoxelUVWToWorld). Subtract the camera world
-  // position (also Y-up km) to obtain the camera-relative coordinate; the
-  // frac() inside cloudVoxelWorldToUVW then tile-wraps the horizontal axes.
-  const vec3 cloudEntryCamRelKm = cloudEntryPosKm - args.cameraWorldPosYUpKm;
-  const vec3 uvw = cloudVoxelWorldToUVW(cloudEntryCamRelKm, args, /*isZUp=*/false);
+  // Sample D_sun at the slab-entry voxel. The bake (cloud_sun_density_grid)
+  // is WORLD-ANCHORED — cloudVoxelUVWToWorld returns positions in the box
+  // [-halfExtent, +halfExtent] without a camera offset, and the bake samples
+  // cloud noise at those world-absolute positions. The cloud noise is
+  // procedurally tile-periodic at cloudNoiseTileKm == cloudVoxelGridExtentKm
+  // (12 km default), so one period of noise == one tile of grid. Passing
+  // world-absolute cloudEntryPosKm directly through cloudVoxelWorldToUVW
+  // (which frac()-wraps internally) matches the bake's convention.
+  // Do NOT subtract args.cameraWorldPosYUpKm here — that would alias against
+  // the world-anchored bake and produce a uniform-shadow degenerate lookup.
+  const vec3 uvw = cloudVoxelWorldToUVW(cloudEntryPosKm, args, /*isZUp=*/false);
   const float opticalDepth = dSunTex.SampleLevel(dSunSampler, uvw, 0).r;
 
   // Beer-Lambert to transmittance.
