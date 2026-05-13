@@ -179,21 +179,23 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
   float stepLen = (tExit - tEntry) / float(sampleCount);
 
   // ===== Per-ray lighting source radiances =====
-  // sunRadiance: the existing sunIlluminance (user-tuned intensity, with
-  // Rayleigh extinction applied — warm at low sun, white at high sun).
+  // sunRadiance: args.sunIlluminance is raw user-tuned color (near-white in
+  // FNV defaults) -- atmospheric extinction along the sun ray is NOT applied
+  // CPU-side. We mirror the legacy evalClouds path's `airTrans` step here so
+  // the direct term picks up the warm-orange Rayleigh shift at low sun
+  // elevation. Without this, result.direct stays white while result.ambient
+  // (from the sky-view LUT) reads orange, producing a per-pixel hue mismatch
+  // that varies with cloudPhaseG2 -- the bug the C6.4 diagnosis caught.
   //
   // skyRadiance: sampled from the sky-view LUT at the sun direction (clamped
   // to a hair above horizon so we don't return zero at exactly-on-horizon sun).
-  // This is a deliberate deviation from page-142's "zenith ambient" — zenith
-  // at sunset is bluer than the horizon, so sampling there would tint sunset
-  // cumulus bulk blue. Sampling at the sun direction gives the actual warm-
-  // orange forward-scatter atmosphere color that makes sunset cumulus glow
-  // in the paper's pp. 122/132/171-173 renders. Cloud occlusion is folded
-  // in via the existing cloud-sky-transmittance LUT (so heavily overcast
-  // pixels darken the ambient further). At noon, sun is near zenith, so
-  // this collapses to the page-142 zenith sample anyway.
+  // Deliberate deviation from page-142's "zenith ambient" -- zenith at sunset
+  // is bluer than horizon, so sampling there would tint sunset cumulus bulk
+  // blue. Sampling at the sun direction gives the actual warm-orange forward-
+  // scatter atmosphere color matching the paper's pp. 122/132/171-173 renders.
   vec3 sunDirYUp = normalize(args.sunDirection);
-  vec3 sunRadiance = args.sunIlluminance;
+  vec3 airTrans = getAtmosphericTransmittanceForDir(sunDirYUp, args);
+  vec3 sunRadiance = args.sunIlluminance * airTrans;
 
   vec3 sunDirForAmbient = sunDirYUp;
   sunDirForAmbient.y = max(sunDirForAmbient.y, 0.05f);
