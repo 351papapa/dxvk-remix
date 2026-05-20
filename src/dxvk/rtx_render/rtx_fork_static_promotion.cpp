@@ -71,6 +71,94 @@ namespace dxvk {
     }
   } // namespace static_promotion
 
+  static static_promotion::StaticPromotionPool s_pool;
+
+  namespace static_promotion {
+    StaticPromotionPool& getPool() { return s_pool; }
+
+    PersistentBlasBucket& StaticPromotionPool::addInstance(uint64_t bucketKeyHash, RtInstance* instance, uint32_t currentFrame) {
+      auto it = m_instanceToBucket.find(instance);
+      if (it != m_instanceToBucket.end()) {
+        if (it->second == bucketKeyHash) {
+          auto& b = m_buckets[bucketKeyHash];
+          b.lastTouchedFrame = currentFrame;
+          return b;
+        }
+        removeInstance(instance);
+      }
+
+      auto& bucket = m_buckets[bucketKeyHash];
+      bucket.bucketKeyHash = bucketKeyHash;
+      bucket.members.push_back(instance);
+      bucket.dirty = true;
+      bucket.lastTouchedFrame = currentFrame;
+      m_instanceToBucket[instance] = bucketKeyHash;
+      return bucket;
+    }
+
+    void StaticPromotionPool::removeInstance(RtInstance* instance) {
+      auto it = m_instanceToBucket.find(instance);
+      if (it == m_instanceToBucket.end()) return;
+      const uint64_t keyHash = it->second;
+      auto bucketIt = m_buckets.find(keyHash);
+      if (bucketIt != m_buckets.end()) {
+        auto& members = bucketIt->second.members;
+        members.erase(std::remove(members.begin(), members.end(), instance), members.end());
+        bucketIt->second.dirty = true;
+        if (members.empty()) {
+          m_totalBytes -= bucketIt->second.blasBytes;
+          m_buckets.erase(bucketIt);
+        }
+      }
+      m_instanceToBucket.erase(it);
+    }
+
+    PersistentBlasBucket* StaticPromotionPool::findBucketFor(RtInstance* instance) {
+      auto it = m_instanceToBucket.find(instance);
+      if (it == m_instanceToBucket.end()) return nullptr;
+      auto bucketIt = m_buckets.find(it->second);
+      return (bucketIt == m_buckets.end()) ? nullptr : &bucketIt->second;
+    }
+
+    void StaticPromotionPool::touchAll(uint32_t currentFrame) {
+      for (auto& [k, b] : m_buckets) b.lastTouchedFrame = currentFrame;
+    }
+
+    void StaticPromotionPool::setBucketBytes(uint64_t bucketKeyHash, uint64_t bytes) {
+      auto it = m_buckets.find(bucketKeyHash);
+      if (it == m_buckets.end()) return;
+      m_totalBytes -= it->second.blasBytes;
+      it->second.blasBytes = bytes;
+      m_totalBytes += bytes;
+    }
+
+    uint32_t StaticPromotionPool::evictLeastRecentlyUsed() {
+      if (m_buckets.empty()) return 0;
+      auto victim = m_buckets.begin();
+      for (auto it = m_buckets.begin(); it != m_buckets.end(); ++it) {
+        if (it->second.lastTouchedFrame < victim->second.lastTouchedFrame) {
+          victim = it;
+        }
+      }
+      const uint32_t demoted = static_cast<uint32_t>(victim->second.members.size());
+      for (RtInstance* inst : victim->second.members) {
+        m_instanceToBucket.erase(inst);
+      }
+      m_totalBytes -= victim->second.blasBytes;
+      m_buckets.erase(victim);
+      return demoted;
+    }
+
+    uint32_t StaticPromotionPool::enforceMemoryBudget(uint64_t budgetBytes) {
+      uint32_t evictions = 0;
+      while (m_totalBytes > budgetBytes && !m_buckets.empty()) {
+        evictLeastRecentlyUsed();
+        ++evictions;
+      }
+      return evictions;
+    }
+  } // namespace static_promotion
+
   namespace {
     // Element-wise abs-diff comparison of two VkTransformMatrixKHR matrices under
     // the user-configured epsilon. Returns true if every element is within

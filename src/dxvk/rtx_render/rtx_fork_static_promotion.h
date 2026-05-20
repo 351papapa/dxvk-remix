@@ -83,5 +83,68 @@ namespace dxvk {
 
     // Accessor for the latest-completed frame's counters.
     const PromotionFrameCounters& getFrameCounters();
+
+    // A persistent merged-BLAS bucket. Long-lived analog of AccelManager::BlasBucket:
+    // groups instances by BlasBucketKey, holds a PooledBlas that survives across
+    // frames until membership changes.
+    struct PersistentBlasBucket {
+      uint64_t bucketKeyHash = 0;       // hashBucketKeyFields() — bucket identity
+      std::vector<RtInstance*> members; // current member set
+      uint64_t blasBytes = 0;           // tracked for memory budget
+      uint32_t lastTouchedFrame = 0;    // updated each frame the bucket is rendered
+      bool dirty = true;                // true if members have changed since last BLAS build
+      // PooledBlas binding happens in StaticPromotionPool::ensureBlasBuilt (Task 5).
+    };
+
+    // Owns the set of persistent buckets, the bucket lookup map, and the LRU
+    // eviction policy. All access is single-threaded (called from the merge pass
+    // which is itself single-threaded).
+    class StaticPromotionPool {
+    public:
+      // Adds an instance to a bucket keyed by the given hash. Creates the bucket
+      // if it does not exist. Returns the bucket the instance now belongs to.
+      PersistentBlasBucket& addInstance(uint64_t bucketKeyHash, RtInstance* instance, uint32_t currentFrame);
+
+      // Removes an instance from its bucket (if any). Marks the bucket dirty.
+      // If the bucket is left empty, releases the bucket.
+      void removeInstance(RtInstance* instance);
+
+      // Returns the bucket the instance is currently a member of, or nullptr.
+      PersistentBlasBucket* findBucketFor(RtInstance* instance);
+
+      // Touches every bucket's lastTouchedFrame to currentFrame. Called from the
+      // fast-skip path to keep recency information accurate.
+      void touchAll(uint32_t currentFrame);
+
+      // Returns the total bytes currently held by persistent BLASes.
+      uint64_t getTotalBytes() const { return m_totalBytes; }
+
+      // Evicts the least-recently-touched bucket. Returns the number of members
+      // demoted. Called by enforceMemoryBudget when the budget is exceeded.
+      uint32_t evictLeastRecentlyUsed();
+
+      // Drives eviction until total bytes <= budgetBytes. Returns the number of
+      // buckets evicted.
+      uint32_t enforceMemoryBudget(uint64_t budgetBytes);
+
+      // Diagnostic accessors used by the ImGui panel and unit tests.
+      size_t getBucketCount() const { return m_buckets.size(); }
+      size_t getTotalMembers() const {
+        size_t n = 0;
+        for (const auto& [k, b] : m_buckets) n += b.members.size();
+        return n;
+      }
+
+      // For tests: register a bucket's BLAS size so the LRU policy has bytes to
+      // account against. In production this is called when a BLAS is built.
+      void setBucketBytes(uint64_t bucketKeyHash, uint64_t bytes);
+
+    private:
+      std::unordered_map<uint64_t, PersistentBlasBucket> m_buckets;
+      std::unordered_map<RtInstance*, uint64_t> m_instanceToBucket;
+      uint64_t m_totalBytes = 0;
+    };
+
+    StaticPromotionPool& getPool();
   } // namespace static_promotion
 } // namespace dxvk
