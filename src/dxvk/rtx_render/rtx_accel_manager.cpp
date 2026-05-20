@@ -444,6 +444,11 @@ namespace dxvk {
         for (auto& dynBlas : m_activeDynamicBlases) {
           dynBlas->frameLastTouched = currentFrame;
         }
+        // Persistent static promotion: stamp recency on every persistent
+        // bucket so the LRU policy does not collect them while the scene is
+        // unchanged. No-op when the feature is disabled. Implementation in
+        // rtx_fork_static_promotion.cpp.
+        fork_hooks::touchPersistentBlasesForFastSkip(*this, currentFrame);
         // Reassign surface indices (cleared by InstanceManager::resetSurfaceIndices at frame end)
         for (uint32_t i = 0; i < m_reorderedSurfaces.size(); ++i) {
           m_reorderedSurfaces[i]->setSurfaceIndex(i);
@@ -632,6 +637,16 @@ namespace dxvk {
       // Find the blas entry for this instance early so we can check the dynamic/merged cache.
       BlasEntry* blasEntry = instance->getBlas();
       assert(blasEntry);
+
+      // Persistent static promotion: hand this instance to the persistent
+      // merged-BLAS tier when stable + eligible. When the hook returns true
+      // the instance has been claimed by the persistent pool and must skip
+      // the normal merged/dynamic routing for this frame (the actual TLAS
+      // instance emission for persistent buckets lands in Task 6). No-op
+      // when the feature is disabled.
+      if (fork_hooks::tryRouteToPersistentBucket(*this, instance, currentFrame)) {
+        continue;
+      }
 
       // On the incremental path, skip instances that belong to a clean cached bucket.
       // Their surfaces and TLAS instances will be restored from cache after the loop.

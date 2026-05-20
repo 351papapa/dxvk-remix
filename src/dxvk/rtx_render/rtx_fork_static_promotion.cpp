@@ -174,6 +174,38 @@ namespace dxvk {
       return true;
     }
 
+    // Returns true iff the instance is structurally eligible for persistent
+    // promotion. Mirrors the routing exclusions enumerated in the design spec
+    // (skinned, point-instancer, ViewModel reference, particles / beams /
+    // world-UI / world-matte / animated-water / hidden / anti-cull-ignore /
+    // third-person player, oversize meshes already optimal as own-BLAS dynamic).
+    bool isEligibleForPromotion(const RtInstance* inst, const BlasEntry* blas) {
+      if (!inst || !blas) {
+        return false;
+      }
+      if (blas->input.getSkinningState().numBones != 0) {
+        return false;
+      }
+      if (inst->surface.instancesToObject != nullptr) {
+        return false;
+      }
+      if (inst->isViewModelReference()) {
+        return false;
+      }
+      using IC = InstanceCategories;
+      if (inst->testCategoryFlags(IC::Particle, IC::Beam, IC::WorldUI, IC::WorldMatte,
+                                  IC::AnimatedWater, IC::Hidden, IC::IgnoreAntiCulling,
+                                  IC::ThirdPersonPlayerModel)) {
+        return false;
+      }
+      // Skip oversize meshes; they're already optimal as own-BLAS dynamic.
+      const uint32_t blasPrims = blas->modifiedGeometryData.calculatePrimitiveCount();
+      if (blasPrims > RtxForkStaticPromotion::maxPrimsInPersistentBLAS()) {
+        return false;
+      }
+      return true;
+    }
+
     // Computes a stable hash of the bucket-key-relevant fields of an RtInstance.
     // Mirrors BlasBucketKey but reads directly from the live VkInstance and the
     // two boolean flags the bucket key tracks.
@@ -254,11 +286,84 @@ namespace dxvk {
       }
     }
 
-    bool tryRouteToPersistentBucket(AccelManager& /*mgr*/, RtInstance* /*instance*/, uint32_t /*currentFrame*/) {
-      return false;
+    bool tryRouteToPersistentBucket(AccelManager& /*mgr*/, RtInstance* instance, uint32_t currentFrame) {
+      if (!RtxForkStaticPromotion::enableStaticGeometryPromotion() || !instance) {
+        return false;
+      }
+
+      using namespace static_promotion;
+      StaticPromotionPool& pool = getPool();
+
+      BlasEntry* blas = instance->getBlas();
+      if (!blas) {
+        return false;
+      }
+
+      // Member check: if the instance is already in a persistent bucket, decide
+      // whether to keep it (all counters still > 0) or demote it (any counter
+      // reset since promotion).
+      //
+      // ViewModel persistence note: RtInstance::updateFromReference calls
+      // copyInstanceDataFrom which intentionally leaves the m_*StableFrames
+      // fields untouched. ViewModel reference instances are excluded from
+      // promotion by isEligibleForPromotion() below, so the cross-frame
+      // counter survival cannot turn into a stale persistent membership.
+      // If future changes route persistent ViewModel-reference instances
+      // here, add a resetStabilityCounters() call inside copyInstanceDataFrom.
+      if (PersistentBlasBucket* existing = pool.findBucketFor(instance)) {
+        const bool stillStable =
+          instance->getGeometryStableFrames() > 0 &&
+          instance->getTransformStableFrames() > 0 &&
+          instance->getMaterialStableFrames() > 0;
+        if (!stillStable) {
+          pool.removeInstance(instance);
+          ++s_frameCounters.demotedThisFrame;
+          return false; // fall through to ephemeral routing
+        }
+        existing->lastTouchedFrame = currentFrame;
+        ++s_frameCounters.tlasPersistent;
+        return true;
+      }
+
+      // Not yet promoted — check the K-frame stability threshold.
+      const uint32_t K = RtxForkStaticPromotion::staticGeometryPromotionFrames();
+      const uint32_t minStable = std::min({
+        instance->getGeometryStableFrames(),
+        instance->getTransformStableFrames(),
+        instance->getMaterialStableFrames()
+      });
+      if (minStable < K) {
+        return false;
+      }
+      if (!isEligibleForPromotion(instance, blas)) {
+        return false;
+      }
+
+      // Promote: compute the bucket key, route the instance into the pool.
+      const uint64_t keyHash = hashBucketKeyFields(
+        instance->getVkInstance(),
+        instance->isSubsurface(),
+        instance->usesUnorderedApproximations());
+      pool.addInstance(keyHash, instance, currentFrame);
+      ++s_frameCounters.promotedThisFrame;
+      ++s_frameCounters.tlasPersistent;
+      // NOTE: this instance has been claimed by the persistent tier but the
+      // actual persistent BLAS build + TLAS instance emission lands in Task 6
+      // (emitPersistentTlasInstances). For now the caller's `continue` is the
+      // promotion's only externally-visible effect: the instance is dropped
+      // from the per-frame merged routing pass, so it will not appear in the
+      // TLAS until the BLAS-build path lands. This is gated behind
+      // enableStaticGeometryPromotion (default false) so production builds
+      // are unaffected.
+      return true;
     }
 
-    void touchPersistentBlasesForFastSkip(AccelManager& /*mgr*/, uint32_t /*currentFrame*/) {}
+    void touchPersistentBlasesForFastSkip(AccelManager& /*mgr*/, uint32_t currentFrame) {
+      if (!RtxForkStaticPromotion::enableStaticGeometryPromotion()) {
+        return;
+      }
+      static_promotion::getPool().touchAll(currentFrame);
+    }
 
     void onInstanceRemoved(RtInstance* /*instance*/) {}
 

@@ -305,6 +305,22 @@ initializer list and can't be lifted into a separate TU.
 
 ---
 
+## src/dxvk/rtx_render/rtx_accel_manager.h
+
+**Category:** index-only
+
+- **Inline tweak** at the top of the `dxvk` namespace block + the `AccelManager`
+  class body (~10 LOC, added 2026-05-20) — forward-declares the two static-promotion
+  routing hooks (`tryRouteToPersistentBucket`, `touchPersistentBlasesForFastSkip`)
+  inside `namespace fork_hooks` and grants them `friend` access on `AccelManager`.
+  Required so the bodies in `rtx_fork_static_promotion.cpp` can peek at
+  `m_blasPool` / `m_mergedInstances` / `m_activeDynamicBlases` when emitting
+  persistent TLAS instances. The third hook (`emitPersistentTlasInstances`,
+  which actually builds persistent BLASes and appends TLAS instances) lands
+  in Task 6 along with its own friend declaration.
+
+---
+
 ## src/dxvk/rtx_render/rtx_accel_manager.cpp
 
 **Category:** index-only
@@ -312,6 +328,23 @@ initializer list and can't be lifted into a separate TU.
 - **Hook** at `AccelManager::mergeInstancesIntoBlas` (one-line dispatch, +1 LOC) —
   calls `fork_hooks::tickStabilityCounters` once per frame after instance table
   finalization. Adds `#include "rtx_fork_hooks.h"`. Implementation in
+  `rtx_fork_static_promotion.cpp`.
+
+- **Hook** at `AccelManager::mergeInstancesIntoBlas` full-skip fast path (one-line
+  dispatch + ~4 LOC comment, added 2026-05-20) — calls
+  `fork_hooks::touchPersistentBlasesForFastSkip` immediately after the existing
+  `m_blasPool` / `m_activeDynamicBlases` recency loops so persistent buckets get
+  the same GC-safe recency stamp on no-op frames. No-op when the feature is
+  disabled. Implementation in `rtx_fork_static_promotion.cpp`.
+
+- **Hook** at `AccelManager::mergeInstancesIntoBlas` per-instance loop (one-line
+  dispatch + ~6 LOC comment, added 2026-05-20) — calls
+  `fork_hooks::tryRouteToPersistentBucket` directly after the
+  `BlasEntry* blasEntry = instance->getBlas(); assert(blasEntry);` block and
+  before the clean-cached-bucket shortcut. On return-true the per-instance
+  routing `continue`s, dropping the instance from the per-frame merged /
+  dynamic pipeline (the persistent BLAS-build + TLAS-emit hook lands in
+  Task 6). No-op when the feature is disabled. Implementation in
   `rtx_fork_static_promotion.cpp`.
 
 ---
