@@ -1239,7 +1239,7 @@ namespace dxvk {
 
     // ----- Night-sky shading (fork) -----
     // Stars, Milky Way, shooting stars, airglow. Active when skyMode == PhysicalAtmosphere.
-    RTX_OPTION("rtx.atmosphere", float, starBrightness, 1.0f,
+    RTX_OPTION("rtx.atmosphere", float, starBrightness, 0.5f,
                "Overall brightness multiplier for stars. Game-drivable per-frame (plugins can fade stars in/out around sunset/sunrise); persists when saved unless overridden by a runtime push.");
     RTX_OPTION("rtx.atmosphere", float, starDensity, 0.5f,
                "Star density on a linear-feel slider: 0 = no stars, 1 = maximum stars. Internally "
@@ -1299,7 +1299,7 @@ namespace dxvk {
                "T^2.5, well below cloud body brightness at typical T<0.1 cores while leaving "
                "clear sky (T=1) unaffected. Lower = stars survive thicker clouds; 1.0 = no "
                "extra extinction (pure standard composite).");
-    RTX_OPTION("rtx.atmosphere", float, starAmbientCouplingStrength, 0.01f,
+    RTX_OPTION("rtx.atmosphere", float, starAmbientCouplingStrength, 0.005f,
                "Coupling strength of starlight/airglow into the cloud-march nightLight term. "
                "Adds a faint per-ray ambient based on (nightSkyColor * starBrightness * this) "
                "so cloud bodies lift slightly under starry skies, the same way moon-zenith "
