@@ -72,6 +72,14 @@ groupshared float g_count[EXPOSURE_HISTOGRAM_SIZE];
 //   exposure = targetAdaptedYf / (Y_adapt + Y_noise)
 // With Y_noise = 0.0032 (~mid-mesopic), max boost ~= targetAdaptedYf/0.0032.
 // Reference: Stockman & Brainard (2010), "Color Vision Mechanisms".
+//
+// adaptedYf comes from the histogram pass in Yf-normalised-to-white
+// space (Yf rescaled so BT.709 (1,1,1) maps to ~1.0; see kYfRefWhite in
+// auto_exposure_histogram.comp.slang). The Stockman 0.0032 reference is
+// in raw cone-Yf, so applying it here is implicitly rescaled by 1/~1.05.
+// The shift is ~5% and well below the explicit `rtx.autoExposure.maxExposure`
+// cap that gates dark-scene boost in practice — left as-is so the
+// citation is meaningful for retuning; do not chase the rescale.
 static const float kConeNoiseFloorYf = 0.0032f;
 
 // Secondary floor for the adapted Yf. The primary dark-scene guard is

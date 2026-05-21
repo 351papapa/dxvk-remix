@@ -46,9 +46,19 @@ groupshared uint g_localData[EXPOSURE_HISTOGRAM_SIZE];
 //                     [kAutoExposureLogLumMin, kAutoExposureLogLumMax].
 // The bin helpers in tonemapping.slangh are unit-agnostic, so re-using
 // them for Yf is correct.
+//
+// Yf is rescaled by Yf-of-BT.709-white so that 18% linear reflectance
+// bins at Yf == 0.18 exactly — making `rtx.autoExposure.targetAdaptedYf
+// = 0.18` actually mean "18% mid-gray" as documented. Without this
+// normalisation 0.18 reflectance would land at ~0.189 cone-Yf with the
+// Stockman-Sharpe MB weights, and the target would silently drift dark.
+// `histogramBinToLuminance` in the resolve returns bin centres in this
+// same normalised space, so the symmetry holds end-to-end.
+static const float kYfRefWhite = 1.05040443f; // renodx::tonemap::psycho::yf::from_BT709(1.0) precomputed.
+
 uint inputToHistogramBucket(const float3 inputColor)
 {
-  const float yf = renodx::tonemap::psycho::yf::from_BT709(inputColor) / renodx::tonemap::psycho::yf::from_BT709(1.0);
+  const float yf = renodx::tonemap::psycho::yf::from_BT709(inputColor) * (1.0f / kYfRefWhite);
 
   // Negative or NaN inputs (e.g. denoiser ringing) collapse to bin 0
   // via the !(yf >= eps) test so they are excluded from the resolve,
