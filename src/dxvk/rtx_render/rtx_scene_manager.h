@@ -252,6 +252,13 @@ public:
   bool isMeshHashUsedThisFrame(XXH64_hash_t meshHash) const;
   uint32_t getMeshHashUsageCount(XXH64_hash_t meshHash) const;
   void clearFrameMeshHashes();
+  
+  // Emissive intensity override: material hash -> override intensity value.
+  // A value >= 0 overrides the material's emissive intensity; intensity == 0 also disables emission.
+  void setEmissiveIntensityOverride(XXH64_hash_t materialHash, float intensity);
+  void clearEmissiveIntensityOverride(XXH64_hash_t materialHash);
+  void clearAllEmissiveIntensityOverrides();
+  bool getEmissiveIntensityOverride(XXH64_hash_t materialHash, float& outIntensity) const;
 
   Rc<DxvkSampler> patchSampler( const VkFilter filterMode,
                                 const VkSamplerAddressMode addressModeU,
@@ -293,6 +300,8 @@ private:
   RtTranslucentSurfaceMaterial createTranslucentSurfaceMaterial(const TranslucentMaterialData& translucentMaterialData,
                                                                 uint32_t samplerIndex,
                                                                 bool hasTexcoords);
+  // Applies the emissive intensity override for the given material hash, if one is registered.
+  void applyEmissiveOverrideIfPresent(XXH64_hash_t materialHash, float& emissiveIntensity, bool& enableEmissive) const;
   Rc<DxvkSampler> getOrCreateExternalSampler();
 
   // Updates ref counts for new buffers
@@ -391,6 +400,9 @@ private:
 
   // Mesh hash tracking for current frame (hash -> count)
   std::unordered_map<XXH64_hash_t, uint32_t> m_currentFrameMeshHashes;
+  
+  mutable dxvk::mutex m_emissiveOverrideMutex;
+  std::unordered_map<XXH64_hash_t, float> m_emissiveIntensityOverrides;
 
   DrawCallTracker m_drawCallTracker;
 };
