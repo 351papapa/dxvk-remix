@@ -198,7 +198,8 @@ namespace dxvk {
     {"ignorealphaontextures","Ignore Alpha Channel of Textures (optional)", &RtxOptions::ignoreAlphaOnTexturesObject()},
     {"raytracedRenderTargetTextures","Raytraced Render Target Textures (optional)", &RtxOptions::raytracedRenderTargetTexturesObject(), ImGUI::kTextureFlagsRenderTarget},
     {"particleemittertextures","Particle Emitters (optional)", &RtxOptions::particleEmitterTexturesObject()},
-    {"smoothnormalstextures","Smooth Normals (optional)", &RtxOptions::smoothNormalsTexturesObject()}
+    {"smoothnormalstextures","Smooth Normals (optional)", &RtxOptions::smoothNormalsTexturesObject()},
+    {"emissiveintensityextextures", "Emissive Intensity EX Textures (optional)", &RtxOptions::emissiveIntensityEXTexturesObject()}
   };
 
   RemixGui::ComboWithKey<RenderPassGBufferRaytraceMode> renderPassGBufferRaytraceModeCombo {

@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include <mutex>
+#include <atomic>
 #include <vector>
 
 #include "rtx_asset_replacer.h"
@@ -51,6 +52,8 @@
 #include "rtx/pass/particles/particle_system_common.h"
 
 namespace {
+  std::atomic<dxvk::SceneManager*> s_pSceneManager = nullptr;
+
   // helper function to ensure generating spatialMapHash for external draws is done the same way in multiple places.
   XXH64_hash_t spatialMapHashForExternalDrawMesh(remixapi_MeshHandle mesh) {
     const uintptr_t meshId = reinterpret_cast<uintptr_t>(mesh);
@@ -135,9 +138,13 @@ namespace dxvk {
     if (env::getEnvVar("DXVK_RTX_CAPTURE_ENABLE_ON_FRAME") != "") {
       m_beginUsdExportFrameNum = stoul(env::getEnvVar("DXVK_RTX_CAPTURE_ENABLE_ON_FRAME"));
     }
+
+    s_pSceneManager.store(this, std::memory_order_release);
   }
 
   SceneManager::~SceneManager() {
+    SceneManager* expected = this;
+    s_pSceneManager.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
   }
 
   bool SceneManager::areAllReplacementsLoaded() const {
@@ -1154,6 +1161,14 @@ namespace dxvk {
     ScopedCpuProfileZone();
     const bool hasTexcoords = drawCallState.hasTextureCoordinates();
     const auto renderMaterialDataType = renderMaterialData.getType();
+    const auto& exTextures = RtxOptions::emissiveIntensityEXTextures();
+    const bool useEmissiveEX =
+      exTextures.count(renderMaterialData.getHash()) > 0 ||
+      exTextures.count(drawCallState.getMaterialData().getHash()) > 0 ||
+      exTextures.count(drawCallState.getMaterialData().getColorTexture().getImageHash()) > 0;
+    const float emissiveScale = useEmissiveEX
+      ? RtxOptions::emissiveIntensityEX()
+      : RtxOptions::emissiveIntensity();
 
     // We're going to use this to create a modified sampler for replacement textures.
     // Legacy and replacement materials should follow same filtering but due to lack of override capability per texture
@@ -1271,7 +1286,7 @@ namespace dxvk {
       trackTexture(opaqueMaterialData.getHeightTexture(), heightTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
       trackTexture(opaqueMaterialData.getEmissiveColorTexture(), emissiveColorTextureIndex, hasTexcoords, true, samplerFeedbackStamp);
 
-      emissiveIntensity = opaqueMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+      emissiveIntensity = opaqueMaterialData.getEmissiveIntensity() * emissiveScale;
       emissiveColorConstant = opaqueMaterialData.getEmissiveColorConstant();
       enableEmissive = opaqueMaterialData.getEnableEmission();
       anisotropy = opaqueMaterialData.getAnisotropyConstant();
@@ -1340,6 +1355,8 @@ namespace dxvk {
         };
         subsurfaceMaterialIndex = m_surfaceMaterialExtensionCache.track(subsurfaceMaterial);
       }
+      
+      applyEmissiveOverrideIfPresent(renderMaterialData.getHash(), emissiveIntensity, enableEmissive);
 
       const RtOpaqueSurfaceMaterial opaqueSurfaceMaterial{
         albedoOpacityTextureIndex, normalTextureIndex,
@@ -1374,7 +1391,7 @@ namespace dxvk {
       uint8_t rayPortalIndex = rayPortalMaterialData.getRayPortalIndex();
       float rotationSpeed = rayPortalMaterialData.getRotationSpeed();
       bool enableEmissive = rayPortalMaterialData.getEnableEmission();
-      float emissiveIntensity = rayPortalMaterialData.getEmissiveIntensity() * RtxOptions::emissiveIntensity();
+      float emissiveIntensity = rayPortalMaterialData.getEmissiveIntensity() * emissiveScale;
 
       const RtRayPortalSurfaceMaterial rayPortalSurfaceMaterial{
         maskTextureIndex, maskTextureIndex2, rayPortalIndex,
@@ -2155,3 +2172,56 @@ namespace dxvk {
   }
 
 }  // namespace dxvk
+
+void dxvk::SceneManager::setEmissiveIntensityOverride(XXH64_hash_t materialHash, float intensity) {
+  std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+  m_emissiveIntensityOverrides[materialHash] = intensity;
+}
+
+void dxvk::SceneManager::clearEmissiveIntensityOverride(XXH64_hash_t materialHash) {
+  std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+  m_emissiveIntensityOverrides.erase(materialHash);
+}
+
+void dxvk::SceneManager::clearAllEmissiveIntensityOverrides() {
+  std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+  m_emissiveIntensityOverrides.clear();
+}
+
+bool dxvk::SceneManager::getEmissiveIntensityOverride(XXH64_hash_t materialHash, float& outIntensity) const {
+  std::lock_guard<dxvk::mutex> lock(m_emissiveOverrideMutex);
+  auto it = m_emissiveIntensityOverrides.find(materialHash);
+  if (it != m_emissiveIntensityOverrides.end()) {
+    outIntensity = it->second;
+    return true;
+  }
+  return false;
+}
+
+void dxvk::SceneManager::applyEmissiveOverrideIfPresent(XXH64_hash_t materialHash, float& emissiveIntensity, bool& enableEmissive) const {
+  float overrideIntensity;
+  if (getEmissiveIntensityOverride(materialHash, overrideIntensity)) {
+    emissiveIntensity = overrideIntensity;
+    enableEmissive = (overrideIntensity > 0.0f);
+  }
+}
+
+extern "C" {
+  __declspec(dllexport) void __cdecl remixSetEmissiveIntensityOverride(uint64_t materialHash, float intensity) {
+    if (auto* mgr = s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->setEmissiveIntensityOverride(static_cast<XXH64_hash_t>(materialHash), intensity);
+    }
+  }
+
+  __declspec(dllexport) void __cdecl remixClearEmissiveIntensityOverride(uint64_t materialHash) {
+    if (auto* mgr = s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->clearEmissiveIntensityOverride(static_cast<XXH64_hash_t>(materialHash));
+    }
+  }
+
+  __declspec(dllexport) void __cdecl remixClearAllEmissiveIntensityOverrides() {
+    if (auto* mgr = s_pSceneManager.load(std::memory_order_acquire)) {
+      mgr->clearAllEmissiveIntensityOverrides();
+    }
+  }
+}
