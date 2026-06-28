@@ -502,10 +502,6 @@ extern "C" {
     REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_TRANSPARENCY_LAYER = 1 << 22,
     REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER          = 1 << 23,
     REMIXAPI_INSTANCE_CATEGORY_BIT_SMOOTH_NORMALS            = 1 << 24,
-    // Deprecated fork alias for bit 24. The fork previously exposed this name
-    // (routing to InstanceCategories::SmoothNormals); kept as an alias so
-    // existing source keeps compiling. Prefer SMOOTH_NORMALS.
-    REMIXAPI_INSTANCE_CATEGORY_BIT_LEGACY_EMISSIVE           = 1 << 24,
   } remixapi_InstanceCategoryBit;
 
   typedef uint32_t remixapi_InstanceCategoryFlags;
