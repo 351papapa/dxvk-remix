@@ -158,6 +158,11 @@ namespace {
   std::vector<PendingMeshCreate>    s_pendingMeshCreates;
   // Track handles that were updated or created this frame to prevent re-adding after deletion in the same frame
   std::unordered_set<remixapi_LightHandle> s_handlesDeletedThisFrame;
+  // Sticky: set once any external (C-API) light is registered. Used to gate the
+  // per-frame persistent-light re-instancing on the native-D3D9 present path so
+  // native-only consumers (no C-API lights) skip it entirely. See
+  // remixapi_AutoInstancePersistentLights.
+  std::atomic<bool> s_externalLightApiUsed { false };
 
 
   dxvk::D3D9DeviceEx* tryAsDxvk() {
@@ -753,7 +758,7 @@ namespace {
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_BAKED_LIGHTING    ){ result.set(InstanceCategories::IgnoreBakedLighting   ); }
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_TRANSPARENCY_LAYER){ result.set(InstanceCategories::IgnoreTransparencyLayer); }
       if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_PARTICLE_EMITTER)         { result.set(InstanceCategories::ParticleEmitter); }
-      if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_LEGACY_EMISSIVE)           { result.set(InstanceCategories::SmoothNormals); }
+      if (flags & REMIXAPI_INSTANCE_CATEGORY_BIT_SMOOTH_NORMALS)           { result.set(InstanceCategories::SmoothNormals); }
       
       static_assert((int)InstanceCategories::Count == 25, "Instance categories changed, please update Remix SDK");
       return result;
@@ -1514,6 +1519,7 @@ namespace {
         lightMgr.registerPersistentExternalLight(cHandle);
       });
     }
+    s_externalLightApiUsed.store(true, std::memory_order_relaxed);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -1563,6 +1569,7 @@ namespace {
     s_pendingLightCreates.push_back(std::move(pending));
     *out_handle = handle;
 
+    s_externalLightApiUsed.store(true, std::memory_order_relaxed);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -2279,6 +2286,20 @@ extern "C"
       destroys.swap(s_pendingLightDestroys);
       meshCreates.swap(s_pendingMeshCreates);
     }
+    // Native-present fast path. If no C-API scene work is queued this frame and
+    // no external light has ever been registered, there is nothing to apply or
+    // re-instance. Emitting an empty CS chunk (plus an extra LockDevice) on every
+    // native D3D9 Present is what disturbed the light pipeline for native-only
+    // consumers — the "persistent lights break all lights / flicker" report.
+    // Skip straight to the (self-gating) overlay flush. Genuine C-API light
+    // consumers set s_externalLightApiUsed and keep the per-frame path.
+    const bool hasPendingApiWork =
+        !creates.empty() || !updates.empty() || !domeUpdates.empty() ||
+        !destroys.empty() || !meshCreates.empty();
+    if (!hasPendingApiWork && !s_externalLightApiUsed.load(std::memory_order_relaxed)) {
+      dxvk::fork_hooks::presentScreenOverlayFlush(remixDevice);
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     auto devLock = remixDevice->LockDevice();
     remixDevice->EmitCs([creates = std::move(creates), updates = std::move(updates), domeUpdates = std::move(domeUpdates), destroys = std::move(destroys), meshCreates = std::move(meshCreates)](dxvk::DxvkContext* ctx) mutable {
       auto& lightMgr = ctx->getCommonObjects()->getSceneManager().getLightManager();
@@ -2382,6 +2403,9 @@ extern "C"
     if (!handle || !info) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
+    // An update can create-or-replace an external light, so treat it as
+    // external-light usage for the persistent re-instancing gate.
+    s_externalLightApiUsed.store(true, std::memory_order_relaxed);
     // Handle dome light update if present in pNext chain
     if (auto extDome = pnext::find<remixapi_LightInfoDomeEXT>(info)) {
       auto cTransform = convert::tomat4(extDome->transform);
