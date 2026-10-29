@@ -2312,6 +2312,11 @@ namespace dxvk {
             break;
           }
 
+        case 213:
+        case 214:
+          // Asset capture correlation is stored per device and consumed at draw submission.
+          break;
+
         default:
           static bool s_errorShown[256];
 

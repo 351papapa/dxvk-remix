@@ -131,6 +131,10 @@ namespace dxvk {
 
     uint32_t drawCallID = 0;
 
+    // Snapshot of the caller's capture correlation at draw submission, before asynchronous execution.
+    uint32_t captureSession = 0;
+    uint32_t captureToken = 0;
+
     bool isUsingRaytracedRenderTarget = false;
 
     bool stencilEnabled = false;

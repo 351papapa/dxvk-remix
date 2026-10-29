@@ -45,6 +45,7 @@ frontend_d3d9_record_src = files([
 frontend_d3d9_src = files([
   'd3d9/d3d9_camera.cpp',
   'd3d9/d3d9_camera.h',
+  'd3d9/d3d9_draw_capture.h',
   'd3d9/d3d9_frontend.cpp',
   'd3d9/d3d9_frontend.h',
   'd3d9/d3d9_raster_replay.cpp',

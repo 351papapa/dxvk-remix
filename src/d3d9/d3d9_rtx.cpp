@@ -1107,6 +1107,8 @@ namespace dxvk {
       params.vertexCount = drawInfo.vertexCount;
     }
 
+    m_activeDrawCallState.captureSession = d3d9State().renderStates[213];
+    m_activeDrawCallState.captureToken = d3d9State().renderStates[214];
     submitActiveDrawCallState();
 
     m_parent->EmitCs([params, this, mode = decision.mode, handle = decision.handle](DxvkContext* ctx) {
@@ -1900,6 +1902,10 @@ namespace dxvk {
   }
 
   bool D3D9Rtx::perDrawMarked() const {
+    // A capture needs every tagged draw, including unchanged scene-owned geometry.
+    if (d3d9State().renderStates[213] && d3d9State().renderStates[214]) {
+      return true;
+    }
     const uint32_t state = m_frontendApp.perDrawRenderState();
     if (state == 0 || state >= d3d9State().renderStates.size()) {
       return false;

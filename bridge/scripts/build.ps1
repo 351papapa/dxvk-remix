@@ -54,9 +54,9 @@ $vsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer
 if (-not (Test-Path $vsWhere)) {
     throw "vswhere.exe not found at '$vsWhere'. Install the Visual Studio Installer (ships with VS2017+)."
 }
-$vsPath = & $vsWhere -latest -version '[16.0,18.0)' -property installationPath
+$vsPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -version '[16.0,19.0)' -property installationPath
 if ([string]::IsNullOrWhiteSpace($vsPath)) {
-    throw "No Visual Studio 2019 or 2022 installation with v142 toolchain found via vswhere."
+    throw "No Visual Studio 2019, 2022 or 2026 installation with C++ tools found via vswhere."
 }
 $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsall.bat'
 if (-not (Test-Path $vcvars)) {
@@ -85,9 +85,9 @@ foreach ($a in $arches) {
     $alreadyConfigured = Test-Path (Join-Path $buildDir 'meson-private')
     if ($alreadyConfigured) {
         # meson auto-reconfigures from inside the build dir if meson.build changed
-        $chain = "call `"$vcvars`" $a >nul 2>&1 && cd $buildDir && meson compile"
+        $chain = "call `"$vcvars`" $a >nul 2>&1 && cd $buildDir && meson compile -j 4"
     } else {
-        $chain = "call `"$vcvars`" $a >nul 2>&1 && meson setup --buildtype $Flavor --backend ninja $buildDir && cd $buildDir && meson compile"
+        $chain = "call `"$vcvars`" $a >nul 2>&1 && meson setup --buildtype $Flavor --backend ninja $buildDir && cd $buildDir && meson compile -j 4"
     }
 
     # Native-command stderr triggers PowerShell's NativeCommandError under

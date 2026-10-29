@@ -30,6 +30,9 @@ foreach external_dll : external_dll_paths
 endforeach
 
 tests = []
+exe = executable('test_draw_capture', files('test_draw_capture.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_draw_capture', exe, env: test_env, args: [join_paths(meson.current_build_dir(), 'draw_capture_test_output')])
+tests += exe
 exe = executable('test_external_effect_manifest', files('test_external_effect_manifest.cpp'), include_directories : test_include_path, dependencies : [ test_unit_deps, d3d9_dep ], link_with: [ d3d9_dll, dxvk_lib ], win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
 # The sample effects are handed in so they are parsed as part of the test: they
 # are the worked documentation for the format, and one that stopped loading

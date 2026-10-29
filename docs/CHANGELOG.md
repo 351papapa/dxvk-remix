@@ -28,6 +28,25 @@ Entry format:
 - Docs: [RemixApi.md](RemixApi.md)   (only if a public doc covers it)
 ```
 
+## 2026-10-29
+
+### Asset capture correlation on the D3D9 frontend
+Opt-in session/token render states now produce the hash and fixed-function state
+logs consumed by DffCapture. Tagged draws bypass unchanged-object elision and
+carry their correlation through the command queue, so repeated geometry and
+asynchronous execution do not lose or mislabel the capture.
+- Options: none; both capture states default to zero.
+- Commits: this local feature commit (`feat/20261029-draw-metadata`).
+- Docs: [DrawCapture](../documentation/DrawCapture.md).
+- Source: local fork `c17b36af` plus its saved working-tree changes, adapted to
+  the v2 frontend rather than introducing D3D9 types into the backend.
+
+### Bridge build discovery on Visual Studio 2026
+The bridge wrapper accepts Visual Studio 2026 and Build Tools installations,
+requires the C++ tool component and caps compilation at four Ninja jobs.
+- Options: none.
+- Commits: this local feature commit (`feat/20261029-draw-metadata`).
+
 ## 2026-10-28
 
 ### Developer menu: settings search

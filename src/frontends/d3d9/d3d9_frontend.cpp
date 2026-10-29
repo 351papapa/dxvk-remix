@@ -49,6 +49,7 @@
 #include "../translator/sky_rules.h"
 #include "d3d9_camera.h"
 #include "d3d9_draw_call.h"
+#include "d3d9_draw_capture.h"
 #include "d3d9_raster_replay.h"
 #include "../../util/log/log.h"
 #include "../../util/util_string.h"
@@ -304,6 +305,55 @@ namespace dxvk {
       // ---- CS thread -------------------------------------------------------------------------------------------
 
       struct D3D9Frontend::Impl {
+        DrawCaptureLog captureLog;
+
+        void captureDraw(const DrawCallState& input) {
+          if (!input.captureSession || !input.captureToken) {
+            return;
+          }
+          const auto geometryHash = input.getGeometryData().getHashForRule(RtxOptions::geometryAssetHashRule());
+          const auto textureHash = input.getMaterialData().getColorTexture().getImageHash();
+          const auto assetHash = input.getHash(RtxOptions::geometryAssetHashRule());
+          const std::string record = str::format(input.captureSession, ",", input.captureToken, ",",
+            std::hex, assetHash, ",", textureHash, ",", geometryHash);
+          const auto& material = input.getMaterialData();
+          const auto& blend = material.blendMode;
+          const std::string stateRecord = str::format(input.captureSession, ",", input.captureToken,
+            ",", static_cast<uint32_t>(material.alphaTestEnabled),
+            ",", static_cast<uint32_t>(material.alphaTestReferenceValue),
+            ",", static_cast<uint32_t>(material.alphaTestCompareOp),
+            ",", static_cast<uint32_t>(blend.enableBlending),
+            ",", static_cast<uint32_t>(blend.colorSrcFactor),
+            ",", static_cast<uint32_t>(blend.colorDstFactor),
+            ",", static_cast<uint32_t>(blend.colorBlendOp),
+            ",", static_cast<uint32_t>(material.textureColorArg1Source),
+            ",", static_cast<uint32_t>(material.textureColorArg2Source),
+            ",", static_cast<uint32_t>(material.textureColorOperation),
+            ",", static_cast<uint32_t>(material.textureAlphaArg1Source),
+            ",", static_cast<uint32_t>(material.textureAlphaArg2Source),
+            ",", static_cast<uint32_t>(material.textureAlphaOperation),
+            ",", material.tFactor,
+            ",", static_cast<uint32_t>(material.isTextureFactorBlend),
+            ",", static_cast<uint32_t>(blend.alphaSrcFactor),
+            ",", static_cast<uint32_t>(blend.alphaDstFactor),
+            ",", static_cast<uint32_t>(blend.alphaBlendOp),
+            ",", static_cast<uint32_t>(blend.writeMask),
+            ",", static_cast<uint32_t>(material.isVertexColorBakedLighting),
+            ",", static_cast<uint32_t>(input.getGeometryData().cullMode));
+          wchar_t executable[32768] = {};
+          if (!GetModuleFileNameW(nullptr, executable, 32768)) {
+            ONCE(Logger::warn("Draw capture: cannot locate the host executable."));
+            return;
+          }
+          auto folder = std::filesystem::path(executable).parent_path();
+          if (folder.filename() == L".trex") {
+            folder = folder.parent_path();
+          }
+          if (!captureLog.append(folder / L"logs", input.captureSession, record, stateRecord)) {
+            ONCE(Logger::warn("Draw capture: cannot append correlation logs."));
+          }
+        }
+
         struct Object {
           XXH64_hash_t assetHash = 0;   // mesh hash for the hash checker / hash dumps (reportAssetUse)
           XXH64_hash_t legacyHash0 = 0; // the legacy asset hashes submitDrawState also tracks (0 = rule off)
@@ -1116,6 +1166,7 @@ namespace dxvk {
             totals.perDrawDrops++;
             return;
           }
+          captureDraw(state);
           DrawCallTransforms& transforms = state.modifyTransformData();
           if (!sameMatrix(transforms.worldToView, worldToView)) {
             transforms.objectToWorld = inverseAffine(worldToView) * transforms.worldToView * transforms.objectToWorld;
