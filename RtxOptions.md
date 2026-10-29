@@ -724,6 +724,21 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.legacyMaterial.specularLevel|float|1|||Scales the dielectric base reflectivity \(F0\) of non\-replaced legacy materials, from 0 to 1\. 1 keeps the standard 0\.04 reflectivity, and 0 removes reflection at normal incidence\. Grazing reflections are set separately by rtx\.legacyMaterial\.fresnelGrazing\. Fully metallic surfaces are unaffected\.|
 |rtx.legacyMaterial.thinFilmThicknessConstant|float|200|||The thickness \(in nanometers\) of the thin\-film layer assuming it is enabled on non\-replaced "legacy" materials\.<br>Should be any value larger than 0, typically within the wavelength of light, but must be less than or equal to OPAQUE\_SURFACE\_MATERIAL\_THIN\_FILM\_MAX\_THICKNESS \(\(1500\.0f\) nm\)\.|
 |rtx.legacyMaterial.useAlbedoTextureIfPresent|bool|True|||A flag to determine if an "albedo" texture \(a qualifying color texture\) from the original application should be used if present on non\-replaced "legacy" materials\.|
+|rtx.lensRain.amountScale|float|1|||Multiplier for weather\-driven lens rain coverage\.|
+|rtx.lensRain.blurPixels|float|0.8|||Small wet\-lens blur radius in pixels at 1080p\.|
+|rtx.lensRain.density|float|14|||Controls independent droplet population and base radius\. Smaller values produce larger, fewer drops; Size Scale changes radius independently\.|
+|rtx.lensRain.dispersion|float|0.12|||Fractional red/blue separation around the refracted sample\.|
+|rtx.lensRain.dropCount|int|0|||0: automatic population from Density and aspect ratio; 1\.\.1024: independent simulated drop slots without changing radius\. Visible count varies with lifetime, screen clipping and shelter\. Negative values use automatic population\.|
+|rtx.lensRain.drySeconds|float|2.5|||Time to remove 95 percent of the lens rain after entering shelter or rain stopping\.|
+|rtx.lensRain.forceAmount|float|-1|||\-1: follow weather; 0\.\.1: force a preview amount\. Shelter still applies unless respectShelter is disabled\.|
+|rtx.lensRain.lensRainEnable|bool|False|||Enable screen\-space lens droplets driven by the active rain/storm weather\. Runs after upscaling and tonemapping\.|
+|rtx.lensRain.motionResponse|float|0.025|||Screen\-height flow per meter of player or vehicle travel\. Independent drops slide at different rates; camera motion is used only if no motion bridge has ever been published\.|
+|rtx.lensRain.motionThreshold|float|2|||Player or vehicle speed in meters/second below which speed\-driven sliding is suppressed\.|
+|rtx.lensRain.refractPixels|float|18|||Maximum lens distortion in pixels at 1080p, scaled to output height\.|
+|rtx.lensRain.respectShelter|bool|False|||Fade lens rain inside published no\-rain cullzones or when the game disables interior precipitation, including forced previews\.|
+|rtx.lensRain.sizeScale|float|1.5|||Independent drop radius multiplier\.|
+|rtx.lensRain.slideSpeed|float|1|||Droplet lifecycle and downward sliding speed\. Zero freezes this motion; camera\-driven flow is controlled separately by motionResponse\.|
+|rtx.lensRain.wetSeconds|float|0.8|||Time to reach 95 percent of the target lens rain when becoming exposed\.|
 |rtx.lightConversionDistantLightFixedAngle|float|0.0349|0|3.14159|The angular size in radians of the distant light source for legacy lights converted to distant lights\. Set to ~2 degrees in radians by default\. Should only be within the range \[0, pi\]\.|
 |rtx.lightConversionDistantLightFixedIntensity|float|1|0||The fixed intensity \(in W/sr\) to use for legacy lights converted to distant lights \(currently directional lights will convert to distant lights\)\.|
 |rtx.lightConversionIntensityFactor|float|1|||Scales the converted light intensities\.|

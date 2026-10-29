@@ -716,7 +716,7 @@ namespace dxvk {
         m_device->getCommon()->pipelineManager().remixShaderCompilationCount());
       m_device->getCommon()->getRtxInitializer().onRaytracedFrame();
 
-      if (WetnessOptions::enabled() || WaterSystem::enabled() || PrecipitationSystem::enable() || getCommonObjects()->metaNumos().active()) {
+      if (WetnessOptions::enabled() || WaterSystem::enabled() || PrecipitationSystem::enable() || DxvkPostFx::lensRainEnable() || getCommonObjects()->metaNumos().active()) {
         getCommonObjects()->metaNumosWeather().update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
       }
       if (PrecipitationSystem::enable()) { getCommonObjects()->metaPrecipitation().submit(*this); }

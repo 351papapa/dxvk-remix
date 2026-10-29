@@ -96,6 +96,8 @@ namespace dxvk {
     void showMotionBlurImguiSettings();
     void showDofImguiSettings();
     void showLensEffectsImguiSettings();
+    void showLensRainImguiSettings();
+    void dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
     void showNtscImguiSettings();
 
     inline bool isPostFxEnabled() const { return enable(); }
@@ -118,6 +120,21 @@ namespace dxvk {
                     args.flags = RtxOptionFlags::UserSetting);
     RTX_OPTION_ARGS("rtx.postfx", bool, enableVignette, true, "Enables vignette post-processing effect.",
                     args.flags = RtxOptionFlags::UserSetting);
+    RTX_OPTION("rtx.lensRain", bool, lensRainEnable, false, "Enable screen-space lens droplets driven by the active rain/storm weather. Runs after upscaling and tonemapping.");
+    RTX_OPTION("rtx.lensRain", float, forceAmount, -1.0f, "-1: follow weather; 0..1: force a preview amount. Shelter still applies unless respectShelter is disabled.");
+    RTX_OPTION("rtx.lensRain", bool, respectShelter, false, "Fade lens rain inside published no-rain cullzones or when the game disables interior precipitation, including forced previews.");
+    RTX_OPTION("rtx.lensRain", float, drySeconds, 2.5f, "Time to remove 95 percent of the lens rain after entering shelter or rain stopping.");
+    RTX_OPTION("rtx.lensRain", float, wetSeconds, 0.8f, "Time to reach 95 percent of the target lens rain when becoming exposed.");
+    RTX_OPTION("rtx.lensRain", float, motionResponse, 0.025f, "Screen-height flow per meter of player or vehicle travel. Independent drops slide at different rates; camera motion is used only if no motion bridge has ever been published.");
+    RTX_OPTION("rtx.lensRain", float, motionThreshold, 2.0f, "Player or vehicle speed in meters/second below which speed-driven sliding is suppressed.");
+    RTX_OPTION("rtx.lensRain", float, amountScale, 1.0f, "Multiplier for weather-driven lens rain coverage.");
+    RTX_OPTION("rtx.lensRain", float, sizeScale, 1.5f, "Independent drop radius multiplier.");
+    RTX_OPTION("rtx.lensRain", float, density, 14.0f, "Controls independent droplet population and base radius. Smaller values produce larger, fewer drops; Size Scale changes radius independently.");
+    RTX_OPTION("rtx.lensRain", int, dropCount, 0, "0: automatic population from Density and aspect ratio; 1..1024: independent simulated drop slots without changing radius. Visible count varies with lifetime, screen clipping and shelter. Negative values use automatic population.");
+    RTX_OPTION("rtx.lensRain", float, refractPixels, 18.0f, "Maximum lens distortion in pixels at 1080p, scaled to output height.");
+    RTX_OPTION("rtx.lensRain", float, slideSpeed, 1.0f, "Droplet lifecycle and downward sliding speed. Zero freezes this motion; camera-driven flow is controlled separately by motionResponse.");
+    RTX_OPTION("rtx.lensRain", float, dispersion, 0.12f, "Fractional red/blue separation around the refracted sample.");
+    RTX_OPTION("rtx.lensRain", float, blurPixels, 0.8f, "Small wet-lens blur radius in pixels at 1080p.");
     RTX_OPTION("rtx.postfx", bool, desaturateOthersOnHighlight, true, "If true, desaturare all objects that are not highlighted.");
 
     RTX_OPTION_ARGS("rtx.dof", bool, dofEnable, false,
@@ -217,6 +234,23 @@ namespace dxvk {
     Resources::Resource m_dofTile;           // rg = (max |CoC| radius, max near radius)
     VkExtent3D m_dofHalfExtent = { 0, 0, 0 };
     bool m_dofFocusStateReset = true;
+
+    float m_lensRainAmount = 0.0f;
+    Vector3 m_lensRainVelocity = Vector3(0.0f);
+    uint32_t m_lensRainDropCount = 0;
+    Rc<DxvkBuffer> m_lensRainStateBuffer;
+    float m_lensRainAspect = 0.0f;
+    Rc<DxvkBuffer> m_lensRainDropBuffer;
+    Rc<DxvkBuffer> m_lensRainTileBuffer;
+
+    uint64_t m_lensRainLastTimeMs = 0;
+    uint64_t m_lensRainMotionFrame = 0;
+    uint64_t m_lensRainMotionUpdateMs = 0;
+    Vector3 m_lensRainGameVelocity = Vector3(0.0f);
+    bool m_lensRainGameMotionSeen = false;
+    bool m_lensRainHasMotionFrame = false;
+    int m_lensRainMotionSource = -1;
+    bool m_lensRainInitialized = false;
 
     void releaseDofResources();
 

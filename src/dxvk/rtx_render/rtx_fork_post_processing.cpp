@@ -20,7 +20,7 @@ namespace dxvk {
 
   namespace {
     constexpr size_t kInvalidIndex = static_cast<size_t>(-1);
-    constexpr size_t kEffectCount = 7;
+    constexpr size_t kEffectCount = 8;
     constexpr const char* kExternalPrefix = "external:";
 
     std::string joinConfigIds(const std::vector<std::string>& ids) {
@@ -90,6 +90,7 @@ namespace dxvk {
       { EffectId::DepthOfField, "Depth of Field", "depth_of_field", EffectDomain::HDR,    true  },
       { EffectId::Tonemapping, "Tonemapping",    "tonemapping",  EffectDomain::HDR,      false },
       { EffectId::NtscVhs,     "NTSC / VHS",     "ntsc_vhs",     EffectDomain::Display, true  },
+      { EffectId::LensRain, "Lens Rain", "lens_rain", EffectDomain::Display, true },
       { EffectId::LensEffects, "Lens Effects",   "lens_effects", EffectDomain::Display,  true  },
       { EffectId::SRGBDither,  "sRGB + Dither",  "srgb_dither",  EffectDomain::Terminal, false },
     }};
@@ -140,6 +141,7 @@ namespace dxvk {
       { false, EffectId::DepthOfField, {} },
       { false, EffectId::Tonemapping, {} },
       { false, EffectId::NtscVhs, {} },
+      { false, EffectId::LensRain, {} },
       { false, EffectId::LensEffects, {} },
       { false, EffectId::SRGBDither, {} },
     };
@@ -215,7 +217,12 @@ namespace dxvk {
 
     for (const EffectEntry& entry : defaultOrder()) {
       if (findEffect(parsedOrder, configId(entry)) == kInvalidIndex) {
-        parsedOrder.push_back(entry);
+        const size_t lensIndex = findEffect(parsedOrder, "lens_effects");
+        if (entry.builtInId == EffectId::LensRain && lensIndex != kInvalidIndex) {
+          parsedOrder.insert(parsedOrder.begin() + lensIndex, entry);
+        } else {
+          parsedOrder.push_back(entry);
+        }
       }
     }
 
@@ -380,6 +387,9 @@ namespace dxvk {
       case EffectId::NtscVhs:
         ctx->dispatchPostFxNtsc(rtOutput);
         break;
+      case EffectId::LensRain:
+        ctx->getCommonObjects()->metaPostFx().dispatchLensRain(ctx, rtOutput);
+        break;
       case EffectId::LensEffects:
         ctx->dispatchPostFxLensEffects(rtOutput);
         break;
@@ -498,6 +508,9 @@ namespace dxvk {
           break;
         case EffectId::NtscVhs:
           enabledOption = &postFx.ntscEnableObject();
+          break;
+        case EffectId::LensRain:
+          enabledOption = &postFx.lensRainEnableObject();
           break;
         case EffectId::LensEffects:
           enabledOption = &postFx.enableLensEffectsObject();
@@ -623,6 +636,9 @@ namespace dxvk {
         break;
       case EffectId::NtscVhs:
         postFx.showNtscImguiSettings();
+        break;
+      case EffectId::LensRain:
+        postFx.showLensRainImguiSettings();
         break;
       case EffectId::LensEffects:
         postFx.showLensEffectsImguiSettings();

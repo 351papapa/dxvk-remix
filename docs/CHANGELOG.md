@@ -30,6 +30,18 @@ Entry format:
 
 ## 2026-10-29
 
+### Lens rain GPU simulation
+The local lens rain effect now uses compute shaders for droplet state and tile
+indices, preserving independent motion, shelter fading and host motion input.
+It participates in the v2 display-domain post-processing stack.
+- Options: `rtx.lensRain.*`; master and shelter switches default off. Existing
+  appearance controls remain editable in the post-processing menu.
+- Validation: 30 GPU cases and two cross-feature regressions passed. Nine bridge
+  images match native output exactly, as does the repeated deterministic run.
+  Compiled shader layouts match the CPU contracts. Full-game performance pending.
+- Commits: this entry lands with the local lens rain migration commit.
+- Docs: [Lens rain](../documentation/RemixLensRain.md).
+
 ### Weather precipitation and GPU wet contacts
 Adapt the internal rain/snow emitter to v2 scene submission and typed NUMOS weather,
 preserving GPU spawning, simulation, geometry generation and shelter relocation.

@@ -91,6 +91,10 @@ namespace dxvk {
 
     float getGpuIdleTimeSinceLastCall();
 
+    bool isInsideNoRainZone(const Vector3& position) const {
+      return m_wetnessZones.contains(position.x, position.y, position.z);
+    }
+
     /**
       * \brief Reset screen resolution, and resize all screen
       *        buffers to specified resolution if required.

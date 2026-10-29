@@ -19,6 +19,10 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <cmath>
+#include <cstdlib>
+#include <sstream>
+
 #include "rtx_context.h"
 #include "rtx_postFx.h"
 #include "dxvk_device.h"
@@ -26,6 +30,12 @@
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx/pass/post_fx/post_fx.h"
 #include "rtx/pass/ntsc/ntsc_vhs.h"
+#include "rtx/pass/post_fx/lens_rain.h"
+#include "rtx_numos_weather.h"
+#include "rtx_fork_game_state.h"
+#include <rtx_shaders/lens_rain.h>
+#include <rtx_shaders/lens_rain_tiles.h>
+#include <rtx_shaders/lens_rain_update.h>
 
 #include <rtx_shaders/post_fx.h>
 #include <rtx_shaders/post_fx_dof_auto_focus.h>
@@ -59,6 +69,39 @@ namespace dxvk {
     };
 
     PREWARM_SHADER_PIPELINE(PostFxShader);
+
+    class LensRainShader : public ManagedShader {
+      SHADER_SOURCE(LensRainShader, VK_SHADER_STAGE_COMPUTE_BIT, lens_rain)
+      PUSH_CONSTANTS(LensRainArgs)
+      BEGIN_PARAMETER()
+        SAMPLER2D(LENS_RAIN_INPUT)
+        RW_TEXTURE2D(LENS_RAIN_OUTPUT)
+        STRUCTURED_BUFFER(LENS_RAIN_DROPS)
+        STRUCTURED_BUFFER(LENS_RAIN_TILES)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(LensRainShader);
+
+    class LensRainTilesShader : public ManagedShader {
+      SHADER_SOURCE(LensRainTilesShader, VK_SHADER_STAGE_COMPUTE_BIT, lens_rain_tiles)
+      PUSH_CONSTANTS(LensRainArgs)
+      BEGIN_PARAMETER()
+        RW_STRUCTURED_BUFFER(LENS_RAIN_TILES)
+      END_PARAMETER()
+    };
+    PREWARM_SHADER_PIPELINE(LensRainTilesShader);
+
+    class LensRainUpdateShader : public ManagedShader {
+      SHADER_SOURCE(LensRainUpdateShader, VK_SHADER_STAGE_COMPUTE_BIT, lens_rain_update)
+      PUSH_CONSTANTS(LensRainArgs)
+      BEGIN_PARAMETER()
+        RW_STRUCTURED_BUFFER(LENS_RAIN_DROPS)
+        RW_STRUCTURED_BUFFER(LENS_RAIN_TILES)
+        RW_STRUCTURED_BUFFER(LENS_RAIN_STATES)
+      END_PARAMETER()
+    };
+    PREWARM_SHADER_PIPELINE(LensRainUpdateShader);
 
     class NtscVhsShader : public ManagedShader
     {
@@ -310,6 +353,199 @@ namespace dxvk {
     RemixGui::DragInt("Depth of Field Sample Count", &sampleCountObject(), 1.0f, POST_FX_DOF_MIN_EFFECTIVE_SAMPLES, POST_FX_DOF_MAX_SAMPLES, "%d", ImGuiSliderFlags_AlwaysClamp);
 
     ImGui::EndDisabled();
+  }
+
+  void DxvkPostFx::showLensRainImguiSettings() {
+    ImGui::TextWrapped("Each drop has an independent position, size, lifetime and sliding response. Player or vehicle speed drives sliding when the game provides it. Otherwise camera motion drives sliding. Force Amount overrides weather. Respect Cullzones / Interiors fades drops in sheltered areas identified by the game; it does not detect arbitrary roofs or water.");
+    ImGui::BeginDisabled(!enable() || !lensRainEnable());
+    RemixGui::DragFloat("Force Amount (-1 = weather)", &forceAmountObject(), 0.01f, -1.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::Checkbox("Respect Cullzones / Interiors", &respectShelterObject());
+    RemixGui::DragFloat("Dry Time (95 percent, seconds)", &drySecondsObject(), 0.05f, 0.1f, 10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Wet Time (95 percent, seconds)", &wetSecondsObject(), 0.05f, 0.1f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Player / Vehicle Motion Response", &motionResponseObject(), 0.001f, 0.0f, 0.1f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Movement Speed Threshold (m/s)", &motionThresholdObject(), 0.1f, 0.0f, 10.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Weather Amount", &amountScaleObject(), 0.01f, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Drop Size Scale", &sizeScaleObject(), 0.05f, 0.5f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Drop Density", &densityObject(), 0.1f, 5.0f, 40.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragInt("Drop Count (0 = automatic)", &dropCountObject(), 1.0f, 0, 1024, "%d", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Refraction (1080p pixels)", &refractPixelsObject(), 0.1f, 0.0f, 48.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Slide Speed", &slideSpeedObject(), 0.01f, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Dispersion", &dispersionObject(), 0.01f, 0.0f, 0.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Wet Blur (1080p pixels)", &blurPixelsObject(), 0.05f, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+  }
+
+  void DxvkPostFx::dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput) {
+    if (!enable() || !lensRainEnable()) {
+      m_lensRainInitialized = false;
+      m_lensRainStateBuffer = nullptr;
+      m_lensRainDropBuffer = nullptr;
+      m_lensRainTileBuffer = nullptr;
+      return;
+    }
+    ScopedCpuProfileZone();
+    const RtCamera& camera = ctx->getSceneManager().getCamera();
+    const uint64_t timeMs = GlobalTime::get().absoluteTimeMs();
+    const float frameDt = GlobalTime::get().deltaTime();
+    const float dt = std::isfinite(frameDt) ? std::clamp(frameDt, 0.0f, 0.1f) : 0.0f;
+    const bool firstFrame = !m_lensRainInitialized;
+    const bool resume = firstFrame || timeMs < m_lensRainLastTimeMs
+      || timeMs - m_lensRainLastTimeMs > 250;
+    m_lensRainLastTimeMs = timeMs;
+    m_lensRainInitialized = true;
+    if (firstFrame) {
+      m_lensRainAmount = 0.0f;
+      m_lensRainDropCount = 0;
+      m_lensRainAspect = 0.0f;
+      m_lensRainVelocity = Vector3(0.0f);
+    }
+    float amount = 0.0f;
+    const auto& weather = ctx->getCommonObjects()->metaNumosWeather();
+    const auto weights = weather.waterState();
+    amount = std::clamp(weather.precipitationState().precipitationIntensity, 0.0f, 1.0f)
+      * std::clamp(weights.rain + weights.storm, 0.0f, 1.0f) * std::clamp(amountScale(), 0.0f, 3.0f);
+    if (forceAmount() >= 0.0f) { amount = forceAmount(); }
+    if (respectShelter()) {
+      std::string precipitationEnable;
+      const bool interior = fork_game_state::GameStateStore::get().tryGet("__weather.precipitation_enable", precipitationEnable)
+        && std::strtof(precipitationEnable.c_str(), nullptr) <= 0.0f;
+      if (interior || ctx->isInsideNoRainZone(camera.getPosition())) { amount = 0.0f; }
+    }
+    amount = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 0.0f;
+    const float fadeSeconds = std::clamp(amount < m_lensRainAmount ? drySeconds() : wetSeconds(), 0.1f, 10.0f);
+    m_lensRainAmount += (amount - m_lensRainAmount) * (1.0f - std::exp(-3.0f * dt / fadeSeconds));
+
+    Vector3 worldVelocity(0.0f);
+    std::string motionWire;
+    const bool hasMotionWire = fork_game_state::GameStateStore::get().tryGet("__lensRain.motion_v1", motionWire);
+    bool freshGameMotion = false;
+    if (hasMotionWire) {
+      m_lensRainGameMotionSeen = true;
+      std::istringstream stream(motionWire);
+      uint32_t version = 0;
+      uint64_t frame = 0;
+      Vector3 velocity(0.0f);
+      const bool parsed = static_cast<bool>(stream >> version >> frame >> velocity.x >> velocity.y >> velocity.z);
+      stream >> std::ws;
+      const float speedSquared = dot(velocity, velocity);
+      const bool valid = parsed && stream.eof() && version == 1 && std::isfinite(speedSquared)
+        && speedSquared <= 120.0f * 120.0f;
+      if (valid) {
+        if (!m_lensRainHasMotionFrame || frame != m_lensRainMotionFrame) {
+          m_lensRainMotionFrame = frame;
+          m_lensRainMotionUpdateMs = timeMs;
+          m_lensRainGameVelocity = velocity;
+          m_lensRainHasMotionFrame = true;
+        }
+        freshGameMotion = timeMs >= m_lensRainMotionUpdateMs && timeMs - m_lensRainMotionUpdateMs <= 500;
+      } else {
+        m_lensRainGameVelocity = Vector3(0.0f);
+      }
+    }
+    int motionSource = 0;
+    if (m_lensRainGameMotionSeen) {
+      // Never turn a stopped or malformed game bridge into unexpected free-camera wind.
+      motionSource = freshGameMotion ? 1 : 2;
+      worldVelocity = freshGameMotion ? m_lensRainGameVelocity : Vector3(0.0f);
+    } else if (dt > 0.00001f) {
+      const float worldUnitsPerMeter = std::max(RtxOptions::getMeterToWorldUnitScale(), 0.0001f);
+      worldVelocity = (camera.getPosition() - camera.getPreviousPosition())
+        / (worldUnitsPerMeter * std::max(frameDt, 0.00001f));
+    }
+    if (motionSource != m_lensRainMotionSource) {
+      Logger::info(str::format("[LensRain] motion source=", motionSource == 1 ? "player/vehicle bridge"
+        : motionSource == 2 ? "game bridge stale/invalid (zero speed)" : "camera fallback (no game motion bridge)"));
+      m_lensRainMotionSource = motionSource;
+    }
+    Vector3 targetVelocity(0.0f);
+    const float speedSquared = dot(worldVelocity, worldVelocity);
+    const bool resetMotion = resume || camera.isCameraCut() || !std::isfinite(speedSquared)
+      || speedSquared > 120.0f * 120.0f;
+    if (!resetMotion) {
+      targetVelocity = Vector3(-dot(worldVelocity, camera.getRight()), dot(worldVelocity, camera.getUp()),
+        std::max(0.0f, std::sqrt(speedSquared) - std::clamp(motionThreshold(), 0.0f, 10.0f)));
+    }
+    if (resetMotion) {
+      m_lensRainVelocity = Vector3(0.0f);
+    } else {
+      m_lensRainVelocity += (targetVelocity - m_lensRainVelocity) * (1.0f - std::exp(-dt / 0.12f));
+    }
+    const float response = std::clamp(motionResponse(), 0.0f, 0.1f);
+    const Vector3 flowVelocity(std::clamp(m_lensRainVelocity.x * response, -1.5f, 1.5f),
+      std::clamp(m_lensRainVelocity.y * response, -1.5f, 1.5f),
+      std::clamp(m_lensRainVelocity.z * response, 0.0f, 1.5f));
+    if (m_lensRainAmount <= 0.001f) {
+      if (amount <= 0.001f) {
+        m_lensRainAmount = 0.0f;
+        m_lensRainDropCount = 0;
+      }
+      return;
+    }
+    const bool allowSpawning = amount > 0.001f;
+    amount = m_lensRainAmount;
+
+    ONCE(Logger::info(str::format("[LensRain] dispatch active amount=", amount,
+      " force=", forceAmount(), " density=", density(), " refraction=", refractPixels())));
+    ScopedGpuProfileZone(ctx, "PostFx Lens Rain");
+    ctx->setFramePassStage(RtxFramePassStage::PostFX);
+    const Resources::Resource& color = rtOutput.m_finalOutput.resource(Resources::AccessType::ReadWrite);
+    const VkExtent3D extent = color.image->info().extent;
+    LensRainArgs args = {};
+    args.imageSize = { extent.width, extent.height };
+    args.invImageSize = { 1.0f / extent.width, 1.0f / extent.height };
+    args.tileCount = { 32u, std::clamp(static_cast<uint32_t>(std::ceil(32.0f * extent.height / extent.width)), 8u, 64u) };
+    args.amount = amount;
+    args.refractPixels = std::clamp(refractPixels(), 0.0f, 48.0f);
+    args.dispersion = std::clamp(dispersion(), 0.0f, 0.5f);
+    args.blurPixels = std::clamp(blurPixels(), 0.0f, 4.0f);
+    const float aspect = static_cast<float>(extent.width) / extent.height;
+    args.flowVelocity = flowVelocity;
+    args.dt = dt;
+    args.aspect = aspect;
+    args.previousAspect = m_lensRainAspect;
+    args.density = std::clamp(density(), 5.0f, 40.0f);
+    args.sizeScale = std::clamp(sizeScale(), 0.5f, 3.0f);
+    args.slideSpeed = std::clamp(slideSpeed(), 0.0f, 3.0f);
+    const int countOverride = std::clamp(dropCount(), 0, LENS_RAIN_MAX_DROPS);
+    args.dropCount = countOverride > 0 ? countOverride
+      : static_cast<uint32_t>(std::clamp(args.density * args.density * aspect * 1.2f, 32.0f, 1024.0f));
+    args.previousCount = m_lensRainDropCount;
+    args.allowSpawning = allowSpawning;
+    m_lensRainDropCount = args.dropCount;
+    m_lensRainAspect = aspect;
+    const uint32_t tileTotal = args.tileCount.x * args.tileCount.y;
+    const auto allocate = [&](Rc<DxvkBuffer>& buffer, size_t size, const char* name) {
+      if (buffer == nullptr || buffer->info().size < size) {
+        DxvkBufferCreateInfo info;
+        info.size = align(size, size_t(256));
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        info.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        info.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        buffer = ctx->getDevice()->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          DxvkMemoryStats::Category::RTXBuffer, name);
+      }
+    };
+    allocate(m_lensRainStateBuffer, LENS_RAIN_MAX_DROPS * sizeof(LensRainState), "Lens rain state");
+    allocate(m_lensRainDropBuffer, LENS_RAIN_MAX_DROPS * sizeof(LensRainDrop), "Lens rain drops");
+    allocate(m_lensRainTileBuffer, tileTotal * (2 + LENS_RAIN_MAX_DROPS) * sizeof(uint32_t), "Lens rain tile lists");
+    ctx->bindResourceBuffer(LENS_RAIN_DROPS, DxvkBufferSlice(m_lensRainDropBuffer));
+    ctx->bindResourceBuffer(LENS_RAIN_TILES, DxvkBufferSlice(m_lensRainTileBuffer));
+    ctx->bindResourceBuffer(LENS_RAIN_STATES, DxvkBufferSlice(m_lensRainStateBuffer));
+    ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
+    ctx->pushConstants(0, sizeof(args), &args);
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainTilesShader::getShader());
+    ctx->dispatch((tileTotal + 63) / 64, 1, 1);
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainUpdateShader::getShader());
+    ctx->dispatch((args.dropCount + 63) / 64, 1, 1);
+    ctx->bindResourceView(LENS_RAIN_INPUT, color.view, nullptr);
+    ctx->bindResourceSampler(LENS_RAIN_INPUT, ctx->getResourceManager().getSampler(
+      VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
+    ctx->bindResourceView(LENS_RAIN_OUTPUT, rtOutput.m_postFxIntermediateTexture.view(Resources::AccessType::Write), nullptr);
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainShader::getShader());
+    ctx->dispatch((extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    ctx->copyImage(color.image, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 },
+      rtOutput.m_postFxIntermediateTexture.image(Resources::AccessType::Read),
+      { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, extent);
   }
 
   void DxvkPostFx::showLensEffectsImguiSettings() {

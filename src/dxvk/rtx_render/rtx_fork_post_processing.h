@@ -33,6 +33,7 @@ namespace dxvk {
       DepthOfField,
       Tonemapping,
       NtscVhs,
+      LensRain,
       LensEffects,
       SRGBDither,
     };
