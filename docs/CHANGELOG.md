@@ -30,6 +30,14 @@ Entry format:
 
 ## 2026-10-29
 
+### Emissive flare material migration
+Reference textures can identify legacy flare cards for explicit additive emission,
+preserving lamp tint and optical fade. Device-local metadata caches invalidate
+preserved scene materials when the reference or configuration changes.
+- Options: `rtx.fork.lensFlare.*`; enabled defaults off, paths empty, neutral level 1.
+- Commits: this entry lands with the local flare material migration commit.
+- Docs: [Flare materials](../documentation/RemixFlareMaterials.md).
+
 ### Lens rain GPU simulation
 The local lens rain effect now uses compute shaders for droplet state and tile
 indices, preserving independent motion, shelter fading and host motion input.

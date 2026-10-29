@@ -850,6 +850,16 @@ namespace dxvk {
         ImGui::Unindent();
       }
 
+      if (RemixGui::CollapsingHeader("Flare Materials", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enable emissive flare cards", &LensFlareMaterialSystem::enabledObject());
+        RemixGui::InputText("Reference DDS", &LensFlareMaterialSystem::identityDdsObject());
+        RemixGui::InputText("Albedo mask", &LensFlareMaterialSystem::albedoPathObject());
+        RemixGui::InputText("Emission mask", &LensFlareMaterialSystem::emissivePathObject());
+        RemixGui::DragFloat("Emission level", &LensFlareMaterialSystem::emissiveLevelObject(), 1.0f, 0.0f, 65504.0f);
+        ImGui::Unindent();
+      }
+
       if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
         RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());

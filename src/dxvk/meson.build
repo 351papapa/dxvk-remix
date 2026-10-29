@@ -348,6 +348,8 @@ dxvk_src = files([
   'rtx_render/rtx_intersection_test_helpers.h',
   'rtx_render/rtx_io.cpp',
   'rtx_render/rtx_io.h',
+  'rtx_render/rtx_lens_flare_material.cpp',
+  'rtx_render/rtx_lens_flare_material.h',
   'rtx_render/rtx_light_manager.cpp',
   'rtx_render/rtx_light_manager.h',
   'rtx_render/rtx_light_manager_gui.cpp',

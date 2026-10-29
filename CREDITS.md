@@ -131,12 +131,19 @@ classification, per-slot packing and bounded CPU topology reader are local
 adaptations. Existing NVIDIA shader copyright and MIT notices are retained.
 
 Procedural grass placement, worker generation and GPU selection derive from the
-same local MIT-licensed runtime. The unified retained-scene adapter, Y-up support,
+same local runtime. The unified retained-scene adapter, Y-up support,
 bounded nonindexed input and v2 batch/template ownership are local adaptations.
 USD loading uses the existing unmodified OpenUSD dependency and its notices.
 
 GPU water deformation, interaction and hull solvers, foam generation, caustics and
-underwater passes derive from the same local MIT-licensed runtime at `c17b36af`
+underwater passes derive from the same local runtime at `c17b36af`
 and its saved working tree. The v2 NUMOS/pre-exposure adapter, engine-owned mesh
 registration and camera-medium bridge forwarding are local adaptations. NUMOS
 is consumed through the existing unmodified submodule and host shader boundary.
+
+Weather precipitation, surface-contact emitters, lens rain and active flare-card
+material rules derive from that local runtime and its saved working tree. The
+weather emitter retains its design credit to xoxor4d's NFS Carbon RTX rain.
+The typed NUMOS adapter, GPU lens droplet state/binning and device-owned flare
+material cache are local adaptations. NVIDIA-derived files keep their MIT notices;
+the repository's zlib/libpng and MIT licence texts remain distributed unchanged.

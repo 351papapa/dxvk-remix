@@ -1018,7 +1018,9 @@ namespace dxvk {
         currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = legacySurface.isTextureFactorBlend;
         currentInstance.surface.isPlayerModel = currentInstance.testCategoryFlags(InstanceCategories::ThirdPersonPlayerModel);
-        currentInstance.surface.isVertexColorBakedLighting = legacySurface.isVertexColorBakedLighting;
+        // Flare vertex colors carry lamp tint and optical fade.
+        currentInstance.surface.isVertexColorBakedLighting = legacySurface.isVertexColorBakedLighting
+          && !m_device->getCommon()->metaLensFlareMaterials().matches(drawCall.getMaterialData().getColorTexture().getImageHash());
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
 
         // Note: Skip the spritesheet adjustment logic in the surface interaction when using Ray Portal materials as this logic

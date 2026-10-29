@@ -1155,6 +1155,8 @@ namespace dxvk {
     const bool legacyMaterialIdentityHashMatch =
         replacementInstance->legacyMaterialIdentityHash == legacyMaterialIdentityHash;
 
+    auto& lensFlareMaterials = m_device->getCommon()->metaLensFlareMaterials();
+    const uint64_t flareGeneration = lensFlareMaterials.refresh(m_device->getCurrentFrameId());
     const bool usePreservePath =
         RtxOptions::enablePreservePath() &&
         !replacementInstance->prims.empty() &&
@@ -1167,6 +1169,7 @@ namespace dxvk {
         !overrideMaterialHasParticles&&
         activeReplacementsMatch &&
         legacyMaterialIdentityHashMatch &&
+        replacementInstance->lensFlareMaterialGeneration == flareGeneration &&
         !terrainCascadesJustChanged &&
         cachedTexturesValidForPreserve;
 
@@ -1178,6 +1181,7 @@ namespace dxvk {
       // Any RtxOption read inside the dynamic update should force a full update when changed.
       RTX_OPTION_INVALIDATION_SCOPE(RtxOptionFlags::InvalidatesDrawcallTranslation);
       MaterialData renderMaterialData = determineMaterialData(overrideMaterialData, input.getMaterialData());
+      lensFlareMaterials.apply(*ctx, renderMaterialData);
       if (!activeReplacementsMatch) {
         replacementInstance->clear();
       }
@@ -1205,6 +1209,7 @@ namespace dxvk {
         }
       }
       replacementInstance->legacyMaterialIdentityHash = legacyMaterialIdentityHash;
+      replacementInstance->lensFlareMaterialGeneration = flareGeneration;
     }
 
     const SceneDraw& liveInput = *pLiveInput;
