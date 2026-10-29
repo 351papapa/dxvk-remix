@@ -56,6 +56,7 @@
 #include "rtx_render/rtx_srgb_dither.h"
 #include "rtx_render/rtx_initializer.h"
 #include "rtx_render/rtx_scene_manager.h"
+#include "rtx_render/rtx_water.h"
 #include "rtx_render/rtx_screenshot.h"
 #include "rtx_render/rtx_reflex.h"
 #include "rtx_render/rtx_game_capturer.h"
@@ -163,6 +164,8 @@ namespace dxvk {
       return m_numosWeather.get();
     }
     // NV-DXVK end
+
+    WaterSystem& metaWater() { return m_water.get(m_device); }
 
     SparseRendering& metaSparseRendering() {
       return m_sparseRendering.get();
@@ -429,6 +432,7 @@ namespace dxvk {
     // RTX Shaders
     Active<RtxGlobalVolumetrics>            m_globalVolumetrics;
     Active<RtxNumos>                        m_numos;  // NV-DXVK: NUMOS sky provider
+    Lazy<WaterSystem>                      m_water;
     Active<NumosWeather>                    m_numosWeather;  // NV-DXVK: its weather presets
     Active<SparseRendering>                 m_sparseRendering;
     Active<DxvkPathtracerGbuffer>           m_pathtracerGbuffer;

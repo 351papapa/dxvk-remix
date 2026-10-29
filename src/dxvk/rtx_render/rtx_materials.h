@@ -132,6 +132,8 @@ struct RtSurface {
     uint16_t flags0 = 0;
     flags0 |= normalFormat == VK_FORMAT_R32_UINT ? 1 : 0;
     flags0 |= isVertexColorBakedLighting ? (1 << 1) : 0;
+    flags0 |= isOceanWater ? (1 << 2) : 0;
+    flags0 |= isPlayerModel ? (1 << 3) : 0;
     // NOTE: Spare flags bits here
 
     writeGPUHelper(data, offset, flags0);
@@ -357,6 +359,8 @@ struct RtSurface {
   bool isPreservePath = false;
   bool hasMaterialChanged = false;
   bool isAnimatedWater = false;
+  bool isOceanWater = false;
+  bool isPlayerModel = false;
   bool isClipPlaneEnabled = false;
   bool isTextureFactorBlend = false;
   bool isVertexColorBakedLighting = true;

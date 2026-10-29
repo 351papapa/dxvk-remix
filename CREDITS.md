@@ -134,3 +134,9 @@ Procedural grass placement, worker generation and GPU selection derive from the
 same local MIT-licensed runtime. The unified retained-scene adapter, Y-up support,
 bounded nonindexed input and v2 batch/template ownership are local adaptations.
 USD loading uses the existing unmodified OpenUSD dependency and its notices.
+
+GPU water deformation, interaction and hull solvers, foam generation, caustics and
+underwater passes derive from the same local MIT-licensed runtime at `c17b36af`
+and its saved working tree. The v2 NUMOS/pre-exposure adapter, engine-owned mesh
+registration and camera-medium bridge forwarding are local adaptations. NUMOS
+is consumed through the existing unmodified submodule and host shader boundary.

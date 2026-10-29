@@ -398,6 +398,16 @@ bool AssetReplacer::registerExternalMesh(remixapi_MeshHandle handle, std::vector
   return true;
 }
 
+bool AssetReplacer::registerGeneratedMesh(remixapi_MeshHandle handle, std::vector<RasterGeometry>&& submeshes) {
+  const auto found = m_extMeshes.find(handle);
+  if (found == m_extMeshes.end()) { return false; }
+  for (auto& submesh : submeshes) { submesh.externalMesh = handle; }
+  found->second = std::make_shared<std::vector<RasterGeometry>>(std::move(submeshes));
+  ++m_externalAssetEpoch;
+  noteChangedExternalAsset(reinterpret_cast<uint64_t>(handle));
+  return true;
+}
+
 std::shared_ptr<const std::vector<RasterGeometry>> AssetReplacer::accessExternalMesh(remixapi_MeshHandle handle) const {
   auto found = m_extMeshes.find(handle);
   if (found == m_extMeshes.end()) {

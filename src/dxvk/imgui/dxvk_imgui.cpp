@@ -823,6 +823,9 @@ namespace dxvk {
     if (RemixGui::CollapsingHeader("Material Options (optional)", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
 
+      if (RemixGui::CollapsingHeader("Water", collapsingHeaderClosedFlags)) {
+        WaterSystem::showImguiSettings();
+      }
       if (RemixGui::CollapsingHeader("Procedural Grass", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
         RemixGui::Checkbox("Enable grass", &GrassSystem::enabledObject());

@@ -1468,6 +1468,18 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
     }
   }
 
+  // Sea coverage wets the actual bed material independently of rain classification.
+  if (cb.wetnessArgs.shoreStrength > 0.0f && surface.isStatic && !surface.isAnimatedWater
+      && !surface.isParticle && !surface.isDecal && !surface.isPlayerModel) {
+    const uint wetClass = surface.wetnessTag >> 24;
+    const float upNormal = cb.isZUp != 0 ? surfaceInteraction.geometryNormal.z : surfaceInteraction.geometryNormal.y;
+    if (wetClass != 1u && wetClass != 3u && upNormal > 0.75f) {
+      const float wet = beachWetness(surfaceInteraction.position);
+      albedo *= lerp(1.0f, 0.62f, wet);
+      roughness = lerp(roughness, min(roughness, 0.3f), wet);
+    }
+  }
+
   roughness = lerp(roughness, saturate(cb.wetnessArgs.rainEndRoughness), cb.wetnessArgs.rainEndRoughnessWeight);
 
 #endif

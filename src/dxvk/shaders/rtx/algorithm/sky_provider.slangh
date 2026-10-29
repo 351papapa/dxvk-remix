@@ -63,3 +63,21 @@ float skyProviderWorldToKm(float distanceWorld)
 {
   return numosWorldToKm(distanceWorld, skyArgs);
 }
+
+// Physical direct solar irradiance and its world-space direction. Consumers that
+// write pre-exposed render targets multiply irradiance by cb.preExposure once.
+vec3 skyProviderSunDirection()
+{
+  return normalize(atmosphereYUpToWorld(skyArgs.sunDirection, cb.isZUp != 0, skyArgs.flipUpAxis != 0u));
+}
+
+float skyProviderSunElevation()
+{
+  return dot(skyProviderSunDirection(), cb.isZUp != 0 ? vec3(0, 0, 1) : vec3(0, 1, 0));
+}
+
+vec3 skyProviderSunIrradiance(vec3 worldPosition)
+{
+  return skyArgs.sunIlluminance
+       * getTransmittanceToSun(worldPosition, skyArgs, cb.isZUp != 0) * cb.skyRadianceUnscale;
+}

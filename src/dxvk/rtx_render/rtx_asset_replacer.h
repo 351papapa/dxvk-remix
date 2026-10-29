@@ -620,6 +620,8 @@ namespace dxvk {
     // Returns false when a live handle's registration was dropped.
     bool registerExternalMesh(remixapi_MeshHandle handle, std::vector<RasterGeometry>&& submeshes,
                               bool refreshGeometry = false);
+    // Publishes engine-generated GPU geometry with its current topology and correspondence hashes.
+    bool registerGeneratedMesh(remixapi_MeshHandle handle, std::vector<RasterGeometry>&& submeshes);
     // Shared pointer because destroyExternalMesh can erase the entry while
     // cached draw calls still point into it.
     [[nodiscard]] std::shared_ptr<const std::vector<RasterGeometry>> accessExternalMesh(remixapi_MeshHandle handle) const;

@@ -716,6 +716,12 @@ namespace dxvk {
         m_device->getCommon()->pipelineManager().remixShaderCompilationCount());
       m_device->getCommon()->getRtxInitializer().onRaytracedFrame();
 
+      if (WetnessOptions::enabled() || WaterSystem::enabled() || getCommonObjects()->metaNumos().active()) {
+        getCommonObjects()->metaNumosWeather().update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
+      }
+      getCommonObjects()->metaWater().submitGpuSurface(this);
+      getCommonObjects()->metaWater().submitFoamSurface(this);
+
       // Update all the GPU buffers needed to describe the scene
       {
         const auto scenePrepStart = std::chrono::steady_clock::now();
@@ -865,6 +871,11 @@ namespace dxvk {
         fork_hooks::dispatchRcasSharpening(*this, rtOutput);
         m_previousUpscaler = m_currentUpscaler;
         recordGpuStageTiming("UpscalingOrRayReconstruction");
+
+        m_common->metaWater().compositeFoam(this, rtOutput);
+        recordGpuStageTiming("WaterFoam");
+        m_common->metaWater().compositeUnderwater(this, rtOutput);
+        recordGpuStageTiming("WaterUnderwater");
 
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
@@ -1919,12 +1930,15 @@ namespace dxvk {
     constants.startInMediumMaterialIndex = getSceneManager().getStartInMediumMaterialIndex();
     updateWetnessZones();
     auto& weather = getCommonObjects()->metaNumosWeather();
-    if (WetnessOptions::enabled() || getCommonObjects()->metaNumos().active()) {
-      weather.update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
-    }
     getSceneManager().getWindowLights().fillShaderParams(constants.windowLightArgs);
     WetnessOptions::fillShaderParams(constants.wetnessArgs);
     weather.fillWetnessArgs(constants.wetnessArgs);
+    getCommonObjects()->metaWater().publishControls(camera);
+    getCommonObjects()->metaWater().fillShoreWetnessArgs(constants.wetnessArgs);
+    if (WaterSystem::enabled()) {
+      constants.wetnessArgs.waterWaveStrength = std::clamp(constants.wetnessArgs.waterWaveStrength * WaterSystem::detailStrength(), 0.0f, 3.0f);
+      constants.wetnessArgs.waterWaveScale *= std::clamp(WaterSystem::detailScale(), 0.25f, 4.0f);
+    }
     constants.wetnessArgs.noRainNodeCount = static_cast<uint32_t>(m_wetnessZones.nodes().size());
     std::string rainEnding;
     const bool ending = fork_game_state::GameStateStore::get().tryGet("__wetness.rain_ending", rainEnding) && rainEnding == "1";
@@ -2146,6 +2160,7 @@ namespace dxvk {
 
     // Sky provider (NUMOS) outputs, slots 200-213.
     getCommonObjects()->metaNumos().bindCommonResources(*this);
+    getCommonObjects()->metaWater().bindShoreWetnessResources(this);
   }
 
   void RtxContext::bindResourceView(const uint32_t slot, const Rc<DxvkImageView>& imageView, const Rc<DxvkBufferView>& bufferView)
@@ -2426,8 +2441,10 @@ namespace dxvk {
     recordGpuStageTiming("NEECache");
     midFrameFlush(2); // rtx.present.midFrameFlushes bit 2, before direct integration
 
+    m_common->metaWater().prepareCaustics(this, rtOutput);
     // Integration Raytracing
     dispatchIntegrate(rtOutput);
+    m_common->metaWater().compositeCaustics(this, rtOutput);
   }
   
   void RtxContext::dispatchDemodulate(const Resources::RaytracingOutput& rtOutput) {

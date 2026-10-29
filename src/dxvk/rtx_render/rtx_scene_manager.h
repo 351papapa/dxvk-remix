@@ -79,6 +79,7 @@ struct SurfaceMaterialInputs {
   bool eye = false;                           // SceneDraw::isEye
   bool raytracedRenderTarget = false;
   bool hairCards = false;
+  bool animatedWater = false;
 
   static SurfaceMaterialInputs of(const SceneDraw& drawCall) {
     SurfaceMaterialInputs inputs;
@@ -88,6 +89,7 @@ struct SurfaceMaterialInputs {
     inputs.eye = drawCall.isEye();
     inputs.raytracedRenderTarget = drawCall.isUsingRaytracedRenderTarget;
     inputs.hairCards = drawCall.testCategoryFlags(InstanceCategories::HairCards);
+    inputs.animatedWater = drawCall.testCategoryFlags(InstanceCategories::AnimatedWater);
     return inputs;
   }
 };

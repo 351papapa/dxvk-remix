@@ -1,0 +1,77 @@
+#ifndef WATER_OCEAN_WAVE_SLANGH
+#define WATER_OCEAN_WAVE_SLANGH
+#include "rtx/pass/water_surface_args.h"
+
+// xyz: direction and wave-number ratio; w: fixed, decorrelated phase.
+static const float4 kOceanComponents[12] = {
+  float4(0.9923472899f, 0.1234781610f, 0.9710000000f, 0.3700000000f),
+  float4(0.8398474975f, 0.5428224212f, 0.8430000000f, 4.7130000000f),
+  float4(0.9893309444f, -0.1456855604f, 0.7130000000f, 2.1370000000f),
+  float4(-0.6914549473f, 0.7224195843f, 0.9370000000f, 5.2830000000f),
+  float4(-0.2701040618f, 0.9628311357f, 0.7910000000f, 1.4190000000f),
+  float4(-0.7729648861f, 0.6344488040f, 0.8870000000f, 3.8310000000f),
+  float4(0.1925833580f, -0.9812806175f, 1.0000000000f, 2.7270000000f),
+  float4(0.5677698153f, -0.8231873644f, 0.9290000000f, 0.9130000000f),
+  float4(0.0137936718f, -0.9999048628f, 0.8170000000f, 5.6210000000f),
+  float4(0.6722880511f, 0.7402896571f, 0.8930000000f, 4.0490000000f),
+  float4(0.9157196301f, 0.4018178182f, 0.7490000000f, 2.3330000000f),
+  float4(0.4945310615f, 0.8691599561f, 0.9830000000f, 0.0870000000f)
+};
+// Preserve each input band's variance while its detuned components form wave groups.
+static const float kOceanWeights[3] = {0.62f, 0.24f, 0.14f};
+static const float kOceanWeightNormalization = 1.4718620235236592f;
+
+struct OceanWave {
+  float2 horizontal;
+  float height;
+  float2 gradient;
+  float curvature;
+  float3 compression;
+  float amplitudeSum;
+  float slopeSum;
+  float rise;
+};
+
+float2 oceanWaveSums(float4 waveNumber, float4 amplitude) {
+  float2 sums = 0.0f;
+  [unroll] for (uint i = 0; i < 12; ++i) {
+    uint band = i / 3;
+    float a = abs(amplitude[band]) * kOceanWeights[i % 3] * kOceanWeightNormalization;
+    sums += float2(a, a * abs(waveNumber[band]) * kOceanComponents[i].z);
+  }
+  return sums;
+}
+
+// Suppress frequencies a geometric grid cannot represent; preserve the input spectrum.
+float4 oceanGridFilter(float4 waveNumber,float spacing) {
+  return 1.0f-smoothstep(float4(1.57079632679f),float4(3.14159265359f),abs(waveNumber)*spacing);
+}
+
+OceanWave sampleOceanWave(float2 parameter, float4 waveNumber, float4 temporalPhase, float4 amplitude, float steepness) {
+  OceanWave wave = {};
+  float2 sums = oceanWaveSums(waveNumber, amplitude);
+  wave.amplitudeSum = sums.x;
+  wave.slopeSum = sums.y;
+  float q = min(steepness, 0.75f / max(wave.slopeSum, 0.001f));
+  [unroll] for (uint i = 0; i < 12; ++i) {
+    uint band = i / 3;
+    float4 component = kOceanComponents[i];
+    float k = waveNumber[band] * component.z;
+    float frequencyRatio = sqrt(component.z);
+    precise float phase = k * (component.x * parameter.x + component.y * parameter.y)
+      - temporalPhase[band] * frequencyRatio + component.w;
+    float turns = round(phase * .15915494309189535f);
+    float reduced = fma(-turns, 6.28125f, phase);
+    reduced = fma(-turns, .0019353071795864769f, reduced);
+    float a = amplitude[band] * kOceanWeights[i % 3] * kOceanWeightNormalization;
+    float sine = sin(reduced), cosine = cos(reduced);
+    wave.horizontal += q * a * cosine * component.xy;
+    wave.height += a * sine;
+    wave.gradient += a * k * cosine * component.xy;
+    wave.curvature += a * k * k * sine;
+    wave.compression += q * a * k * sine * float3(component.x * component.x, component.x * component.y, component.y * component.y);
+    wave.rise -= a * sqrt(max(9.81f * waveNumber[band], 0.0f)) * frequencyRatio * cosine;
+  }
+  return wave;
+}
+#endif

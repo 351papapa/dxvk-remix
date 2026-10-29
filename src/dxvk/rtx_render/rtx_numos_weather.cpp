@@ -265,6 +265,7 @@ namespace dxvk {
       std::stringstream text;
       text << f.rdbuf();
       p.name = path.stem().string();
+      p.water = WaterWeatherState::forName(p.name);
       numos::WeatherPreset which;
       p.numosBuiltIn = numos::weatherPresetFromName(p.name.c_str(), which);
 
@@ -282,6 +283,14 @@ namespace dxvk {
         if (eq != std::string::npos) {
           const std::string key = trim(code.substr(0, eq));
           const std::string value = trim(code.substr(eq + 1));
+          if (key == "weather.oceanRainWeight" || key == "weather.oceanStormWeight") {
+            try {
+              const float weight = std::stof(value);
+              if (key == "weather.oceanRainWeight") { p.water.rain = weight; }
+              else { p.water.storm = weight; }
+            } catch (...) { Logger::warn("[NUMOS weather] Invalid ocean wave weight in " + path.string()); }
+            continue;
+          }
           if (parseWetnessPreset(p.wetness, key, value)) {
             continue;
           }
@@ -439,6 +448,7 @@ namespace dxvk {
       const numos::Settings defaults {};
       NumosWeather::Preset p;
       p.name = fileNameFor(section.name);
+      p.water = WaterWeatherState::forName(section.name);
       bool hasCloudColor = false;
       LegacyValue cloudColor;
       bool hasLayer2Color = false;
@@ -529,7 +539,7 @@ namespace dxvk {
       relative(numos::settingInfos().size(), false) { }
   NumosWeather::Preset::Preset(const Preset& o)
     : name(o.name), bindings(o.bindings), transitionSeconds(o.transitionSeconds), enabled(o.enabled),
-      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), dirty(o.dirty),
+      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), water(o.water), dirty(o.dirty),
       numosBuiltIn(o.numosBuiltIn) { }
   NumosWeather::Preset& NumosWeather::Preset::operator=(const Preset& o) {
     if (this != &o) {
@@ -541,6 +551,7 @@ namespace dxvk {
       set = o.set;
       relative = o.relative;
       wetness = o.wetness;
+      water = o.water;
       dirty = o.dirty;
       numosBuiltIn = o.numosBuiltIn;
     }
@@ -552,6 +563,7 @@ namespace dxvk {
     numos::Settings base, from, current;
     numos::WeatherSnapshot snapshot;
     WetnessArgs wetnessFrom, wetnessCurrent;
+    WaterWeatherState waterFrom, waterCurrent;
     float elapsed = 0.0f;
     float duration = 0.0f;
     bool hasCurrent = false;
@@ -604,6 +616,7 @@ namespace dxvk {
       const numos::WeatherPreset which = numos::WeatherPreset(i);
       Preset p;
       p.name = numos::weatherPresetName(which);
+      p.water = WaterWeatherState::forName(p.name);
       if (std::find(written.begin(), written.end(), p.name) != written.end()) {
         continue;
       }
@@ -671,6 +684,8 @@ namespace dxvk {
         text << infos[i].key << " = " << (p.relative[i] ? "x" : "") << numos::formatSetting(*p.values, infos[i]) << "\n";
       }
     }
+    text << "weather.oceanRainWeight = " << p.water.rain << "\n"
+         << "weather.oceanStormWeight = " << p.water.storm << "\n";
     for (size_t i = 0; i < p.wetness.values.size(); ++i) {
       if (p.wetness.values[i].has_value()) {
         text << "rtx.wetness." << kWetnessParameters[i].name << " = "
@@ -707,6 +722,7 @@ namespace dxvk {
       p = *from;
     } else {
       *p.values = m_state->current;
+      p.water = m_state->waterCurrent;
       p.set = weatherKeys();
     }
     p.name = name;
@@ -910,6 +926,7 @@ namespace dxvk {
         preset->relative[i] = false;
       }
     }
+    preset->water = m_state->waterCurrent;
     preset->dirty = true;
     return *preset;
   }
@@ -957,6 +974,7 @@ namespace dxvk {
           stored->relative[i] = false;
         }
       }
+      stored->water = s.waterCurrent;
       stored->dirty = true;
     }
     {
@@ -1147,6 +1165,7 @@ namespace dxvk {
     // While tuning, the sliders are the look: no preset, no blend.
     if (m_tuning) {
       s.wetnessCurrent = wetnessBase;
+      // Keep ocean weather fixed while tuning the sky look.
       s.current = base;
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
@@ -1176,6 +1195,11 @@ namespace dxvk {
       target = find(manual);
     }
     const std::string targetName = target ? target->name : std::string();
+    const auto waterFor = [](const Preset* selected) {
+      auto state = selected ? selected->water : WaterWeatherState{};
+      state.normalize();
+      return state;
+    };
 
     // The game blends weathers itself: follow its blend factor exactly.
     const float gameBlend = gameWeatherBlend();
@@ -1186,6 +1210,7 @@ namespace dxvk {
       applyPreset(gamePreset, incoming);
       blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
       s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
+      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), gameBlend);
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
       s.snap = false;
@@ -1197,8 +1222,10 @@ namespace dxvk {
     numos::Settings goal = base;
     applyPreset(target, goal);
     const WetnessArgs wetnessGoal = wetnessFor(target);
+    const WaterWeatherState waterGoal = waterFor(target);
     if (!s.hasCurrent || targetName != m_targetName) {
       s.wetnessFrom = s.hasCurrent ? s.wetnessCurrent : wetnessGoal;
+      s.waterFrom = s.hasCurrent ? s.waterCurrent : waterGoal;
       s.from = s.hasCurrent ? s.current : goal;
       s.duration = !s.hasCurrent || s.snap ? 0.0f
                  : (target && target->transitionSeconds >= 0.0f ? target->transitionSeconds : transitionSeconds());
@@ -1210,6 +1237,7 @@ namespace dxvk {
     s.elapsed += std::max(deltaSeconds, 0.0f);
     const float t = s.duration > 0.0f ? s.elapsed / s.duration : 1.0f;
     s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t));
+    s.waterCurrent = WaterWeatherState::blend(s.waterFrom, waterGoal, smoothstep01(t));
     if (t >= 1.0f) {
       s.current = goal;  // settled: live edits to the preset or the settings show at once
     } else {
@@ -1217,6 +1245,10 @@ namespace dxvk {
     }
     s.snapshot = numos::weatherFromSettings(s.current);
     return s.current;
+  }
+
+  WaterWeatherState NumosWeather::waterState() const {
+    return m_state->hasCurrent ? m_state->waterCurrent : WaterWeatherState{};
   }
 
   void NumosWeather::fillWetnessArgs(WetnessArgs& args) const {

@@ -1,11 +1,12 @@
 #pragma once
+#include "rtx_water.h"
 #include "rtx/pass/wetness_args.h"
 
 #define WETNESS_SHADER_CODE_INNER(code) RTX_WETNESS_SHADER_##code
 #define WETNESS_SHADER_CODE(code) WETNESS_SHADER_CODE_INNER(code)
 #define GET_WETNESS_ENABLED_SHADER(stage, className, code) GET_SHADER_VARIANT(stage, className, code)
 #define GET_WETNESS_SHADER_VARIANT(stage, className, code) \
-  (WetnessOptions::enabled() \
+  (WetnessOptions::enabled() || WaterSystem::needsWetnessShader() \
     ? GET_WETNESS_ENABLED_SHADER(stage, className, WETNESS_SHADER_CODE(code)) \
     : GET_SHADER_VARIANT(stage, className, code))
 

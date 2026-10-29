@@ -3030,6 +3030,23 @@ void ProcessDeviceCommandQueue() {
         break;
       }
 
+      case RemixApi_SetCameraMediumMaterial:
+      {
+        const uint32_t uid = DeviceBridge::get_data();
+        const auto found = MaterialHandle::s_handleMap.find(uid);
+        remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+        if (uid == 0 || found != MaterialHandle::s_handleMap.end()) {
+          remixapi_CameraMediumInfo info {};
+          info.sType = REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_INFO;
+          info.medium = uid == 0 ? nullptr : found->second;
+          result = remixapi::g_remix.SetCameraMediumMaterial
+            ? remixapi::g_remix.SetCameraMediumMaterial(&info) : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+        }
+        ServerMessage c(Commands::Bridge_Response, currentUID);
+        c.send_data(static_cast<uint32_t>(result));
+        break;
+      }
+
       case RemixApi_DestroyMaterial:
       {
         MaterialHandle handle(DeviceBridge::get_data());

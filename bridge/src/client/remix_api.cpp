@@ -196,6 +196,30 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMaterial(
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+// Only a pointer-free material UID crosses the x86/x64 boundary. UID zero clears
+// the camera medium; nonzero UIDs are resolved against the server material map.
+remixapi_ErrorCode REMIXAPI_CALL remixapi_SetCameraMediumMaterial(const remixapi_CameraMediumInfo* info) {
+  ASSERT_REMIXAPI_PFN_TYPE(remixapi_SetCameraMediumMaterial);
+  if (!info || info->sType != REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_INFO || info->pNext) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  const auto raw = reinterpret_cast<uintptr_t>(info->medium);
+  if (raw > UINT32_MAX || (raw != 0 && raw >= MaterialHandle::nextUid)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  DeviceBridge::ResponseTransaction responseTransaction;
+  UID currentUID = 0;
+  {
+    ClientMessage c(Commands::RemixApi_SetCameraMediumMaterial);
+    currentUID = c.get_uid();
+    c.send_data(static_cast<uint32_t>(raw));
+  }
+  WAIT_FOR_SERVER_RESPONSE("remixapi_SetCameraMediumMaterial", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);
+  const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+  DeviceBridge::pop_front();
+  return result;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyMaterial(remixapi_MaterialHandle handle) {
   ASSERT_REMIXAPI_PFN_TYPE(remixapi_DestroyMaterial);
   MaterialHandle materialHandle(handle);
@@ -534,6 +558,7 @@ extern "C" {
       // interf.Present = remixapi_Present;
       interf.CreateMaterial = remixapi_CreateMaterial;
       interf.DestroyMaterial = remixapi_DestroyMaterial;
+      interf.SetCameraMediumMaterial = remixapi_SetCameraMediumMaterial;
       interf.CreateTexture = remixapi_CreateTexture;
       interf.DestroyTexture = remixapi_DestroyTexture;
       interf.CreateMesh = remixapi_CreateMesh;

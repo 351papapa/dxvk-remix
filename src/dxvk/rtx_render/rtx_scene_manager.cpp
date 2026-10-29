@@ -32,6 +32,7 @@
 #include "rtx_fork_material_census.h"
 #include "rtx_fork_core_material.h"
 #include "rtx_scene_manager.h"
+#include "rtx_water.h"
 #include "rtx/pass/wetness_args.h"
 #include "rtx_game_lights.h"
 #include "rtx_retained_scene.h"
@@ -595,6 +596,16 @@ namespace dxvk {
     // vertex layout to include space for normals. The smooth normals compute pass will fill them in later.
     const bool needsSmoothNormals = drawCallState.getCategoryFlags().test(InstanceCategories::SmoothNormals);
     const bool forceNormals = needsSmoothNormals && !input.normalBuffer.defined();
+    auto& water = m_device->getCommon()->metaWater();
+    const bool useGeneratedVertices = !needsSmoothNormals && !drawCallState.usesVertexShader &&
+      drawCallState.getSkinningState().numBones == 0 && input.numBonesPerVertex == 0 &&
+      input.isVertexDataInterleaved() && input.areFormatsGpuFriendly() && water.ownsFoamGeometry(input);
+    if (useGeneratedVertices && result == ObjectCacheState::kUpdateInstance &&
+        !input.positionBuffer.matches(output.positionBuffer)) {
+      result = ObjectCacheState::kUpdateBVH;
+    }
+    const bool waterDomainChanged = texcoordsChanged &&
+      reinterpret_cast<uint64_t>(input.externalMesh) == 0x574C475055535246ull;
 
     // When smooth normals state changes (added or removed), promote to kUpdateBVH so the vertex
     // data is re-interleaved and the smooth normals dispatch runs (or original normals are restored).
@@ -619,6 +630,7 @@ namespace dxvk {
       };
       // In-place copies must preserve BLAS position addresses and any post-processed vertex data.
       const bool canRefreshInPlace = optimizeAnimatedTexcoords() &&
+        !water.ownsFoamVertexBuffer(output.historyBuffer[0]) &&
         !drawCallState.usesVertexShader && drawCallState.getSkinningState().numBones == 0 &&
         input.numBonesPerVertex == 0 && !needsSmoothNormals &&
         (!m_opacityMicromapManager || !m_opacityMicromapManager->isActive()) &&
@@ -698,20 +710,37 @@ namespace dxvk {
         output.indexBuffer = RaytraceBuffer(DxvkBufferSlice(output.indexCacheBuffer), 0, indexStride, indexBufferType);
 
         info.size = align(vertexBufferSize, CACHE_LINE_SIZE);
-        output.historyBuffer[0] = m_device->createBuffer(info, memoryProperty, DxvkMemoryStats::Category::RTXSceneGeometry, "Geometry Buffer");
-
-        RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output, forceNormals);
+        if (useGeneratedVertices) {
+          output.historyBuffer[0] = input.positionBuffer.buffer();
+          RtxGeometryUtils::processGeometryBuffers(input, output);
+        } else {
+          output.historyBuffer[0] = m_device->createBuffer(info, memoryProperty, DxvkMemoryStats::Category::RTXSceneGeometry, "Geometry Buffer");
+          RtxGeometryUtils::cacheVertexDataOnGPU(ctx, input, output, forceNormals);
+        }
 
         break;
       }
       case ObjectCacheState::kUpdateBVH: {
+        if (useGeneratedVertices) {
+          const RaytraceBuffer previousPosition = output.positionBuffer;
+          output.historyBuffer[1] = output.historyBuffer[0];
+          output.historyBuffer[0] = input.positionBuffer.buffer();
+          RtxGeometryUtils::processGeometryBuffers(input, output);
+          if (!texcoordsChanged && output.historyBuffer[1] != output.historyBuffer[0] &&
+              water.ownsFoamVertexBuffer(output.historyBuffer[1])) {
+            output.previousPositionBuffer = previousPosition;
+          }
+          SccrShellManager::onGeometryVerticesChanged(output);
+          break;
+        }
         bool invalidateHistory = false;
 
         // New vertices mean a new SCCR shell cache key. The second time makes the geometry dynamic (plain SCCR).
         SccrShellManager::onGeometryVerticesChanged(output);
 
         // Stride changed, so we must recreate the previous buffer and use identical data
-        if (output.historyBuffer[0]->info().size != align(vertexStride * input.vertexCount, CACHE_LINE_SIZE)) {
+        if (output.historyBuffer[0]->info().size != align(vertexStride * input.vertexCount, CACHE_LINE_SIZE) ||
+            water.ownsFoamVertexBuffer(output.historyBuffer[0]) || water.ownsFoamVertexBuffer(output.historyBuffer[1])) {
           auto desc = output.historyBuffer[0]->info();
           desc.usage &= ~kAliasableGeometryUsage;
           desc.size = align(vertexStride * input.vertexCount, CACHE_LINE_SIZE);
@@ -750,7 +779,7 @@ namespace dxvk {
 
         // Assign the previous buffer using the last slice (copy most params from the position, just change buffer).
         // Geometry built and refreshed in the same frame has no previous positions.
-        if (output.historyBuffer[1] != nullptr) {
+        if (output.historyBuffer[1] != nullptr && !waterDomainChanged) {
           output.previousPositionBuffer = RaytraceBuffer(DxvkBufferSlice(output.historyBuffer[1], 0, output.positionBuffer.length()), output.positionBuffer.offsetFromSlice(), output.positionBuffer.stride(), output.positionBuffer.vertexFormat());
         }
         break;
@@ -2261,7 +2290,16 @@ namespace dxvk {
       samplerIndex2 = trackSampler(draw.sampler2 != nullptr ? *draw.sampler2 : Rc<DxvkSampler>());
     }
 
+    const bool overrideWater = renderMaterialDataType == MaterialDataType::Translucent
+      && draw.animatedWater && WaterSystem::enabled() && WaterSystem::overrideMaterial();
     XXH64_hash_t preCreationHash = renderMaterialData.getHash();
+    preCreationHash = XXH64(&overrideWater, sizeof(overrideWater), preCreationHash);
+    if (overrideWater) {
+      const Vector3 color = WaterSystem::transmittanceColor();
+      const float distance = WaterSystem::transmittanceDistance();
+      preCreationHash = XXH64(&color, sizeof(color), preCreationHash);
+      preCreationHash = XXH64(&distance, sizeof(distance), preCreationHash);
+    }
     preCreationHash = XXH64(&samplerIndex, sizeof(samplerIndex), preCreationHash);
     preCreationHash = XXH64(&samplerIndex2, sizeof(samplerIndex2), preCreationHash);
     preCreationHash = XXH64(&hasTexcoords, sizeof(hasTexcoords), preCreationHash);
@@ -2609,7 +2647,13 @@ namespace dxvk {
       opaqueSurfaceMaterial.setPomConeAvailable(pomConeAvailable);
       surfaceMaterial.emplace(opaqueSurfaceMaterial);
     } else if (renderMaterialDataType == MaterialDataType::Translucent) {
-      surfaceMaterial.emplace(createTranslucentSurfaceMaterial(renderMaterialData.getTranslucentMaterialData(), samplerIndex, hasTexcoords));
+      auto waterMaterial = renderMaterialData.getTranslucentMaterialData();
+      if (overrideWater) {
+        waterMaterial.setTransmittanceColor(WaterSystem::transmittanceColor());
+        waterMaterial.setTransmittanceMeasurementDistance(std::clamp(WaterSystem::transmittanceDistance(), 0.1f, 100.0f));
+        waterMaterial.setEnableThinWalled(false);
+      }
+      surfaceMaterial.emplace(createTranslucentSurfaceMaterial(waterMaterial, samplerIndex, hasTexcoords));
     } else if (renderMaterialDataType == MaterialDataType::RayPortal) {
       m_rayPortalMaterialCreated.store(true, std::memory_order_relaxed); // See hasCreatedRayPortalMaterial().
       const auto& rayPortalMaterialData = renderMaterialData.getRayPortalMaterialData();
@@ -3008,7 +3052,7 @@ namespace dxvk {
     m_graphManager.applySceneOverrides(ctx);
     const bool wetnessEnabled = WetnessOptions::enabled();
     const bool windowsEnabled = WindowLightOptions::enabled();
-    if (wetnessEnabled || windowsEnabled || GrassSystem::enabled()) {
+    if (wetnessEnabled || windowsEnabled || GrassSystem::enabled() || WaterSystem::enabled()) {
       auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
       if (captureFolder.filename() == L".trex") {
         captureFolder = captureFolder.parent_path();
@@ -3209,11 +3253,11 @@ namespace dxvk {
     if (windowsEnabled) {
       m_windowLights.beginFrame();
     }
-    if (wetnessEnabled || windowsEnabled || m_windowLightsWereEnabled) {
+    if (wetnessEnabled || WaterSystem::enabled() || windowsEnabled || m_windowLightsWereEnabled) {
       const auto& textures = textureManager.getTextureTable();
       for (RtInstance* instance : m_instanceManager.getInstanceTable()) {
         auto& surface = instance->surface;
-        if (wetnessEnabled) {
+        if (wetnessEnabled || WaterSystem::enabled()) {
           surface.wetnessTag = surface.sourceWetnessTag;
           const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
           if (rule == WetnessDffRules::Rule::Disable) {

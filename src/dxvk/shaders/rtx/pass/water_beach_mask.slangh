@@ -1,0 +1,32 @@
+#pragma once
+
+bool hasBeachMask(StructuredBuffer<uint> data) { return data[6] != 0u; }
+
+float beachMaskTexel(StructuredBuffer<uint> data, int2 cell) {
+  int2 size = int2(data[0], data[1]);
+  cell = clamp(cell, int2(0), size - 1);
+  return float(data[8 + cell.y * size.x + cell.x] & 255u) / 255.0f;
+}
+
+float2 beachMaskUv(StructuredBuffer<uint> data, float2 world) {
+  return (world - float2(asfloat(data[2]), asfloat(data[3])))
+    * float2(asfloat(data[4]), asfloat(data[5]));
+}
+
+float beachSeedMask(StructuredBuffer<uint> data, float2 world) {
+  if (!hasBeachMask(data)) { return 1.0f; }
+  float2 uv = beachMaskUv(data, world);
+  if (any(uv <= 0.0f) || any(uv >= 1.0f)) { return 0.0f; }
+  return beachMaskTexel(data, int2(uv * float2(data[0], data[1])));
+}
+
+float beachSurfaceMask(StructuredBuffer<uint> data, float2 world) {
+  if (!hasBeachMask(data)) { return 1.0f; }
+  float2 uv = beachMaskUv(data, world);
+  if (any(uv <= 0.0f) || any(uv >= 1.0f)) { return 0.0f; }
+  float2 texel = uv * float2(data[0], data[1]) - 0.5f;
+  int2 cell = int2(floor(texel));
+  float2 f = frac(texel);
+  return lerp(lerp(beachMaskTexel(data, cell), beachMaskTexel(data, cell + int2(1, 0)), f.x),
+    lerp(beachMaskTexel(data, cell + int2(0, 1)), beachMaskTexel(data, cell + int2(1, 1)), f.x), f.y);
+}

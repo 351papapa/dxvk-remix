@@ -1013,8 +1013,11 @@ namespace dxvk {
         currentInstance.surface.tFactor = legacySurface.tFactor;
         currentInstance.surface.alphaState = alphaState;
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
+        currentInstance.surface.isOceanWater = currentInstance.surface.isAnimatedWater
+          && reinterpret_cast<uint64_t>(drawCall.getGeometryData().externalMaterial) == 0x57415445524C4142ull;
         currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = legacySurface.isTextureFactorBlend;
+        currentInstance.surface.isPlayerModel = currentInstance.testCategoryFlags(InstanceCategories::ThirdPersonPlayerModel);
         currentInstance.surface.isVertexColorBakedLighting = legacySurface.isVertexColorBakedLighting;
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
 

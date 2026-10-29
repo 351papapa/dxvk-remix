@@ -1,0 +1,164 @@
+#pragma once
+// Noise is declared in its own header so passes that cannot bind the ray tracing bank
+// (notably the display surface generator, which runs before the frame's constants are
+// uploaded) can still compute the foam's erosion and UV drift.
+#include "rtx/pass/water_foam_noise.slangh"
+float foamCells(float2 p, float t, float filterWidth) {
+  float2 c = floor(p), f = frac(p);
+  float hole = 10.0f;
+  [unroll] for (int y = -1; y <= 1; ++y) {
+    [unroll] for (int x = -1; x <= 1; ++x) {
+      float2 offset = float2(x, y), h = foamHash(c + offset);
+      float2 point = 0.5f + 0.28f * sin(6.2831853f * h + t * (0.25f + h * 0.2f));
+      float radius = 0.13f + h.x * h.x * 0.30f;
+      hole = min(hole, length(offset + point - f) / radius);
+    }
+  }
+  // Filled froth with round, unequal holes. NOT Voronoi F2-F1 filaments (caustics).
+  return smoothstep(0.8f - filterWidth, 1.15f + filterWidth, hole);
+}
+bool foamTriangleVertices(Surface surface, uint primitiveIndex, out float3 vertices[3]) {
+  vertices[0] = vertices[1] = vertices[2] = float3(0);
+  uint positionStride = uint(surface.positionStride);
+  if (surface.positionBufferIndex == BINDING_INDEX_INVALID || positionStride < 12u
+      || (positionStride & 3u) != 0u || (surface.positionOffset & 3u) != 0u) { return false; }
+  uint positionBase = surface.positionOffset / 4u;
+  uint positionStep = positionStride / 4u;
+  uint maxVertexIndex = (0xfffffffdu - positionBase) / positionStep;
+  // A committed TLAS primitive uses the renderer's validated geometry; bindless
+  // OpArrayLength here crashes the NVIDIA 616.92 pipeline compiler.
+  // Check before multiplying: a malformed primitive or vertex index must not wrap into a valid buffer offset.
+  if (surface.firstIndex > 0xfffffffdu || primitiveIndex > (0xffffffffu - surface.firstIndex - 2u) / 3u) { return false; }
+  uint first = primitiveIndex * 3u + surface.firstIndex;
+  if (surface.indexBufferIndex != BINDING_INDEX_INVALID) {
+    if (surface.indexStride != 4u && surface.indexStride != 2u) {
+      return false;
+    }
+  } else if (first > maxVertexIndex || maxVertexIndex - first < 2u) {
+    return false;
+  }
+  [unroll] for (uint j = 0; j < 3; ++j) {
+    uint index = first + j;
+    if (surface.indexBufferIndex != BINDING_INDEX_INVALID) {
+      index = surface.indexStride == 4u ? BUFFER_ARRAY(indices32, surface.indexBufferIndex, index)
+        : BUFFER_ARRAY(indices, surface.indexBufferIndex, index);
+    }
+    if (index > maxVertexIndex) { return false; }
+    uint offset = positionBase + index * positionStep;
+    float3 local = float3(BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset),
+      BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset + 1u),
+      BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset + 2u));
+    vertices[j] = mul(surface.objectToWorld, float4(local, 1));
+    if (!all(isfinite(vertices[j]))) { return false; }
+  }
+  return true;
+}
+
+bool foamTriangleContact(float3 vertices[3], float3 p, float3 up, float3 direction,
+    out float3 nearest, out float3 perpendicular) {
+  nearest = p;
+  perpendicular = direction;
+  const float epsilon = 1e-4f;
+  float3 relative[3];
+  float height[3];
+  uint coplanar = 0u;
+  [unroll] for (uint j = 0; j < 3; ++j) {
+    relative[j] = vertices[j] - p;
+    height[j] = dot(relative[j], up);
+    if (abs(height[j]) <= epsilon) { ++coplanar; }
+  }
+  // A flat bed coincident with the water level has no unique shoreline segment.
+  if (coplanar == 3u) { return false; }
+  float3 points[3];
+  uint count = 0u;
+  [unroll] for (uint j = 0; j < 3; ++j) {
+    uint next = (j + 1u) % 3u;
+    float da = height[j], db = height[next];
+    float3 point = float3(0);
+    bool intersects = false;
+    if (abs(da) <= epsilon) {
+      point = relative[j] - up * da;
+      intersects = true;
+    } else if ((da < -epsilon && db > epsilon) || (da > epsilon && db < -epsilon)) {
+      point = lerp(relative[j], relative[next], da / (da - db));
+      point -= up * dot(point, up);
+      intersects = true;
+    }
+    if (intersects) {
+      bool duplicate = false;
+      [unroll] for (uint k = 0u; k < 3u; ++k) {
+        if (k < count) {
+          float3 delta = point - points[k];
+          duplicate = duplicate || dot(delta, delta) <= epsilon * epsilon;
+        }
+      }
+      if (!duplicate && count < 3u) { points[count++] = point; }
+    }
+  }
+  if (count != 2u) { return false; }
+  float3 edge = points[1] - points[0];
+  float lengthSquared = dot(edge, edge);
+  if (!isfinite(lengthSquared) || lengthSquared <= epsilon * epsilon) { return false; }
+  float3 normal = cross(up, edge) * rsqrt(lengthSquared);
+  perpendicular = dot(direction, normal) < 0.0f ? -normal : normal;
+  nearest = p + points[0] + edge * saturate(-dot(points[0], edge) / lengthSquared);
+  return all(isfinite(nearest));
+}
+
+// Query actual rendered opaque geometry, including USD replacements. Water is excluded
+// explicitly: intersection must never come from a second overlapping water tile.
+float foamContact(float3 p, float3 direction, float limit, bool edgeDistance, out float3 nearest, out float3 perpendicular) {
+  nearest = p + direction * limit;
+  perpendicular = direction;
+  RayDesc ray;
+  ray.Origin = p; ray.Direction = direction; ray.TMin = 0.012f;
+  // Diagonal probes must reach the face beyond a convex corner; the final
+  // distance below is to the finite shoreline segment, not to the ray hit.
+  ray.TMax = edgeDistance ? limit * 1.5f : limit;
+  if (!isfinite(ray.TMax) || ray.TMax <= ray.TMin) { return limit; }
+  uint surfaceCount, surfaceStride, materialCount, materialStride;
+  surfaces.GetDimensions(surfaceCount, surfaceStride);
+  surfaceMaterials.GetDimensions(materialCount, materialStride);
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<flags> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE, ray);
+  float3 up = cb.isZUp != 0 ? float3(0, 0, 1) : float3(0, 1, 0);
+  while (query.Proceed()) {
+    if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      uint base = query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK;
+      uint id = base + query.CandidateGeometryIndex();
+      if (id < base || id >= surfaceCount || id >= materialCount) { continue; }
+      Surface surface = surfaces[id];
+      if (surface.isAnimatedWater || surface.isParticle || surface.isDecal
+          || (args.excludeCharacters != 0u && surface.isPlayerModel)) { continue; }
+      MemoryPolymorphicSurfaceMaterial material = surfaceMaterials[id];
+      if (!material.isOpaque()) { continue; }
+      // Vehicle perimeter foam is handled by WaterLab; boats deliberately have none.
+      OpaqueSurfaceMaterial opaque = reinterpret<OpaqueSurfaceMaterial>(material);
+      uint wetClass = surface.wetnessTag >> 24;
+      if (wetClass == 1u || wetClass == 3u) { continue; }
+      float3 move = mul(surface.objectToWorld, float4(0, 0, 0, 1)) - mul(surface.prevObjectToWorld, float4(0, 0, 0, 1));
+      move -= up * dot(move, up); // Buoyancy is not forward travel.
+      if (surface.isStatic || length(move) < args.maxMotion) {
+        query.CommitNonOpaqueTriangleHit();
+      }
+    }
+  }
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return limit; }
+  uint base = query.CommittedInstanceID() & CUSTOM_INDEX_SURFACE_MASK;
+  uint id = base + query.CommittedGeometryIndex();
+  if (id < base || id >= surfaceCount || id >= materialCount) { return limit; }
+  Surface surface = surfaces[id];
+  nearest = p + direction * query.CommittedRayT();
+  float distance = query.CommittedRayT();
+  if (edgeDistance) {
+    float3 vertices[3];
+    if (!foamTriangleVertices(surface, query.CommittedPrimitiveIndex(), vertices)
+        || !foamTriangleContact(vertices, p, up, direction, nearest, perpendicular)) { return limit; }
+    distance = length(p - nearest);
+  }
+  float3 move = mul(surface.objectToWorld, float4(0, 0, 0, 1)) - mul(surface.prevObjectToWorld, float4(0, 0, 0, 1));
+  move -= up * dot(move, up);
+  float stationary = surface.isStatic ? 1.0f : 1.0f - smoothstep(args.maxMotion * (0.12f / 0.35f), args.maxMotion, length(move));
+  return lerp(limit, min(distance, limit), stationary);
+}

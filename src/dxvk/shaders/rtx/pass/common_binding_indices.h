@@ -49,7 +49,13 @@
 #define BINDING_VALUE_NOISE_SAMPLER              18
 #define BINDING_SAMPLER_READBACK_BUFFER          19
 #define BINDING_LIGHT_IDENTITY_BUFFER            20
-#define BINDING_WETNESS_ZONES                    221
+#define BINDING_WETNESS_ZONES 221
+// Water generation passes bind their resources independently of the tracing bank.
+#define BINDING_WATER_FOAM_SHEET_VERTICES 222
+#define BINDING_WATER_FOAM_SURFACE_FIELD 223
+#define BINDING_WATER_FOAM_SURFACE_HEIGHT 224
+#define BINDING_SHORE_WETNESS_FIELD 235
+#define BINDING_SHORE_WETNESS_HEIGHT 236
 #define BINDING_WINDOW_ISLANDS                   222
 
 // Sky provider (NUMOS, submodules/numos) outputs, at slots 200-217, clear of pass-local slots. The
@@ -113,6 +119,8 @@
   STRUCTURED_BUFFER(BINDING_SURFACE_MATERIAL_DATA_BUFFER)           \
   STRUCTURED_BUFFER(BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER)       \
   STRUCTURED_BUFFER(BINDING_WINDOW_ISLANDS)                       \
+  TEXTURE2D(BINDING_SHORE_WETNESS_FIELD)                          \
+  TEXTURE2D(BINDING_SHORE_WETNESS_HEIGHT)                         \
   STRUCTURED_BUFFER(BINDING_WETNESS_ZONES)                         \
   STRUCTURED_BUFFER(BINDING_VOLUME_MATERIAL_DATA_BUFFER)            \
   STRUCTURED_BUFFER(BINDING_LIGHT_DATA_BUFFER)                      \

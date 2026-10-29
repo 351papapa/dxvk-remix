@@ -457,6 +457,9 @@ namespace Commands {
     IDirect3DQuery9_GetDataSize,
     IDirect3DQuery9_Issue,
     IDirect3DQuery9_GetData,
+
+    // Appended to preserve existing command IDs.
+    RemixApi_SetCameraMediumMaterial,
   };
 
   // Maybe this will be useful...  
@@ -494,6 +497,7 @@ namespace Commands {
 
     case RemixApi_CreateMaterial: return "RemixApi_CreateMaterial";
     case RemixApi_DestroyMaterial: return "RemixApi_DestroyMaterial";
+    case RemixApi_SetCameraMediumMaterial: return "RemixApi_SetCameraMediumMaterial";
     case RemixApi_CreateTexture: return "RemixApi_CreateTexture";
     case RemixApi_DestroyTexture: return "RemixApi_DestroyTexture";
     case RemixApi_CreateMesh: return "RemixApi_CreateMesh";

@@ -1468,6 +1468,11 @@ namespace dxvk {
         presetWeathers(weather, p, window);
       }
 
+      if (ImGui::CollapsingHeader("Ocean wave weather")) {
+        if (ImGui::SliderFloat("Rain weight", &p.water.rain, 0.0f, 1.0f)) { p.dirty = true; }
+        if (ImGui::SliderFloat("Storm weight", &p.water.storm, 0.0f, 1.0f)) { p.dirty = true; }
+        ImGui::TextWrapped("Weights blend the water system's rain and storm wave multipliers. A total above one is normalized.");
+      }
       if (ImGui::CollapsingHeader("Wet surfaces")) {
         WetnessArgs defaults;
         WetnessOptions::fillShaderParams(defaults);

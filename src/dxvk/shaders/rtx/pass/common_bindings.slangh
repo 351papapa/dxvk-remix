@@ -182,6 +182,38 @@ layout(binding = BINDING_WINDOW_ISLANDS)
 StructuredBuffer<uint> windowIslandIds;
 
 #ifdef ENABLE_SURFACE_WETNESS
+layout(binding = BINDING_SHORE_WETNESS_FIELD)
+Texture2D<float4> shoreWetnessField;
+layout(binding = BINDING_SHORE_WETNESS_HEIGHT)
+Texture2D<float4> shoreWetnessHeight;
+
+float beachWetness(float3 position) {
+  if (cb.wetnessArgs.shoreStrength <= 0.0f) { return 0.0f; }
+  float2 world = cb.isZUp != 0 ? position.xy : position.xz;
+  float2 grid = (world - float2(cb.wetnessArgs.shoreOriginX, cb.wetnessArgs.shoreOriginY)) * cb.wetnessArgs.shoreInvSpacing;
+  // The producer is a fixed 257-square grid. No bindless dimension queries.
+  if (any(grid < 1.0f) || any(grid >= 255.0f)) { return 0.0f; }
+  int2 cell = int2(floor(grid));
+  float2 f = frac(grid);
+  const int2 offsets[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
+  const float weights[4] = { (1.0f-f.x)*(1.0f-f.y), f.x*(1.0f-f.y), (1.0f-f.x)*f.y, f.x*f.y };
+  float height = 0.0f;
+  float wetness = 0.0f;
+  float support = 0.0f;
+  [unroll] for (uint i = 0; i < 4; ++i) {
+    float4 h = shoreWetnessHeight.Load(int3(cell + offsets[i], 0));
+    if (h.w < 0.5f || !isfinite(h.z)) { continue; }
+    height += h.z * weights[i];
+    wetness += shoreWetnessField.Load(int3(cell + offsets[i], 0)).w * weights[i];
+    support += weights[i];
+  }
+  if (support < 0.99f) { return 0.0f; }
+  float surfaceHeight = cb.isZUp != 0 ? position.z : position.y;
+  float matchingBed = 1.0f - smoothstep(0.04f, 0.12f, abs(surfaceHeight - height / support));
+  float edge = min(min(grid.x, grid.y), min(256.0f-grid.x, 256.0f-grid.y));
+  return saturate(wetness / support) * matchingBed * smoothstep(1.0f, 9.0f, edge) * cb.wetnessArgs.shoreStrength;
+}
+
 struct WetnessZoneNode {
   float4 lower;
   float4 upper;

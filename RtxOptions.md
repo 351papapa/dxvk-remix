@@ -1478,6 +1478,90 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.vramBudget.shrinkReplacementTextureBudget|bool|True|||Level 1: scales the replacement\-texture streaming budget by 0\.75\. Level 2 and above: by 0\.5\. The lowest\-priority replacement textures drop mips and get them back when the budget returns\.|
 |rtx.vramBudget.signalHost|bool|True|||Reports requestHostRelease = 1 through remixapi\_GetMemoryPressure at rtx\.vramBudget\.hostSignalLevel and above, so the host can release far content\.|
 |rtx.vramBudget.slackPercent|float|25|||Each kind of Remix GPU memory block whose free space reaches this percent of its blocks is drained \(rtx\.vramBudget\.drainSparseChunks\)\.|
+|rtx.water.amplitude|float|0.55|||Local geometric swell amplitude in game world units\. Zero disables swell\.|
+|rtx.water.beachWaveDepth|float|3.1|||Water depth in world units over which terrain\-driven beach waves develop\.|
+|rtx.water.beachWaveHeight|float|1.06|||Beach wave height in world units, independent of the main ocean swell amplitude\.|
+|rtx.water.beachWaveLength|float|8.9|||Shore depth\-domain phase scale; local crest distance also depends on the beach slope\.|
+|rtx.water.beachWavePeriod|float|4.5|||Seconds between beach wave crests\.|
+|rtx.water.beachWaves|bool|False|||GPU beach waves driven by measured terrain depth\. Requires GPU water surface; independent of ocean swell amplitude\.|
+|rtx.water.causticsDispersion|float|0.35|||Chromatic dispersion of the caustics, visible only from above the water\. The fringes come from colour splitting as light crosses the surface, so they are a transmission effect and switch off once the camera is underwater\. The pattern is evaluated three times along the receiver normal's horizontal projection and the results drive the output R / G / B channels separately\. Offsets follow the analysed scale: Disp \* 0\.08 \* saturate\(depth \* 0\.5\) of a tile, so 0\.35 moves about 0\.028\. 0 disables it and returns to the single\-tap cost\.|
+|rtx.water.causticsEnabled|bool|False|||Project animated light caustics onto submerged opaque receivers\. Requires AnimatedWater geometry\.|
+|rtx.water.causticsFadeStart|float|0.5|||Fraction of maximum depth or reflected height where caustics begin fading out\.|
+|rtx.water.causticsLocalLightRange|float|60|||Local caustic light and receiver range from camera in world units; fades over the outer quarter\.|
+|rtx.water.causticsLocalLights|int|4|||Maximum nearby RTX local lights contributing to caustics, 0 disables, up to 8\. Candidates ranked by estimated camera irradiance\.|
+|rtx.water.causticsMaxDepth|float|12|||Maximum receiver depth in world units\.|
+|rtx.water.causticsPoolScale|float|1.6|||World units per caustic texture repeat for non\-ocean animated water \(pools, fountains\)\. Small values pack more of the pattern into the same distance, so the web reads finer than the ocean tile at the same camera distance\. Ignored when causticsScalePerDomain is off\.|
+|rtx.water.causticsRandomized|bool|False|||Randomize caustic tiles and continuously deform their coordinates\.|
+|rtx.water.causticsScale|float|4|||World units per caustic texture repeat for the shared\-protocol ocean material\.|
+|rtx.water.causticsScalePerDomain|bool|False|||Use causticsPoolScale for authored pools and fountains instead of the ocean scale\. The split is decided per receiver from isOceanWater on the water surface the refracted ray actually hit\. Off: every water surface uses causticsScale\.|
+|rtx.water.causticsSpeed|float|0.6|||Caustic texture deformation speed\. Zero freezes the pattern\.|
+|rtx.water.causticsStrength|float|2|||Additional focused sunlight strength on submerged receivers\.|
+|rtx.water.contactFoam|bool|False|||Contact foam at water/geometry intersections: shoreline, rocks and piers\. The player is excluded separately by surface class, so disabling this is a global off switch and not the way to remove only the player's foam\.|
+|rtx.water.contactFoamPlayerExclusion|bool|False|||Exclude the third\-person player model from contact foam\. Turn this off to A/B test whether the player class is matching more surfaces than it should; hot reloadable, no rebuild needed\.|
+|rtx.water.crestFoamStrength|float|2|||Foam generated at ocean wave crests from the same continuous GPU wave phase as the water surface\. Zero disables crest foam\.|
+|rtx.water.crestFoamThreshold|float|0.06|||Minimum convex water curvature for crest foam, in inverse world units\.|
+|rtx.water.damping|float|0.45|||Interaction wave damping per second; smaller values persist longer\.|
+|rtx.water.detailScale|float|1|||Multiplier on existing weather\-driven AnimatedWater micro\-wave scale\.|
+|rtx.water.detailStrength|float|1.5|||Multiplier on existing weather\-driven AnimatedWater micro\-wave strength\.|
+|rtx.water.enabled|bool|False|||Enable the new water system\. Disabled: restore original water geometry and existing water texture/weather shading without new simulation or material overrides\.|
+|rtx.water.foamLineMaterialPath|bool|False|||Display intersection foam as real geometry lit by the scene, replacing the screen\-space composite that faked its own illumination\. Foam keeps the same density, width and fade; only the lighting path changes\. Off by default\.|
+|rtx.water.foamTrianglePairReuse|bool|False|||Experimental: reuse identical live\-water vertex evaluations between paired foam triangles\. Preserves subdivisions, vertex attributes, triangle order and independent transparent\-triangle collapse\.|
+|rtx.water.foamValidateTrianglePairReuse|bool|False|||Diagnostic: compare all 9 words per foam vertex between both live\-water variants on identical GPU inputs every 600 frames\. Uses asynchronous readback; disable for performance measurements\.|
+|rtx.water.gpuSimulation|bool|False|||Run the interaction wave solver and wake\-foam surface following on the GPU\. Requires GPU water surface; safely idles when the matching shared\-protocol simulation mapping is unavailable\.|
+|rtx.water.gpuSurface|bool|False|||Generate shared\-protocol water vertices, beach waves, wake arms and normals on the GPU\. Requires the matching shared\-protocol plugin; safely idles when no shared GPU\-water frame is available\.|
+|rtx.water.hullWaveDamping|float|0.35|||Local water wave damping per second, range 0\.05 to 2\.|
+|rtx.water.hullWaveSpeed|float|5|||Local water wave propagation speed, range 2 to 8 world units per second\.|
+|rtx.water.hullWaveStrength|float|1|||Boat pressure\-wave strength, range 0 to 3\.|
+|rtx.water.hullWaves|bool|False|||GPU boat pressure waves deform the actual water surface and normals\. Requires both GPU water options, independent of foam flow\.|
+|rtx.water.interactionRadius|float|1.5|||Object and boat wake impulse radius multiplier\.|
+|rtx.water.interactionStrength|float|2|||Object and boat wake impulse strength multiplier\.|
+|rtx.water.localFlow|bool|False|||Experimental GPU local wake flow and foam transport\. Requires both GPU water options\. Switching resets wake foam history; shore foam material is unchanged\.|
+|rtx.water.localFlowDiagnostics|bool|False|||Temporary asynchronous GPU flow and foam readback every two seconds\. Disable after diagnosis\.|
+|rtx.water.localFlowDrag|float|0.35|||Local wake velocity damping per second\.|
+|rtx.water.localFlowStrength|float|1|||Boat forward flow force multiplier\.|
+|rtx.water.localFlowSwirl|float|1|||Boat counter\-rotating wake force multiplier\.|
+|rtx.water.oceanWaveStrength|float|1.25|||Overall ocean swell and beach\-wave height multiplier, applied on the GPU\.|
+|rtx.water.overrideMaterial|bool|False|||Apply water color, distance and non\-thin\-walled shading to translucent AnimatedWater surfaces\.|
+|rtx.water.propagationSpeed|float|4|||Interaction wave propagation speed in game world units per second\.|
+|rtx.water.rainWaveMultiplier|float|1.25|||Rainy ocean wave height relative to normal weather; blends with the weather transition\.|
+|rtx.water.reduceOffscreen|bool|False|||Reduce local interaction solver to 30 Hz outside the expanded camera view; preserve state for camera turns and reflections\.|
+|rtx.water.reflectedCausticsEnabled|bool|False|||Approximate sunlight reflected from water onto nearby opaque receivers\.|
+|rtx.water.reflectedCausticsHeight|float|5|||Maximum receiver height above water in world units\.|
+|rtx.water.reflectedCausticsStrength|float|1|||Reflected caustic strength, independent of underwater strength\.|
+|rtx.water.shoreFoamEnabled|bool|False|||Continuous noise foam at rendered water/geometry intersections\. No shoreline texture cards\.|
+|rtx.water.shoreFoamFrustumCulling|bool|False|||Cull intersection foam outside the expanded main camera view\. Saves GPU contact queries and geometry work; offscreen reflections may omit foam\.|
+|rtx.water.shoreFoamLifetime|float|7|||Seconds for waterborne foam to decay to five percent without a new source\.|
+|rtx.water.shoreFoamOceanOnly|bool|False|||Restrict intersection foam to the shared\-protocol ocean material; exclude authored pools and fountains\.|
+|rtx.water.shoreFoamRunupWidth|float|2.4|||Width of the GPU beach foam band along a sloping shore\. Zero disables new beach foam\.|
+|rtx.water.shoreFoamSkyAmbient|float|1|||Multiplier on intersection foam ambient\. 1\.0 keeps the foam's own brightness while still following the environment; lower darkens it, higher brightens it\. 0 removes the ambient term entirely\.|
+|rtx.water.shoreFoamStrength|float|0.8|||Coverage of procedural shoreline foam\.|
+|rtx.water.shoreFoamTextureScale|float|3|||World units per waterborne foam texture repeat\.|
+|rtx.water.shoreFoamWaveResponse|float|2.5|||Foam generation response to the measured GPU water\-surface rise and fall\.|
+|rtx.water.shoreFoamWidth|float|0.85|||World\-space contact distance for shoreline foam\.|
+|rtx.water.shoreWetnessLifetime|float|20|||Seconds for exposed beach wetness to decay to five percent\. The beach carries wetness, never residual foam\.|
+|rtx.water.shoreWetnessStrength|float|1|||Darkening and smoothness of terrain recently covered by the ocean\. Independent of rain wetness\.|
+|rtx.water.simulationRadius|float|54|||Circular geometric wave and interaction radius around the player, in world units \(16\-96\)\. Fixed grid resolution: larger radii reduce spatial detail rather than increase the cell count\.|
+|rtx.water.speed|float|1|||Geometric swell animation speed multiplier\.|
+|rtx.water.steepness|float|0.55|||Gerstner horizontal displacement strength\. Limited internally to prevent folded crests\.|
+|rtx.water.stormWaveMultiplier|float|1.5|||Stormy ocean wave height relative to normal weather; blends with the weather transition\.|
+|rtx.water.transmittanceColor|float3|0.511382, 0.894483, 0.988417|||Water transmittance color at the measurement distance\.|
+|rtx.water.transmittanceDistance|float|7.5|||Water transmittance measurement distance in game world units\.|
+|rtx.water.underwaterDebugView|int|0|||GPU underwater diagnostics: 0: Normal, 1: Water depth, 2: Water entry hit rate, 3: Light visibility, 4: Shafts only\. Diagnostic modes bypass the underwater master toggle\.|
+|rtx.water.underwaterDensity|float|0.045|||Additional artistic underwater extinction per world unit\.|
+|rtx.water.underwaterEnabled|bool|False|||Apply distance\-dependent absorption, haze and volumetric light shafts when the camera is below AnimatedWater geometry\.|
+|rtx.water.underwaterFogColor|float3|0.025, 0.16, 0.2|||Linear underwater haze color, scaled by daylight\.|
+|rtx.water.underwaterLightShafts|bool|False|||Integrate underwater light shafts on the GPU using the water surface and relative depth\.|
+|rtx.water.underwaterSceneLightCandidates|int|8|||Strongest RTX light candidates per underwater screen tile, selected entirely on the GPU \(1 to 32\)\.|
+|rtx.water.underwaterSceneLightStrength|float|1|||RTX light contribution to underwater scattering\.|
+|rtx.water.underwaterSceneLights|bool|False|||Integrate underwater scattering from RTX sphere, spot, rectangle, disk, cylinder and distant lights\.|
+|rtx.water.underwaterShaftAnisotropy|float|0.45|||Forward scattering of underwater sunlight, 0 to 0\.8\.|
+|rtx.water.underwaterShaftMaxDistance|float|40|||Maximum camera ray length integrated for underwater shafts\.|
+|rtx.water.underwaterShaftSamples|int|12|||Underwater volume samples per pixel, 4 to 256\. Higher reduces integration banding at increased GPU cost\.|
+|rtx.water.underwaterShaftScale|float|8|||World\-space spacing of focused underwater sunlight\.|
+|rtx.water.underwaterShaftStrength|float|0.24|||Underwater scattering strength in the same exposure units as haze, with isotropic phase normalized to 1\. 0 disables the shaft volume\.|
+|rtx.water.waterMapCellSize|float|1|||World units per cell in the producer's water\-level map\.|
+|rtx.water.waterMapOrigin|float2|0, 0|||World XY origin of the producer's 128 by 128 water\-level map\.|
+|rtx.water.wavelength|float|12|||Primary geometric swell wavelength in game world units\.|
 |rtx.wboitDepthWeightTuning|float|2|||Allows for tuning the weighted blended OIT depth weight \- which can be used to fine tune blending for various circumstances\.  This control has a side effect, larger numbers here can adversely affect brightness of emissive blended materials\.|
 |rtx.wboitEnabled|bool|True|||Enables the new rendering mode for handling alpha blended objects\.  Changing this will trigger a shader recompile\.  The new mode improves rendering accuracy, especially in cases where there are many layers of transparent things being rendered\.|
 |rtx.wboitEnergyLossCompensation|float|4|||Multiplier for the coverage term in the weighted blended OIT imlementation \- allows for some configuration to recover energy loss from the technique\.  This is non physical, be careful overtuning |
@@ -1612,6 +1696,11 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.tonemap.gradePreset|string|None|||The color grade preset the tone mapper applies: a built\-in one \(None, Warm Amber, Olive Green\) or a preset file in rtx\.tonemap\.gradePresetDirectory, by name\. A game's rtx\.conf can set the default\. The Remix API can show other grades while the game runs; changing this option shows this preset again\.|
 |rtx.tonemap.gradePresetDirectory|string|rtx-remix/colorgrade|||Folder of the color grade preset files \(\<name\>\.conf\), relative to the game's folder unless absolute\.|
 |rtx.uiTextures|hash set||||Textures on draw calls that should be treated as screenspace UI elements\.<br>All exclusively UI\-related textures should be classified this way and doing so allows the UI to be rasterized on top of the ray traced scene like usual\.<br>Note that currently the first UI texture encountered triggers RTX injection \(though this may change in the future as this does cause issues with games that draw UI mid\-frame\)\.|
+|rtx.water.beachMaskPath|string||||Optional IVTX world\-space beach eligibility mask\. Empty or invalid uses measured shallow\-coast qualification; masks are specific to their authored map\.|
+|rtx.water.causticsTexture|string||||DDS pattern used by receiver caustics\.|
+|rtx.water.foamColorTexture|string||||DDS albedo and coverage texture for foam shaded through scene materials\.|
+|rtx.water.foamCompositeTexture|string||||DDS pattern for the screen\-space foam display\.|
+|rtx.water.foamNormalTexture|string||||DDS tangent\-space normal texture for foam shaded through scene materials\.|
 |rtx.weather.gameWeather|string||||Set by the game integration \(remix API SetConfigVariable\): the game's current weather, as one id or several separated by commas, most specific first\. The first id a preset's weather\.bindings lists picks that preset\.|
 |rtx.weather.gameWeatherOutgoing|string||||Set by the game integration: the weather the game is blending away from, with rtx\.weather\.gameWeatherBlend\.|
 |rtx.weather.legacyPresetFile|string||||A weather preset file in the older single\-file format \(\[name\] sections with coverage, density, layer2\.\.\. keys\) to convert into preset files in rtx\.weather\.presetDirectory\. Each section is converted once; a preset of the same name is replaced and backed up as \<name\>\.conf\.bak\. Usually set by the game integration\. Empty: nothing is imported\.|

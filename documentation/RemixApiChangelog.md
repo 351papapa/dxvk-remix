@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- 2026-10-29 (local fork): matching x86/x64 bridge forwarding for
+  `SetCameraMediumMaterial`, and the private pointer-free GPU water protocol.
+  NUMOS presets also accept ocean rain/storm weights. See `RemixWater.md`.
+  The public C API layout and version are unchanged.
 - 2026-10-29 (local fork): `__window.hour`, `__window.day` and `__window.badweather`
   conventions for window and street-lamp emission. See `RemixWindowLighting.md`.
   The API table and version are unchanged.

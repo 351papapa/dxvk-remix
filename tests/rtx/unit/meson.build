@@ -163,4 +163,28 @@ exe = executable('test_grass_placement', files('test_grass_placement.cpp'),
 test('test_grass_placement', exe, env: test_env)
 tests += exe
 
+exe = executable('test_water_foam_args', files('test_water_foam_args.cpp'),
+  include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_water_foam_args', exe, env: test_env)
+tests += exe
+
+exe = executable('test_water_foam_geometry', files('test_water_foam_geometry.cpp'),
+  include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_water_foam_geometry', exe, env: test_env)
+tests += exe
+
+exe = executable('test_water_foam_boundary', files('test_water_foam_boundary.cpp'),
+  include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_water_foam_boundary', exe, env: test_env)
+tests += exe
+
+exe = executable('test_water_weather', files('test_water_weather.cpp'),
+  include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_water_weather', exe, env: test_env)
+tests += exe
+
 alias_target('unit_tests', tests)

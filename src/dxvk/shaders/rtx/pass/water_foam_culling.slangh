@@ -1,0 +1,30 @@
+#pragma once
+
+// Side planes only: independent of reverse Z, near-plane convention and handedness.
+// The expanded view and world-space guard keep simulation dependencies off the visible edge.
+bool foamOutsideView(float4x4 worldToClip, float3 centre, float3 extent) {
+  const float4 planes[4] = {
+    worldToClip[3] * 1.2f + worldToClip[0],
+    worldToClip[3] * 1.2f - worldToClip[0],
+    worldToClip[3] * 1.2f + worldToClip[1],
+    worldToClip[3] * 1.2f - worldToClip[1]
+  };
+  [unroll] for (uint i = 0; i < 4; ++i) {
+    const float4 plane = planes[i];
+    const float support = dot(plane.xyz, centre) + plane.w
+      + dot(abs(plane.xyz), extent) + 4.0f * length(plane.xyz);
+    if (support < 0.0f) { return true; }
+  }
+  return false;
+}
+
+bool foamTileOutsideView(float4x4 worldToClip, uint2 cell, float2 origin,
+                         float spacing, float cameraUp, bool zUp, float heightMargin = 0.0f) {
+  const float2 centre2 = origin + (float2((cell / 8u) * 8u) + 4.0f) * spacing;
+  const float3 centre = zUp ? float3(centre2, cameraUp - 64.0f)
+                           : float3(centre2.x, cameraUp - 64.0f, centre2.y);
+  const float horizontal = 4.0f * spacing;
+  const float3 extent = zUp ? float3(horizontal, horizontal, 128.0f + heightMargin)
+                           : float3(horizontal, 128.0f + heightMargin, horizontal);
+  return foamOutsideView(worldToClip, centre, extent);
+}

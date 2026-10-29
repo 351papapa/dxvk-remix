@@ -30,6 +30,23 @@ Entry format:
 
 ## 2026-10-29
 
+### GPU water on the v2 scene and sky provider
+Port ocean deformation, interaction/hull waves, wake flow, material foam, caustics
+and underwater volumes with their GPU compute paths intact. Integrate typed NUMOS
+ocean weather, pre-exposure, generated-mesh history and x86 camera-medium forwarding.
+Fix negative-coordinate foam slot collisions, common/SHARC descriptor collisions
+and execution ordering of reused GPU event inputs.
+- Options: added `rtx.water.*`; masters/optional booleans default off, asset paths
+  default empty. Water-map world coordinates are authored settings. The obsolete
+  fixed foam-sheet prototype is excluded.
+- Validation: four CPU suites, six compiled shader audits, 26 water GPU cases,
+  three grass and two window regressions. Paired GPU foam outputs match across
+  1,181,616 vertices, and queued/batched input renders match exactly.
+  Full-game performance and the reported video remain pending.
+- Commits: this entry lands with the local water migration commit.
+- Docs: [GPU water migration](../documentation/RemixWater.md).
+
+
 ### Procedural grass on retained scenes
 Restore opt-in USD grass placement and GPU instance selection on the v2 unified
 scene. Original retained ground and replacement meshes use the same placement

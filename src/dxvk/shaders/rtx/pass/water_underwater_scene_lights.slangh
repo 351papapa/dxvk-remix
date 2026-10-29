@@ -1,0 +1,325 @@
+#pragma once
+
+#include "rtx/concept/light/light.slangh"
+
+static const uint kShaftMaxTileLights = 32u;
+groupshared uint shaftTileLightCount;
+groupshared uint shaftDistantLightCount;
+groupshared uint shaftDistantLights[8];
+groupshared uint shaftTileLights[kShaftMaxTileLights];
+groupshared float shaftTileWeights[kShaftMaxTileLights];
+
+float shaftRandom(inout uint state) {
+  state = state * 747796405u + 2891336453u;
+  uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return float(((word >> 22u) ^ word) >> 8u) * (1.0f / 16777216.0f);
+}
+
+float3 shaftLightCenter(DecodedPolymorphicLight light) {
+  switch (uint(light.polymorphicType)) {
+    case lightTypeSphere: return sphereLightCreate(light).position;
+    case lightTypeRect: return rectLightCreate(light).position;
+    case lightTypeDisk: return diskLightCreate(light).position;
+    case lightTypeCylinder: return cylinderLightCreate(light).position;
+    default: return float3(0.0f);
+  }
+}
+
+// Scan once per tile, not per pixel/step: a nearby lamp must not depend on winning a uniform draw among hundreds of lights.
+void shaftSelectTileLights(uint2 tile, float3 camera, float3 up, float waterDepth) {
+  shaftTileLightCount = 0u;
+  shaftDistantLightCount = 0u;
+  if (waterDepth <= 0.0f || args.sceneLightStrength <= 0.0f) { return; }
+  uint limit = clamp(args.sceneLightCandidates, 1u, kShaftMaxTileLights);
+  float2 uv = min((float2(tile * 8u) + 4.0f) / float2(args.width, args.height), float2(1.0f));
+  float3 direction = cameraScreenUVToDirection(cb.camera, uv, false).worldDirection;
+  float upCosine = dot(direction, up);
+  float distance = upCosine > 0.001f ? min(args.shaftMaxDistance, waterDepth / upCosine) : args.shaftMaxDistance;
+  [loop]
+  for (uint index = 0u; index < cb.lightCount; ++index) {
+    DecodedPolymorphicLight light = decodePolymorphicLight(lights[index]);
+    if (uint(light.polymorphicType) >= lightTypeCount || !all(isfinite(light.radiance))) { continue; }
+    // Celestial lights must not compete with nearby lamps for a finite tile shortlist.
+    if (uint(light.polymorphicType) == lightTypeDistant) {
+      if (!any(light.radiance > 0.0f)) { continue; }
+      if (shaftDistantLightCount < 8u) {
+        shaftDistantLights[shaftDistantLightCount++] = index;
+        continue;
+      }
+      // Additional authored distant lights retain support through the local reservoir.
+    }
+    float alongRay = uint(light.polymorphicType) == lightTypeDistant ? distance * 0.5f
+      : clamp(dot(shaftLightCenter(light) - camera, direction), 0.0f, distance);
+    VolumeInteraction interaction = volumeInteractionCreate(camera + direction * alongRay);
+    float weight = decodedPolymorphicLightCalcWeight(light, interaction);
+    if (!isfinite(weight)) { weight = 1e10f; }
+    if (weight <= 0.0f) { continue; }
+    weight = min(weight, 1e10f);
+    uint slot = shaftTileLightCount;
+    if (slot == limit) {
+      if (weight <= shaftTileWeights[limit - 1u]) { continue; }
+      slot = limit - 1u;
+    } else {
+      ++shaftTileLightCount;
+    }
+    while (slot > 0u && weight > shaftTileWeights[slot - 1u]) {
+      shaftTileWeights[slot] = shaftTileWeights[slot - 1u];
+      shaftTileLights[slot] = shaftTileLights[slot - 1u];
+      --slot;
+    }
+    shaftTileWeights[slot] = weight;
+    shaftTileLights[slot] = index;
+  }
+}
+
+bool shaftOpaqueVisible(float3 position, float3 direction, float distance) {
+  if (distance <= 0.02f) { return true; }
+  RayDesc ray;
+  ray.Origin = position;
+  ray.Direction = direction;
+  ray.TMin = 0.01f;
+  ray.TMax = distance;
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+    | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<flags> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) { continue; }
+    uint index = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+    if (!surfaces[index].isAnimatedWater) { query.CommitNonOpaqueTriangleHit(); }
+  }
+  return query.CommittedStatus() != COMMITTED_TRIANGLE_HIT;
+}
+
+bool shaftFindWaterBoundary(float3 position, float3 direction, float distance, out float3 entry) {
+  entry = position;
+  if (distance <= 0.02f) { return false; }
+  RayDesc ray;
+  ray.Origin = position;
+  ray.Direction = direction;
+  ray.TMin = 0.01f;
+  ray.TMax = distance;
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<flags> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE | OBJECT_MASK_TRANSLUCENT, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) { continue; }
+    uint index = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+    if (surfaces[index].isAnimatedWater) { query.CommitNonOpaqueTriangleHit(); }
+  }
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+  entry = position + direction * query.CommittedRayT();
+  return true;
+}
+
+float3 shaftRefractedEntry(float3 position, float3 lightPosition, float waterHeight, float3 up) {
+  float waterDepth = max(waterHeight - dot(position, up), 0.001f);
+  float airHeight = max(dot(lightPosition, up) - waterHeight, 0.001f);
+  float3 horizontal = lightPosition - position;
+  horizontal -= up * dot(horizontal, up);
+  float horizontalDistance = length(horizontal);
+  // The transmitted water angle cannot exceed asin(1 / nWater), even when
+  // the lamp is near the horizon. This bound keeps shallow-water solves precise.
+  float low = 0.0f, high = min(horizontalDistance, waterDepth / sqrt(1.333f * 1.333f - 1.0f));
+  // Solve nWater*sin(thetaWater)=nAir*sin(thetaAir) on the locally horizontal interface.
+  [unroll]
+  for (uint i = 0u; i < 12u; ++i) {
+    float split = (low + high) * 0.5f;
+    float airLeg = horizontalDistance - split;
+    float residual = 1.333f * split / sqrt(split * split + waterDepth * waterDepth)
+      - airLeg / sqrt(airLeg * airLeg + airHeight * airHeight);
+    if (residual > 0.0f) { high = split; } else { low = split; }
+  }
+  return position + up * waterDepth + horizontal * ((low + high) * 0.5f / max(horizontalDistance, 0.0001f));
+}
+
+float shaftInterfaceTransmission(float cosWater, float cosAir) {
+  float rs = (cosAir - 1.333f * cosWater) / max(cosAir + 1.333f * cosWater, 0.0001f);
+  float rp = (1.333f * cosAir - cosWater) / max(1.333f * cosAir + cosWater, 0.0001f);
+  return saturate(1.0f - 0.5f * (rs * rs + rp * rp));
+}
+
+float shaftLightShaping(DecodedPolymorphicLight light, float3 lightToWater) {
+  switch (uint(light.polymorphicType)) {
+    case lightTypeSphere: return sphereLightCalcShaping(sphereLightCreate(light), lightToWater);
+    case lightTypeRect: return rectLightCalcShaping(rectLightCreate(light), lightToWater);
+    case lightTypeDisk: return diskLightCalcShaping(diskLightCreate(light), lightToWater);
+    default: return 1.0f;
+  }
+}
+
+float3 shaftLightTransport(DecodedPolymorphicLight light, LightSample sample, float3 position, float3 up,
+  float patternMean, out float3 toLight, out bool validWaterPath, out bool visible) {
+  float3 lightVector = sample.position - position;
+  float distance = length(lightVector);
+  toLight = lightVector / max(distance, 0.0001f);
+  validWaterPath = false;
+  visible = false;
+  if (distance <= 0.02f || !all(isfinite(toLight))) { return float3(0.0f); }
+  float waterDistance = distance;
+  float3 airDirection = toLight;
+  float interfaceTransmission = 1.0f;
+  float focusing = 1.0f;
+  float geometryScale = 1.0f;
+  float3 entry;
+  if (uint(light.polymorphicType) == lightTypeDistant) {
+    float cosine = dot(toLight, up);
+    if (cosine <= 0.001f) { return float3(0.0f); }
+    float3 tangent = (toLight - up * cosine) / 1.333f;
+    toLight = tangent + up * sqrt(max(0.0f, 1.0f - dot(tangent, tangent)));
+    if (!shaftWaterEntry(position, toLight, args.shaftMaxDistance, entry, waterDistance)) { return float3(0.0f); }
+    validWaterPath = true;
+    if (!shaftOpaqueVisible(entry + airDirection * 0.03f, airDirection, 1000.0f)) { return float3(0.0f); }
+    interfaceTransmission = shaftInterfaceTransmission(dot(toLight, up), cosine);
+    focusing = shaftPattern(entry, waterDistance, patternMean);
+  } else if (shaftFindWaterBoundary(position, toLight, max(distance - 0.02f, 0.0f), entry)) {
+    float planeHeight = dot(entry, up);
+    if (dot(position, up) >= planeHeight || dot(sample.position, up) <= planeHeight) { return float3(0.0f); }
+    float3 targetEntry = shaftRefractedEntry(position, sample.position, planeHeight, up);
+    toLight = normalize(targetEntry - position);
+    if (!shaftWaterEntry(position, toLight, length(targetEntry - position) + 2.0f, entry, waterDistance)) { return float3(0.0f); }
+    validWaterPath = true;
+    float3 airVector = sample.position - entry;
+    float airDistance = length(airVector);
+    airDirection = airVector / max(airDistance, 0.0001f);
+    if (dot(airDirection, up) <= 0.0f || !shaftOpaqueVisible(entry + airDirection * 0.02f,
+      airDirection, max(airDistance - 0.04f, 0.0f))) { return float3(0.0f); }
+    interfaceTransmission = shaftInterfaceTransmission(dot(toLight, up), dot(airDirection, up));
+    focusing = shaftPattern(entry, waterDistance, patternMean);
+    float oldCosine = abs(dot(sample.normal, -lightVector / distance));
+    float newCosine = max(dot(sample.normal, -airDirection), 0.0f);
+    geometryScale = (distance * distance) / max((waterDistance + airDistance) * (waterDistance + airDistance), 0.0001f)
+      * newCosine / max(oldCosine, 0.001f);
+  } else {
+    // An emitter already in the same water volume needs no surface crossing.
+    // Include it in the path diagnostic before testing opaque visibility.
+    validWaterPath = true;
+    if (!shaftOpaqueVisible(position, toLight, distance - 0.02f)) { return float3(0.0f); }
+  }
+  visible = true;
+  float shaping = shaftLightShaping(light, -airDirection);
+  float3 sigmaT = args.density * float3(2.4f, 0.85f, 0.5f);
+  return exp(-sigmaT * waterDistance) * (interfaceTransmission * focusing * shaping * min(geometryScale, 4.0f));
+}
+
+float shaftCandidateWeight(DecodedPolymorphicLight light, VolumeInteraction interaction,
+  float3 viewDirection, float3 up, float waterHeight) {
+  float weight = decodedPolymorphicLightCalcWeight(light, interaction);
+  if (!isfinite(weight)) { weight = 1e10f; }
+  if (weight <= 0.0f) { return 0.0f; }
+  float3 toLight;
+  float distanceInWater;
+  if (uint(light.polymorphicType) == lightTypeDistant) {
+    float3 airDirection = -distantLightCreate(light).direction;
+    float cosine = dot(airDirection, up);
+    if (cosine <= 0.001f) { return 0.0f; }
+    float3 tangent = (airDirection - cosine * up) / 1.333f;
+    toLight = tangent + up * sqrt(max(0.0f, 1.0f - dot(tangent, tangent)));
+    distanceInWater = max(waterHeight - dot(interaction.position, up), 0.0f) / max(dot(toLight, up), 0.01f);
+  } else {
+    float3 center = shaftLightCenter(light);
+    float3 target = center;
+    float3 lightToWater = interaction.position - center;
+    // This plane is only an importance estimate. The selected light uses the
+    // actual GPU water intersection and evaluates shaping again after refraction.
+    if (dot(center, up) > waterHeight && dot(interaction.position, up) < waterHeight) {
+      float fractionInWater = (waterHeight - dot(interaction.position, up))
+        / max(dot(center - interaction.position, up), 0.0001f);
+      target = lerp(interaction.position, center, saturate(fractionInWater));
+      if (light.shaping.enabled) {
+        target = shaftRefractedEntry(interaction.position, center, waterHeight, up);
+      }
+      lightToWater = target - center;
+    }
+    toLight = target - interaction.position;
+    distanceInWater = length(toLight);
+    toLight /= max(distanceInWater, 0.0001f);
+    if (light.shaping.enabled) {
+      // Retain support around curved-water/area-emitter cone boundaries.
+      weight *= max(0.01f, shaftLightShaping(light, lightToWater / max(length(lightToWater), 0.0001f)));
+    }
+  }
+  float g = args.shaftAnisotropy;
+  float phase = (1.0f - g * g)
+    / pow(max(0.01f, 1.0f + g * g - 2.0f * g * dot(viewDirection, toLight)), 1.5f);
+  // Match the dominant blue/green transport when selecting among local lamps
+  // and a distant sun, while retaining nonzero support for all selected lights.
+  return min(weight, 1e10f) * max(0.001f, exp(-args.density * 0.7f * distanceInWater)) * phase;
+}
+
+float3 shaftIntegrateSceneLights(uint2 pixel, float3 camera, float3 viewDirection, float3 up,
+  float waterDepth, float waterDistance, out uint entryCount, out uint visibleCount) {
+  entryCount = 0u;
+  visibleCount = 0u;
+  if ((shaftTileLightCount == 0u && shaftDistantLightCount == 0u) || args.shaftStrength <= 0.0f || waterDistance <= 0.05f) { return float3(0.0f); }
+  float3 radiance = float3(0.0f);
+  float3 sigmaT = args.density * float3(2.4f, 0.85f, 0.5f);
+  float3 sigmaS = args.density * float3(0.22f, 0.30f, 0.36f);
+  float patternMean = args.patternAvailable != 0u ? Pattern.SampleLevel(float2(0.5f), 16.0f).r : 1.0f;
+  float marchDistance = min(waterDistance, args.shaftMaxDistance);
+  float waterHeight = dot(camera, up) + waterDepth;
+  uint rng = (pixel.x * 1973u + pixel.y * 9277u + 89173u) ^ 0x9e3779b9u;
+  float jitter = shaftRandom(rng);
+  uint steps = clamp(args.shaftSamples, 1u, 256u);
+  [loop]
+  for (uint step = 0u; step < steps; ++step) {
+    float start = float(step) / float(steps), end = float(step + 1u) / float(steps);
+    start *= start * marchDistance;
+    end *= end * marchDistance;
+    float3 position = camera + viewDirection * lerp(start, end, lerp(0.25f, 0.75f, jitter));
+    VolumeInteraction interaction = volumeInteractionCreate(position);
+    // Integrate each distant emitter at every step to avoid stochastic moonlight dropout.
+    [loop]
+    for (uint celestial = 0u; celestial < shaftDistantLightCount; ++celestial) {
+      DecodedPolymorphicLight light = decodePolymorphicLight(lights[shaftDistantLights[celestial]]);
+      LightSample sample = decodedPolymorphicLightSampleArea(light, float2(shaftRandom(rng), shaftRandom(rng)), interaction);
+      if (sample.solidAnglePdf <= 0.0f || !isfinite(sample.solidAnglePdf) || !all(isfinite(sample.radiance))) { continue; }
+      float3 toLight;
+      bool validWaterPath, visible;
+      float3 transmission = shaftLightTransport(light, sample, position, up, patternMean, toLight, validWaterPath, visible);
+      entryCount += validWaterPath ? 1u : 0u;
+      visibleCount += visible ? 1u : 0u;
+      float g = args.shaftAnisotropy;
+      float phase = (1.0f - g * g)
+        / pow(max(0.01f, 1.0f + g * g - 2.0f * g * dot(viewDirection, toLight)), 1.5f);
+      float3 integratedScatter = sigmaS * (1.0f - exp(-sigmaT * (end - start))) / max(sigmaT, float3(0.00001f));
+      radiance += sample.radiance / sample.solidAnglePdf * transmission
+        * exp(-sigmaT * start) * integratedScatter * phase;
+    }
+    uint selectedIndex = 0u;
+    float totalWeight = 0.0f, selectedWeight = 0.0f;
+    [loop]
+    for (uint candidate = 0u; candidate < shaftTileLightCount; ++candidate) {
+      uint index = shaftTileLights[candidate];
+      DecodedPolymorphicLight light = decodePolymorphicLight(lights[index]);
+      float weight = shaftCandidateWeight(light, interaction, viewDirection, up, waterHeight);
+      if (weight <= 0.0f || !isfinite(weight)) { continue; }
+      totalWeight += weight;
+      if (shaftRandom(rng) * totalWeight < weight) {
+        selectedIndex = index;
+        selectedWeight = weight;
+      }
+    }
+    if (selectedWeight <= 0.0f) { continue; }
+    DecodedPolymorphicLight selectedLight = decodePolymorphicLight(lights[selectedIndex]);
+    DecodedPolymorphicLight samplingLight = selectedLight;
+    // Shaping is evaluated along the air segment after refraction, not the unrefracted direction.
+    samplingLight.shaping.enabled = false;
+    LightSample selected = decodedPolymorphicLightSampleArea(samplingLight, float2(shaftRandom(rng), shaftRandom(rng)), interaction);
+    if (selected.solidAnglePdf <= 0.0f || !isfinite(selected.solidAnglePdf) || !all(isfinite(selected.radiance))) { continue; }
+    float3 toLight;
+    bool validWaterPath, visible;
+    float3 transmission = shaftLightTransport(selectedLight, selected,
+      position, up, patternMean, toLight, validWaterPath, visible);
+    entryCount += validWaterPath ? 1u : 0u;
+    visibleCount += visible ? 1u : 0u;
+    float g = args.shaftAnisotropy;
+    float phase = (1.0f - g * g)
+      / pow(max(0.01f, 1.0f + g * g - 2.0f * g * dot(viewDirection, toLight)), 1.5f);
+    float3 integratedScatter = sigmaS * (1.0f - exp(-sigmaT * (end - start))) / max(sigmaT, float3(0.00001f));
+    radiance += selected.radiance / selected.solidAnglePdf * (totalWeight / selectedWeight)
+      * transmission * exp(-sigmaT * start) * integratedScatter * phase;
+  }
+  radiance *= args.shaftStrength * args.sceneLightStrength;
+  return all(isfinite(radiance)) ? min(radiance, float3(65000.0f)) : float3(0.0f);
+}
