@@ -489,6 +489,9 @@ dxvk_src = files([
   'rtx_render/rtx_fork_particle_spawn.cpp',
   'rtx_render/rtx_particle_system.cpp',
   'rtx_render/rtx_particle_system.h',
+  'rtx_render/rtx_precipitation.cpp',
+  'rtx_render/rtx_precipitation.h',
+  'rtx_render/rtx_precipitation_state.h',
 
   'rtx_render/rtx_point_instancer_system.cpp',
   'rtx_render/rtx_point_instancer_system.h',

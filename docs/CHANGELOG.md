@@ -30,6 +30,21 @@ Entry format:
 
 ## 2026-10-29
 
+### Weather precipitation and GPU wet contacts
+Adapt the internal rain/snow emitter to v2 scene submission and typed NUMOS weather,
+preserving GPU spawning, simulation, geometry generation and shelter relocation.
+Restore wet-road, puddle and water contact emitters and transparent particle sky lighting.
+- Options: `rtx.weather.precipitation.*` master and optional switches default off;
+  contact mesh lists default empty and diagnostic logging defaults off.
+  Unused translucent-drop roughness/metallic options are excluded.
+- Validation: state/record unit suite, seven compiled shader variants, 20 native
+  and eight x86 bridge scenarios, one native fixture repeat, and four cross-module
+  regressions passed. Grass/window masks match their accepted builds.
+  Full-game performance remains pending after the remaining migrations.
+- Commits: this entry lands with the local precipitation migration commit.
+- Docs: [GPU precipitation](../documentation/RemixPrecipitation.md).
+
+
 ### GPU water on the v2 scene and sky provider
 Port ocean deformation, interaction/hull waves, wake flow, material foam, caustics
 and underwater volumes with their GPU compute paths intact. Integrate typed NUMOS

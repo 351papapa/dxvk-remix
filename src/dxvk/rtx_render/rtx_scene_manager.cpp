@@ -2715,7 +2715,8 @@ namespace dxvk {
       translucentMaterialData.getThinWallThickness(),
       translucentMaterialData.getEnableDiffuseLayer(),
       samplerIndex,
-      samplerFeedbackStamp
+      samplerFeedbackStamp,
+      translucentMaterialData.getSkyLitParticle()
     };
   }
 

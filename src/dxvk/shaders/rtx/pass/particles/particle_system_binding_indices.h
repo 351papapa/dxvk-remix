@@ -36,7 +36,7 @@ struct GpuParticle {
 
   f16vec4 uvMinMax;
   half rotation;
-  half pad0;
+  half weatherWetnessAtBirth; // Zero for non-contact particles; negative after drying.
   // A full float, because in fp16 a long remaining life (16 s or more) does not shrink by a frame time
   // under 1/128 s, so such particles would never die. It sits at offset 44 of the 48-byte struct
   // (static_assert in rtx_particle_system.cpp).
@@ -58,6 +58,7 @@ struct GpuParticle {
     position = worldPosition;
     velocity = worldVelocity;
     uvMinMax = _uvMinMax;
+    weatherWetnessAtBirth = half(0.0f);
   }
 
   [mutating]

@@ -716,9 +716,10 @@ namespace dxvk {
         m_device->getCommon()->pipelineManager().remixShaderCompilationCount());
       m_device->getCommon()->getRtxInitializer().onRaytracedFrame();
 
-      if (WetnessOptions::enabled() || WaterSystem::enabled() || getCommonObjects()->metaNumos().active()) {
+      if (WetnessOptions::enabled() || WaterSystem::enabled() || PrecipitationSystem::enable() || getCommonObjects()->metaNumos().active()) {
         getCommonObjects()->metaNumosWeather().update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
       }
+      if (PrecipitationSystem::enable()) { getCommonObjects()->metaPrecipitation().submit(*this); }
       getCommonObjects()->metaWater().submitGpuSurface(this);
       getCommonObjects()->metaWater().submitFoamSurface(this);
 
@@ -1933,6 +1934,8 @@ namespace dxvk {
     getSceneManager().getWindowLights().fillShaderParams(constants.windowLightArgs);
     WetnessOptions::fillShaderParams(constants.wetnessArgs);
     weather.fillWetnessArgs(constants.wetnessArgs);
+    const float authoredWetnessWeight = std::clamp(float(constants.wetnessArgs.weatherWetnessActive) / 65535.0f, 0.0f, 1.0f);
+    constants.wetnessArgs.contactWetness = 1.0f + (constants.wetnessArgs.weatherWetness - 1.0f) * authoredWetnessWeight;
     getCommonObjects()->metaWater().publishControls(camera);
     getCommonObjects()->metaWater().fillShoreWetnessArgs(constants.wetnessArgs);
     if (WaterSystem::enabled()) {
@@ -2006,7 +2009,7 @@ namespace dxvk {
     constants.skyMode = static_cast<uint32_t>(RtxOptions::skyMode());
     // Sky light on particle materials flagged OPAQUE_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE, at full
     // strength. Nothing creates such materials at present.
-    constants.particleSkyAmbientScale = 1.0f;
+    constants.particleSkyAmbientScale = getCommonObjects()->metaNumosWeather().precipitationState().precipitationSkyLight;
 
     const SkyMode currentSkyMode = RtxOptions::skyMode();
     if (currentSkyMode != m_lastSkyMode) {
@@ -2106,6 +2109,19 @@ namespace dxvk {
 
       m_cmd->trackResource<DxvkAccess::Write>(cb);
     }
+  }
+
+  bool RtxContext::bindParticleSceneResources() {
+    // Particle simulation runs before scene upload. These resources describe the
+    // completed scene matching its TLAS, including the corresponding zone count.
+    const auto constants = getResourceManager().getConstantsBuffer();
+    const auto surfaces = getSceneManager().getSurfaceBuffer();
+    const auto materials = getSceneManager().getSurfaceMaterialBuffer();
+    bindResourceBuffer(BINDING_CONSTANTS, constants != nullptr ? DxvkBufferSlice(constants) : DxvkBufferSlice());
+    bindResourceBuffer(BINDING_SURFACE_DATA_BUFFER, surfaces != nullptr ? DxvkBufferSlice(surfaces) : DxvkBufferSlice());
+    bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, materials != nullptr ? DxvkBufferSlice(materials) : DxvkBufferSlice());
+    bindResourceBuffer(BINDING_WETNESS_ZONES, m_wetnessZoneBuffer != nullptr ? DxvkBufferSlice(m_wetnessZoneBuffer) : DxvkBufferSlice());
+    return constants != nullptr && surfaces != nullptr && materials != nullptr;
   }
 
   void RtxContext::bindCommonRayTracingResources(const Resources::RaytracingOutput& rtOutput) {

@@ -4811,6 +4811,7 @@ namespace dxvk {
       ImGui::Unindent();
     }
 
+    PrecipitationSystem::showImguiSettings();
     RtxParticleSystemManager::showImguiSettings();
 
     RtxPointInstancerSystem::showImguiSettings();

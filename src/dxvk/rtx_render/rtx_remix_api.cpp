@@ -587,7 +587,8 @@ namespace {
           src.getEnableDiffuseLayer(),
           src.getFilterMode(),
           src.getWrapModeU(),
-          src.getWrapModeV()
+          src.getWrapModeV(),
+          src.getSkyLitParticle()
         } };
       }
       case MaterialDataType::RayPortal:
@@ -705,6 +706,7 @@ namespace {
           info.filterMode,
           info.wrapModeU,
           info.wrapModeV,
+          false, // Internal and authored materials opt into sky lighting.
         } };
       }
       if (auto extPortal = pnext::find<remixapi_MaterialInfoPortalEXT>(&info)) {
@@ -1083,6 +1085,15 @@ namespace {
       }
       if (auto extParticles = pnext::find<remixapi_InstanceInfoParticleSystemLegacyEXT>(&info)) {
         desc.particles.emplace(toRtParticleDesc(*extParticles));
+      }
+      if (desc.particles) {
+        const uint64_t mesh = reinterpret_cast<uint64_t>(info.mesh);
+        const auto& water = RtxParticleSystemManager::waterContactEmitterMeshes();
+        const auto& road = RtxParticleSystemManager::wetRoadEmitterMeshes();
+        const auto& puddle = RtxParticleSystemManager::puddleEmitterMeshes();
+        desc.particles->spawnOnWaterOrPuddles = water.find(mesh) != water.end();
+        desc.particles->spawnOnWetRoads = road.find(mesh) != road.end();
+        desc.particles->spawnOnPuddlesOnly = puddle.find(mesh) != puddle.end();
       }
       if (auto extInstancing = pnext::find<remixapi_InstanceInfoGpuInstancingEXT>(&info)) {
         if (extInstancing->instanceTransforms_count > 0 && extInstancing->instanceTransforms_values) {

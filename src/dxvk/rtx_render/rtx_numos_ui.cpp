@@ -23,6 +23,7 @@
 #include "rtx_numos_gpu.h"
 #include "rtx_numos_settings.h"
 #include "rtx_numos_weather.h"
+#include "rtx_precipitation.h"
 #include "rtx_photometer.h"
 #include "rtx_scene_manager.h"
 #include "../dxvk_context.h"
@@ -1472,6 +1473,39 @@ namespace dxvk {
         if (ImGui::SliderFloat("Rain weight", &p.water.rain, 0.0f, 1.0f)) { p.dirty = true; }
         if (ImGui::SliderFloat("Storm weight", &p.water.storm, 0.0f, 1.0f)) { p.dirty = true; }
         ImGui::TextWrapped("Weights blend the water system's rain and storm wave multipliers. A total above one is normalized.");
+      }
+      if (ImGui::CollapsingHeader("Precipitation")) {
+        const auto defaults = PrecipitationSystem::baseState();
+        ImGui::TextWrapped("Requires the precipitation master switch. Unset fields inherit the global base look.");
+        for (size_t i = 0; i < p.precipitation.values.size(); ++i) {
+          ImGui::PushID(int(i));
+          const auto& parameter = kPrecipitationParameters[i];
+          bool enabled = p.precipitation.values[i].has_value();
+          if (ImGui::Checkbox(parameter.name, &enabled)) {
+            p.precipitation.values[i] = enabled ? std::optional<float>(defaults.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120.0f);
+            const float limit = p.precipitation.relative[i] ? 100.0f : parameter.maximum;
+            if (ImGui::DragFloat("##value", &*p.precipitation.values[i], 0.01f, 0.0f, limit, "%.3f", kClamp)) {
+              p.dirty = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Multiply", &p.precipitation.relative[i])) { p.dirty = true; }
+          }
+          ImGui::PopID();
+        }
+        bool color = p.precipitation.color.has_value();
+        if (ImGui::Checkbox("Color override", &color)) {
+          p.precipitation.color = color ? std::optional<Vector3>(defaults.precipitationColor) : std::nullopt;
+          p.dirty = true;
+        }
+        if (color) {
+          if (ImGui::ColorEdit3("Particle color", p.precipitation.color->data)) { p.dirty = true; }
+          if (ImGui::Checkbox("Multiply color", &p.precipitation.colorRelative)) { p.dirty = true; }
+        }
       }
       if (ImGui::CollapsingHeader("Wet surfaces")) {
         WetnessArgs defaults;

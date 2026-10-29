@@ -1242,7 +1242,7 @@ struct RtTranslucentSurfaceMaterial {
     float transmittanceMeasurementDistance, const Vector3& transmittanceColor,
     bool enableEmission, float emissiveIntensity, const Vector3& emissiveColorConstant,
     bool isThinWalled, float thinWallThickness, bool useDiffuseLayer, uint32_t samplerIndex,
-    uint16_t samplerFeedbackStamp = SAMPLER_FEEDBACK_INVALID) :
+    uint16_t samplerFeedbackStamp = SAMPLER_FEEDBACK_INVALID, bool skyLitParticle = false) :
     m_normalTextureIndex(normalTextureIndex),
     m_transmittanceTextureIndex(transmittanceTextureIndex),
     m_emissiveColorTextureIndex(emissiveColorTextureIndex),
@@ -1250,7 +1250,7 @@ struct RtTranslucentSurfaceMaterial {
     m_transmittanceMeasurementDistance(transmittanceMeasurementDistance), m_transmittanceColor(transmittanceColor),
     m_enableEmission(enableEmission), m_emissiveIntensity(emissiveIntensity), m_emissiveColorConstant(emissiveColorConstant),
     m_isThinWalled(isThinWalled), m_thinWallThickness(thinWallThickness), m_useDiffuseLayer(useDiffuseLayer), m_samplerIndex(samplerIndex),
-    m_samplerFeedbackStamp(samplerFeedbackStamp)
+    m_samplerFeedbackStamp(samplerFeedbackStamp), m_skyLitParticle(skyLitParticle)
   {
     updateCachedData();
     updateCachedHash();
@@ -1268,6 +1268,8 @@ struct RtTranslucentSurfaceMaterial {
     if (m_useDiffuseLayer || getEnableDiffuseLayerOverrideHack()) {
       flags |= TRANSLUCENT_SURFACE_MATERIAL_FLAG_USE_DIFFUSE_LAYER;
     }
+
+    if (m_skyLitParticle) { flags |= TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE; }
 
     // data[0- 1]
     writeGPUHelper(data, offset, flags);
@@ -1359,6 +1361,7 @@ private:
       uint32_t useDiffuseLayer; // NOTE: uint32_t to avoid padding
       uint32_t samplerIndex;
       uint32_t samplerFeedbackStamp; // NOTE: uint32_t to avoid padding
+      uint32_t skyLitParticle;
       // NOTE: There must be NO padding between members, as the struct is used for hashing
     };
     static_assert(alignof(HashStruct) == 4 && sizeof(HashStruct) % 4 == 0);
@@ -1377,6 +1380,7 @@ private:
       m_useDiffuseLayer,
       m_samplerIndex,
       m_samplerFeedbackStamp,
+      m_skyLitParticle,
     };
     m_cachedHash = XXH3_64bits(&hashData, sizeof(hashData));
   }
@@ -1415,7 +1419,8 @@ private:
   Vector3 m_emissiveColorConstant;
   bool m_isThinWalled;
   float m_thinWallThickness;
-  bool m_useDiffuseLayer;
+  bool m_useDiffuseLayer : 1;
+  bool m_skyLitParticle : 1;
   uint16_t m_samplerFeedbackStamp;
 
   XXH64_hash_t m_cachedHash;

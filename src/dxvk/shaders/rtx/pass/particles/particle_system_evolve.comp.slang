@@ -197,6 +197,11 @@ void main(uint2 threadIdx : SV_DispatchThreadID)
   const uint particleIdx = (threadIdx.x + particleSystem.particleTailOffset) % particleSystem.desc.maxNumParticles;
   
   GpuParticle particle = Particles[particleIdx];
+  // Keep FIFO retirement while permanently hiding spray after its surface dries.
+  if (!particle.isDead() && particle.weatherWetnessAtBirth > half(0.0f)
+      && (cb.wetnessArgs.enabled == 0 || cb.wetnessArgs.contactWetness <= 0.0f)) {
+    particle.weatherWetnessAtBirth = half(-1.0f);
+  }
   
   if (!WaveActiveAllTrue(particle.isSleeping() || particle.isDead()))
   {

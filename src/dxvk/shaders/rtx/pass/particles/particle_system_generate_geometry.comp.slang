@@ -142,14 +142,20 @@ void main(uint2 threadIdx : SV_DispatchThreadID)
   // The degenerate-particle guard below tests the authored size, not the world-space one.
   const float2 authoredSize = particle.size(particleSystem, animationDataTex);
   const float2 size = authoredSize * particleCb.sceneScale;
-  const float4 color = particle.color(particleSystem, animationDataTex);
+  float4 color = particle.color(particleSystem, animationDataTex);
+  if (particle.weatherWetnessAtBirth < half(0.0f)) {
+    color.w = 0.0f;
+  } else if (!particle.isDead() && particle.weatherWetnessAtBirth > half(0.0f)) {
+    color.w *= cb.wetnessArgs.enabled
+      ? saturate(cb.wetnessArgs.contactWetness / float(particle.weatherWetnessAtBirth)) : 0.0f;
+  }
   
   // Particle sizes are authored in centimetres, so testing the authored size keeps this guard
   // independent of rtx.sceneScale. It is only a cheap pre-cull. The screen-space test below
   // (particleCb.minParticleSize, in pixels) is the real visibility cull.
   const float kMinimumAuthoredSize = 0.1f;  // centimetres == 1 mm
   
-  if(particle.isDead() || particle.isSleeping() || color.w < particleCb.resolveTransparencyThreshold || max(authoredSize.x, authoredSize.y) < kMinimumAuthoredSize)
+  if(particle.isDead() || particle.isSleeping() || particle.weatherWetnessAtBirth < half(0.0f) || color.w < particleCb.resolveTransparencyThreshold || max(authoredSize.x, authoredSize.y) < kMinimumAuthoredSize)
   {
     clearParticleVertices(threadIdx.x, particleSystem);
     return;

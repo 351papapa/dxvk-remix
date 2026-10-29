@@ -233,7 +233,8 @@ bool evaluateTranslucentApproximations(
   uint8_t resolveMode,
   Surface surface, SurfaceInteraction surfaceInteraction,
   TranslucentSurfaceMaterialInteraction translucentSurfaceMaterialInteraction,
-  vec3 incomingRadianceAttenuation, inout float outgoingRadianceAttenuation, inout vec3 emissiveRadiance)
+  vec3 incomingRadianceAttenuation, inout float outgoingRadianceAttenuation, inout vec3 emissiveRadiance,
+  bool skyLitParticle, PortalSpace2BitsType portalSpace)
 {
   unused(outgoingRadianceAttenuation);
   unused(emissiveRadiance);
@@ -254,6 +255,23 @@ bool evaluateTranslucentApproximations(
     // differently (a fully ordered approach would solve a lot of this complexity and make the translucency approximations much
     // easier to evaluate.)
 
+#ifdef RESOLVE_SKY_LIT_PARTICLES
+    // Froxel light applies to particles; the sky term requires an open-sky material.
+    if (surface.isParticle || skyLitParticle) {
+      vec3 froxel = evalVolumetricNEE(VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
+        cb.volumeArgs, surfaceInteraction, surfaceInteraction.geometryNormal,
+        portalSpaceToVolumeHint(portalSpace));
+      emissiveRadiance += froxel * translucentSurfaceMaterialInteraction.transmittanceColor
+        * incomingRadianceAttenuation;
+      if (skyLitParticle && skyProviderActive() && cb.particleSkyAmbientScale > 0.0f) {
+        const vec3 up = cb.isZUp ? vec3(0,0,1) : vec3(0,1,0);
+        vec3 direction = normalize(surfaceInteraction.position - cameraGetWorldPosition(cb.camera));
+        direction = normalize(direction + up * max(0.05f - dot(direction,up), 0.0f));
+        const vec3 sky = (skyProviderAmbient(direction) + skyProviderAmbient(up)) * 0.5f;
+        emissiveRadiance += sky * cb.particleSkyAmbientScale * incomingRadianceAttenuation;
+      }
+    }
+#endif
     return true;
   }
 
@@ -593,7 +611,9 @@ void resolveVertex<T: IBasePayloadState>(
       const bool approximationHandled = evaluateTranslucentApproximations(
         resolveMode,
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
-        radianceAttenuation, translucentApproximationOutgoingAttenuation, emissiveRadiance);
+        radianceAttenuation, translucentApproximationOutgoingAttenuation, emissiveRadiance,
+        (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,
+        resolveVertexState.portalSpace);
 
       radianceAttenuation *= translucentApproximationOutgoingAttenuation * translucentSurfaceMaterialInteraction.transmittanceColor;
 
@@ -1056,7 +1076,9 @@ void resolveVertexUnorderedParticles<
       evaluateTranslucentApproximations(
         resolveMode,
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
-        vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance);
+        vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance,
+        (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,
+        portalSpace);
       handledInteraction = true;
     }
 
@@ -1495,7 +1517,9 @@ void resolveVertexUnordered<
       evaluateTranslucentApproximations(
         resolveMode,
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
-        vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance);
+        vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance,
+        (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,
+        portalSpace);
       handledInteraction = true;
     }
 

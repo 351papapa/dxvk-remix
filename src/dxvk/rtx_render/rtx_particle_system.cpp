@@ -33,9 +33,12 @@
 #include "../util/util_global_time.h"
 
 #include <rtx_shaders/particle_system_spawn.h>
+#include <rtx_shaders/particle_system_spawn_contact.h>
 #include <rtx_shaders/particle_system_evolve.h>
 #include <rtx_shaders/particle_system_generate_geometry.h>
 #include "math.h"
+#include <array>
+#include <sstream>
 
 // Surface wetness is selected independently of the pass feature matrix.
 #include "rtx_wetness_shaders.h"
@@ -52,6 +55,26 @@ namespace dxvk {
   namespace {
     class ParticleSystemSpawn : public ManagedShader {
       WETNESS_SHADER_SOURCE(ParticleSystemSpawn, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_spawn)
+
+        BINDLESS_ENABLED()
+
+        BEGIN_PARAMETER()
+        COMMON_RAYTRACING_BINDINGS
+
+        CONSTANT_BUFFER(PARTICLE_SYSTEM_BINDING_CONSTANTS)
+
+        STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_SPAWN_CONTEXT_PARTICLE_MAPPING_INPUT)
+        STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_SPAWN_CONTEXTS_INPUT)
+        SAMPLER2D(PARTICLE_SYSTEM_BINDING_ANIMATION_DATA_INPUT)
+
+        RW_STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_PARTICLES_BUFFER_INPUT_OUTPUT)
+        // Spawn-occlusion diagnostics counters (layout in particle_system_spawn.comp.slang).
+        RW_STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_SPAWN_TRACE_STATS_OUTPUT)
+        END_PARAMETER()
+    };
+
+    class ParticleSystemSpawnContact : public ManagedShader {
+      SHADER_SOURCE(ParticleSystemSpawnContact, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_spawn_contact)
 
         BINDLESS_ENABLED()
 
@@ -202,6 +225,42 @@ namespace dxvk {
   std::atomic<uint32_t> RtxParticleSystemManager::s_spawnTraceRelocations { 0 };
   std::atomic<bool> RtxParticleSystemManager::s_spawnTraceTlasValid { false };
 
+  namespace {
+    void editContactMeshHashes(const char* label, RtxOption<fast_unordered_set>& option) {
+      RemixGui::RtxOptionUxWrapper wrapper(&option);
+      std::array<char, 16384> text {};
+      const std::string resolved = option.getResolvedValueAsString();
+      if (resolved.size() >= text.size()) {
+        ImGui::TextWrapped("This hash list exceeds the inline editor size; edit its configuration file.");
+        return;
+      }
+      std::memcpy(text.data(), resolved.data(), resolved.size());
+      const bool changed = ImGui::InputText(label, text.data(), text.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+      if (!changed && !ImGui::IsItemDeactivatedAfterEdit()) { return; }
+      std::string input(text.data());
+      std::replace(input.begin(), input.end(), ',', ' ');
+      std::istringstream stream(input);
+      std::string token;
+      fast_unordered_set hashes;
+      while (stream >> token) {
+        try {
+          size_t consumed = 0;
+          const uint64_t hash = std::stoull(token, &consumed, 16);
+          if (consumed != token.size() || token[0] == '-') { return; }
+          hashes.insert(hash);
+        } catch (...) { return; }
+      }
+      RemixGui::CheckRtxOptionPopups(&option);
+      const auto previous = option.get();
+      for (const auto hash : previous) {
+        if (hashes.find(hash) == hashes.end()) { option.removeHash(hash); }
+      }
+      for (const auto hash : hashes) {
+        if (previous.find(hash) == previous.end()) { option.addHash(hash); }
+      }
+    }
+  }
+
   void RtxParticleSystemManager::showImguiSettings() {
     if (RemixGui::CollapsingHeader("Particle System")) {
       ImGui::PushID("rtx_particles");
@@ -212,6 +271,14 @@ namespace dxvk {
       ImGui::BeginDisabled(!enable());
       RemixGui::Checkbox("Enable Spawning", &enableSpawningObject());
       RemixGui::DragFloat("Time Scale", &timeScaleObject(), 0.01f, 0.f, 1.f, "%.2f");
+
+      if (RemixGui::CollapsingHeader("GPU contact emitter mesh hashes")) {
+        ImGui::TextWrapped("Comma-separated hexadecimal API mesh hashes. Empty lists disable contact projection.");
+        RemixGui::Checkbox("Log GPU contact diagnostics", &contactDiagnosticsObject());
+        editContactMeshHashes("Water or puddles", waterContactEmitterMeshesObject());
+        editContactMeshHashes("Wet roads or water", wetRoadEmitterMeshesObject());
+        editContactMeshHashes("Puddles only", puddleEmitterMeshesObject());
+      }
 
       if (RemixGui::CollapsingHeader("Emitter Discontinuity Lerp Guard", ImGuiTreeNodeFlags_CollapsingHeader)) {
         ImGui::Indent();
@@ -661,7 +728,10 @@ namespace dxvk {
         ctx->bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE,
                                        ctx->getResourceManager().getTLAS(Tlas::Opaque).accelStructure);
       }
-      s_spawnTraceTlasValid.store(tlasBound, std::memory_order_relaxed);
+      if (!ctx->bindParticleSceneResources()) {
+        constants.sceneTlasValid = 0;
+      }
+      s_spawnTraceTlasValid.store(constants.sceneTlasValid != 0, std::memory_order_relaxed);
 
       // Spawn-occlusion diagnostics ring (see the header). It follows ConservativeCounter's
       // clear -> shader atomics -> copy pattern and its 10-frames-in-flight retirement assumption.
@@ -692,6 +762,11 @@ namespace dxvk {
         s_spawnTraceShelterKills.store(stats[1], std::memory_order_relaxed);
         s_spawnTraceLandingHits.store(stats[2], std::memory_order_relaxed);
         s_spawnTraceRelocations.store(stats[3], std::memory_order_relaxed);
+        if (contactDiagnostics() && statsFrameIdx % 30 == 0) {
+          Logger::info(str::format("[Particles GPU] frame=", statsFrameIdx, " systems=", m_particleSystems.size(),
+            " rays=", stats[0], " sheltered=", stats[1], " landing=", stats[2], " relocated=", stats[3],
+            " contactCandidates=", stats[4], " water=", stats[5], " wetGround=", stats[6], " rejected=", stats[7]));
+        }
       }
 
       ctx->clearBuffer(m_spawnTraceStatsGpu, 0, kStatsSizeBytes, 0);
@@ -774,7 +849,10 @@ namespace dxvk {
           ctx->bindResourceBuffer(PARTICLE_SYSTEM_BINDING_SPAWN_CONTEXT_PARTICLE_MAPPING_INPUT, DxvkBufferSlice(system.second->getSpawnContextMappingBuffer()));
           ctx->bindResourceBuffer(PARTICLE_SYSTEM_BINDING_PARTICLES_BUFFER_INPUT_OUTPUT, DxvkBufferSlice(system.second->getParticlesBuffer()));
 
-          ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, ParticleSystemSpawn::getShader());
+          const bool contact = particleSystem.desc.spawnOnPuddlesOnly
+            || particleSystem.desc.spawnOnWaterOrPuddles || particleSystem.desc.spawnOnWetRoads;
+          ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT,
+            contact ? ParticleSystemSpawnContact::getShader() : ParticleSystemSpawn::getShader());
 
           ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
         }

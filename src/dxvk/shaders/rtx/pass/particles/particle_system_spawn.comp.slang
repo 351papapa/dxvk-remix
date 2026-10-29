@@ -47,9 +47,113 @@ RWStructuredBuffer<GpuParticle> Particles;
 // Spawn-occlusion counters, cleared every frame and read back on a delay (RtxParticleSystemManager::simulate):
 // [0] particles that ran the occlusion trace, [1] particles killed at birth because every candidate was covered,
 // [2] particles whose life the landing trace shortened, [3] particles moved to open sky by relocation.
+// [4] contact candidates, [5] water contacts, [6] wet-ground contacts, [7] rejected contacts.
 layout(binding = PARTICLE_SYSTEM_BINDING_SPAWN_TRACE_STATS_OUTPUT)
 RWStructuredBuffer<uint> SpawnTraceStats;
 
+
+#ifdef PUDDLE_CONTACT
+#include "rtx/pass/wetness_helpers.slangh"
+bool tracePuddleGround(float3 position, out uint surfaceId, out float3 hit) {
+  surfaceId = 0;
+  hit = position;
+  RayDesc ray;
+  ray.Origin = position + wetWorldVector(float3(0,0,15.f * particleCb.sceneScale));
+  ray.Direction = wetWorldVector(float3(0,0,-1)); ray.TMin = 0;
+  ray.TMax = 80.f * particleCb.sceneScale;
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<flags> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      uint id = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+      uint materialCount, materialStride;
+      surfaceMaterials.GetDimensions(materialCount, materialStride);
+      uint surfaceCount, surfaceStride;
+      surfaces.GetDimensions(surfaceCount, surfaceStride);
+      if (id < materialCount && id < surfaceCount && !surfaces[id].isParticle && surfaceMaterials[id].isOpaque()) { query.CommitNonOpaqueTriangleHit(); }
+    }
+  }
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+  surfaceId = (query.CommittedInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CommittedGeometryIndex();
+  hit = ray.Origin + ray.Direction * query.CommittedRayT();
+  return true;
+}
+float wetRoadAtContact(float3 position, out uint id, out float3 hit) {
+  id = 0;
+  hit = position;
+  if (particleCb.sceneTlasValid == 0 || cb.wetnessArgs.enabled == 0) { return 0; }
+  if (!tracePuddleGround(position, id, hit)) { return 0; }
+  uint surfaceCount, surfaceStride;
+  surfaces.GetDimensions(surfaceCount, surfaceStride);
+  if (id >= surfaceCount) { return 0; }
+  uint tag = surfaces[id].wetnessTag;
+  if ((tag >> 24) != 2u) { return 0; }
+  if ((tag & 0x800u) != 0 || (cb.wetnessArgs.roadOnly != 0 && (tag & 0x500u) == 0)) { return 0; }
+  bool bypass = (tag & 0x400u) != 0 || cb.wetnessArgs.respectNoRainZones == 0;
+  float wet = resolveWeatherWetness(tag, cb.wetnessArgs)
+    * (bypass ? 1.f : wetnessExposure(hit));
+  return saturate(wet);
+}
+
+float puddleAtContact(float3 position, out float3 hit) {
+  uint id;
+  float wet = wetRoadAtContact(position, id, hit);
+  if (wet <= 0) { return 0; }
+  // Spawn runs before this frame's AS/material upload. Its TLAS and material
+  // buffer agree, but bindless vertex indices already belong to this frame.
+  // Recover the local slope from two short neighbouring rays instead of ever
+  // dereferencing last-frame surface geometry through the current vertex table.
+  float delta = max(particleCb.sceneScale, 1e-4f); // one centimetre
+  uint idX, idY;
+  float3 hitX, hitY;
+  if (!tracePuddleGround(position + float3(delta,0,0), idX, hitX) || idX != id ||
+      !tracePuddleGround(position + wetWorldVector(float3(0,delta,0)), idY, hitY) || idY != id) { return 0; }
+  float3 normal = normalize(cross(hitX - hit, hitY - hit));
+  return wetPuddleCoverage(hit,abs(wetUpNormal(normal)),wet);
+}
+
+// Use flags from the SAME completed scene as the TLAS. Never fetch old
+// surface vertex indices through the new frame's bindless geometry table.
+bool waterAtContact(float3 position, out float3 hit) {
+  hit = position;
+  if (particleCb.sceneTlasValid == 0) { return false; }
+  uint surfaceCount, stride;
+  surfaces.GetDimensions(surfaceCount, stride);
+  RayDesc ray;
+  ray.Origin = position + wetWorldVector(float3(0,0,150.f * particleCb.sceneScale));
+  ray.Direction = wetWorldVector(float3(0,0,-1)); ray.TMin = 0;
+  ray.TMax = 185.f * particleCb.sceneScale;
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<flags> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE | OBJECT_MASK_TRANSLUCENT, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      uint id = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+      if (id < surfaceCount && surfaces[id].isAnimatedWater) { query.CommitNonOpaqueTriangleHit(); }
+    }
+  }
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+  // A solid contact above the water blocks spray, including alpha-tested roads.
+  ray.TMax = query.CommittedRayT();
+  // Alpha-tested roads still use OBJECT_MASK_OPAQUE but are non-opaque in
+  // the BLAS. They must block the ocean underneath just like other roads.
+  const uint solidFlags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+    | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<solidFlags> solidQuery;
+  solidQuery.TraceRayInline(topLevelAS, solidFlags, OBJECT_MASK_OPAQUE, ray);
+  while (solidQuery.Proceed()) {
+    if (solidQuery.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      uint id = (solidQuery.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + solidQuery.CandidateGeometryIndex();
+      if (id < surfaceCount && !surfaces[id].isParticle && !surfaces[id].isAnimatedWater) { solidQuery.CommitNonOpaqueTriangleHit(); }
+    }
+  }
+  if (solidQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT) { return false; }
+  hit = ray.Origin + ray.Direction * query.CommittedRayT();
+  return true;
+}
+
+#endif
 
 f16vec3 sampleDirectionInCone(f16vec3 axis, float cosConeHalfAngle, float2 rndUV)
 {
@@ -254,6 +358,23 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
   }
 
   // Spawn from the accepted candidate, or from the last covered one, which is killed below.
+#ifdef PUDDLE_CONTACT
+  float3 contactPosition;
+  bool openWaterContact = (particleSystem.desc.spawnOnWaterOrPuddles || particleSystem.desc.spawnOnWetRoads)
+    && waterAtContact(candidate.spawnPosition, contactPosition);
+  bool contactValid = openWaterContact;
+  if (!contactValid) {
+    if (particleSystem.desc.spawnOnWetRoads) {
+      uint surfaceId;
+      float wet = wetRoadAtContact(candidate.spawnPosition, surfaceId, contactPosition);
+      contactValid = wet > 0.0f;
+      candidate.color.w *= wet;
+    } else {
+      contactValid = puddleAtContact(candidate.spawnPosition, contactPosition) >= 0.15f;
+    }
+  }
+  if (contactValid) { candidate.spawnPosition = contactPosition + wetWorldVector(float3(0,0,3.f * particleCb.sceneScale)); }
+#endif
   GpuParticle newParticle;
   newParticle.reset(particleSystem, candidate.spawnPosition, candidate.initialVelocity, candidate.uvMinMax, candidate.color, candidate.randSeed);
 
@@ -293,6 +414,17 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
     }
   }
 
+#ifdef PUDDLE_CONTACT
+  InterlockedAdd(SpawnTraceStats[4], 1);
+  if (contactValid) {
+    if (openWaterContact) { InterlockedAdd(SpawnTraceStats[5], 1); }
+    else { InterlockedAdd(SpawnTraceStats[6], 1); }
+  } else { InterlockedAdd(SpawnTraceStats[7], 1); }
+  if (!contactValid) { newParticle.timeToLive = 0.f; }
+  if (contactValid && !openWaterContact) {
+    newParticle.weatherWetnessAtBirth = half(max(cb.wetnessArgs.contactWetness, 0.0001f));
+  }
+#endif
   return newParticle;
 }
 

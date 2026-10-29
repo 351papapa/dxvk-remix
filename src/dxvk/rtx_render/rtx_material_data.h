@@ -138,7 +138,8 @@
   /* Sampler State */ \
   X(FilterMode,                       filter_mode,                        uint8_t,  lss::Mdl::Filter::Nearest,  lss::Mdl::Filter::Linear,  lss::Mdl::Filter::Linear)  \
   X(WrapModeU,                        wrap_mode_u,                        uint8_t,  lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat) \
-  X(WrapModeV,                        wrap_mode_v,                        uint8_t,  lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat)
+  X(WrapModeV,                        wrap_mode_v,                        uint8_t,  lss::Mdl::WrapMode::Clamp,  lss::Mdl::WrapMode::Clip,  lss::Mdl::WrapMode::Repeat) \
+  X(SkyLitParticle, sky_lit_particle, bool, false, true, false)
 
 #define LIST_TRANSLUCENT_MATERIAL_PARAMS(X)\
   LIST_TRANSLUCENT_MATERIAL_TEXTURES(X) \

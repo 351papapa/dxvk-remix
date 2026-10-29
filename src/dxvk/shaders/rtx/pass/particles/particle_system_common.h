@@ -109,6 +109,9 @@ struct GpuParticleSystemDesc {
   // where it would hit geometry. Unlike the screen-space enableCollisionDetection, this sees
   // off-screen geometry such as roofs. Curved trajectories are only approximated by the straight ray.
   uint8_t traceSpawnOcclusion : 1;
+  uint8_t spawnOnPuddlesOnly : 1;
+  uint8_t spawnOnWaterOrPuddles : 1;
+  uint8_t spawnOnWetRoads : 1;
 
 // Note: Spatial fields (collisionThickness, attractorRadius, gravityForce,
   // initialVelocityFromNormal, attractorForce, turbulenceForce, turbulenceFrequency)
@@ -169,6 +172,9 @@ struct RtxParticleSystemDesc : GpuParticleSystemDesc {
     restrictVelocityY = 0;
     restrictVelocityZ = 0;
     traceSpawnOcclusion = 0;
+    spawnOnPuddlesOnly = 0;
+    spawnOnWaterOrPuddles = 0;
+    spawnOnWetRoads = 0;
   }
 
   XXH64_hash_t calcHash() const {

@@ -187,4 +187,10 @@ exe = executable('test_water_weather', files('test_water_weather.cpp'),
 test('test_water_weather', exe, env: test_env)
 tests += exe
 
+exe = executable('test_precipitation', files('test_precipitation.cpp'),
+  include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DXXH_INLINE_ALL', '-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_precipitation', exe, env: test_env)
+tests += exe
+
 alias_target('unit_tests', tests)

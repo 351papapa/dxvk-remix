@@ -45,6 +45,7 @@
 
 #include "rtx_option.h"
 #include "rtx_wetness_preset.h"
+#include "rtx_precipitation_state.h"
 
 namespace numos {
   struct Settings;
@@ -88,6 +89,7 @@ namespace dxvk {
       std::vector<bool> set;             // indexed like numos::settingInfos()
       std::vector<bool> relative;        // indexed like `set`: the value multiplies the user's setting
       WetnessPreset wetness;
+      PrecipitationPreset precipitation;
       WaterWeatherState water;
       bool dirty = false;                // edited since the last load or save
       bool numosBuiltIn = false;         // the name of one of NUMOS's presets (it can be reset)
@@ -108,6 +110,7 @@ namespace dxvk {
     // The weather fields of what update() last returned (for seeds).
     const numos::WeatherSnapshot* currentSnapshot() const;
     WaterWeatherState waterState() const;
+    const PrecipitationState& precipitationState() const;
     // Shows a decoded seed's weather until the preset or the game weather changes.
     void holdSnapshot(const numos::WeatherSnapshot& weather);
 
