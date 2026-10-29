@@ -503,6 +503,11 @@ struct Surface
     get { return uint16_t(data15.w & 0xFFFFu); }
   }
 
+  // Non-eye surfaces reuse data15.xy; eye origins and SCCR/wetness remain unchanged.
+  property uint windowLightClass { get { return (data13.z >> 15) & 3u; } }
+  property uint windowIslandBase { get { return data15.x; } }
+  property uint windowStableHash { get { return data15.y; } }
+
   property uint wetnessTag
   {
     get { return ((data15.w >> 16) & 0xFFFu) | ((data15.w >> 28) << 24); }

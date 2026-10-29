@@ -45,6 +45,7 @@
 #include "rtx_vram_budget.h"
 #include "rtx_fork_d3d9_alpha.h"
 #include "rtx_fork_sccr_shell.h"
+#include "rtx_window_topology.h"
 
 #include "rtx/pass/instance_definitions.h"
 #include "rtx/concept/billboard.h"
@@ -89,6 +90,9 @@ namespace dxvk {
     }
     m_compactionQueries.clear();
     m_uploadedSurfaceBuffer = nullptr;
+    m_windowIslandBuffer = nullptr;
+    m_uploadedWindowIslandIds.clear();
+    m_windowSurfaceRecords.clear();
 
     // Invalidate incremental rebuild cache
     m_cachedBuckets.clear();
@@ -3678,6 +3682,7 @@ namespace dxvk {
           surface.writeGPUData(gpuData, offset, i, firstIndexOffsets[i]);
           // data15.w. The lookup is read-only, so it is safe on the workers.
           sccrShell.patchSurfaceRecord(gpuData + size_t(i) * kSurfaceGPUSize, instance);
+          patchWindowSurfaceRecord(gpuData + size_t(i) * kSurfaceGPUSize, i, instance);
           const bool dirty = !canDiff || i >= comparable ||
             std::memcmp(gpuData + size_t(i) * kSurfaceGPUSize, uploadedData + size_t(i) * kSurfaceGPUSize, kSurfaceGPUSize) != 0;
           if (dirty) {
@@ -3780,6 +3785,7 @@ namespace dxvk {
         surface.writeGPUData(record.data(), offset, i);
         surface.firstIndex -= firstIndexOffsets[i];
         sccrShell.patchSurfaceRecord(record.data(), *surfaces[i]);
+        patchWindowSurfaceRecord(record.data(), i, *surfaces[i]);
         if (std::memcmp(record.data(), gpuData + size_t(i) * kSurfaceGPUSize, kSurfaceGPUSize) != 0) {
           ++recordMismatches;
         }
@@ -3878,7 +3884,95 @@ namespace dxvk {
     m_mergeSubMs[8] += std::chrono::duration<double, std::milli>(gpuDataStart - passStart).count();
   }
 
+  void AccelManager::patchWindowSurfaceRecord(unsigned char* record, uint32_t slot, const RtInstance& instance) const {
+    if (instance.surface.windowLightClass == 1 && !instance.surface.eyeParams && slot < m_windowSurfaceRecords.size()) {
+      // data15.xy is unused for non-eye surfaces. data15.w belongs to SCCR and wetness.
+      std::memcpy(record + 240, &m_windowSurfaceRecords[slot], sizeof(WindowSurfaceRecord));
+    }
+  }
+
+  void AccelManager::prepareWindowIslands(const Rc<DxvkContext>& ctx) {
+    const bool enabled = WindowLightOptions::enabled();
+    m_windowSurfaceRecords.clear();
+    std::vector<uint32_t> ids;
+    if (enabled) {
+      m_windowSurfaceRecords.resize(m_reorderedSurfaces.size());
+      auto readSpan = [](const auto& buffer) -> WindowByteSpan {
+        if (!buffer.defined() || buffer.offsetFromSlice() >= buffer.length() || buffer.isPendingGpuWrite()) {
+          return {};
+        }
+        const auto* data = static_cast<const uint8_t*>(buffer.mapPtr(buffer.offsetFromSlice()));
+        return data ? WindowByteSpan(data, buffer.length() - buffer.offsetFromSlice()) : WindowByteSpan();
+      };
+      for (uint32_t slot = 0; slot < m_reorderedSurfaces.size(); ++slot) {
+        const RtInstance& instance = *m_reorderedSurfaces[slot];
+        BlasEntry* blas = instance.getBlas();
+        if (!blas || instance.surface.windowLightClass != 1 || instance.surface.eyeParams) {
+          continue;
+        }
+        const auto& geometry = blas->input.getGeometryData();
+        const uint64_t hashParts[] = { geometry.hashes[HashComponents::Indices],
+          geometry.hashes[HashComponents::VertexPosition], geometry.vertexCount, geometry.indexCount,
+          uint64_t(geometry.positionBuffer.vertexFormat()), geometry.indexBuffer.defined() ? geometry.indexBuffer.indexType() : UINT64_MAX };
+        const uint64_t key = XXH64(hashParts, sizeof(hashParts), 0);
+        if (!blas->windowIslandRootsValid || blas->windowIslandRootsHash != key) {
+          WindowTopologyInput input;
+          input.vertexCount = geometry.vertexCount;
+          input.indexCount = geometry.indexCount;
+          input.triangleCount = geometry.calculatePrimitiveCount();
+          const auto format = geometry.positionBuffer.vertexFormat();
+          if (format == VK_FORMAT_R32G32B32_SFLOAT || format == VK_FORMAT_R32G32B32A32_SFLOAT) {
+            input.positions = readSpan(geometry.positionBuffer);
+          }
+          input.positionStride = geometry.positionBuffer.stride();
+          if (geometry.indexBuffer.defined()) {
+            input.indexWidth = geometry.indexBuffer.indexType() == VK_INDEX_TYPE_UINT32 ? 4u : 2u;
+            input.indexStride = geometry.indexBuffer.stride();
+            input.indices = readSpan(geometry.indexBuffer);
+          }
+          blas->windowIslandRoots = buildWindowIslandRoots(input);
+          blas->windowIslandRootsHash = key;
+          // Retry after a pending GPU write; unmappable device-local sources keep the fallback.
+          blas->windowIslandRootsValid = !(geometry.positionBuffer.defined() && geometry.positionBuffer.isPendingGpuWrite())
+            && !(geometry.indexBuffer.defined() && geometry.indexBuffer.isPendingGpuWrite());
+        }
+        uint32_t count = 0;
+        for (const auto& range : blas->buildRanges) {
+          count += range.primitiveCount;
+        }
+        auto& record = m_windowSurfaceRecords[slot];
+        record.base = uint32_t(ids.size());
+        const uint64_t geometryHash = instance.surface.associatedGeometryHash != kEmptyHash
+          ? instance.surface.associatedGeometryHash : key;
+        record.hash = uint32_t(geometryHash ^ (geometryHash >> 32));
+        const uint32_t sourceBase = m_reorderedSurfacesFirstIndexOffset[slot] / 3;
+        for (uint32_t primitive = 0; primitive < count; ++primitive) {
+          const uint64_t source = uint64_t(sourceBase) + primitive;
+          ids.push_back(source < blas->windowIslandRoots.size() ? blas->windowIslandRoots[source] : uint32_t(source));
+        }
+      }
+    }
+    if (ids.empty()) {
+      ids.push_back(0); // A valid descriptor even with the feature disabled or no matching surfaces.
+    }
+    if (m_windowIslandBuffer.ptr() && ids == m_uploadedWindowIslandIds) {
+      return;
+    }
+    DxvkBufferCreateInfo info;
+    info.size = ids.size() * sizeof(uint32_t);
+    info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+    info.access = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    if (!m_windowIslandBuffer.ptr() || m_windowIslandBuffer->info().size < info.size) {
+      m_windowIslandBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        DxvkMemoryStats::Category::RTXAccelerationStructure, "Window Island IDs");
+    }
+    ctx->updateBuffer(m_windowIslandBuffer, 0, info.size, ids.data());
+    m_uploadedWindowIslandIds = std::move(ids);
+  }
+
   void AccelManager::uploadSurfaceData(Rc<DxvkContext> ctx) {
+    prepareWindowIslands(ctx);
     ScopedCpuProfileZone();
     if (m_reorderedSurfaces.empty()) {
       return;
@@ -3949,6 +4043,7 @@ namespace dxvk {
         currentSurface.writeGPUData(surfacesGPUData.data(), dataOffset, i);
         currentSurface.firstIndex -= m_reorderedSurfacesFirstIndexOffset[i];
         sccrShell.patchSurfaceRecord(surfacesGPUData.data() + dataOffset - kSurfaceGPUSize, currentInstance);
+        patchWindowSurfaceRecord(surfacesGPUData.data() + dataOffset - kSurfaceGPUSize, i, currentInstance);
       }
 
       // Find the size of the surface mapping buffer

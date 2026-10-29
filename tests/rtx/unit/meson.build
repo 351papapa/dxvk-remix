@@ -152,4 +152,9 @@ exe = executable('test_wetness', files('test_wetness.cpp', '../../../src/dxvk/rt
 test('test_wetness', exe, args: [meson.current_build_dir() / 'wetness-test-output'], env: test_env)
 tests += exe
 
+exe = executable('test_window_light', files('test_window_light.cpp'),
+  include_directories : test_include_path, dependencies : [ d3d9_dep, test_unit_deps ], link_with: [ d3d9_dll, dxvk_lib ], win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_window_light', exe, env: test_env)
+tests += exe
+
 alias_target('unit_tests', tests)

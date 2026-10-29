@@ -804,7 +804,8 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   OpaqueSurfaceMaterial opaqueSurfaceMaterial,
   Surface surface,
   inout SurfaceInteraction surfaceInteraction,
-  MinimalRayInteraction minimalRayInteraction)
+  MinimalRayInteraction minimalRayInteraction,
+  uint primitiveIndex = 0u)
 {
   OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction;
   // Note: need initialize the flags explicitely to get rid of garbage data.
@@ -1548,6 +1549,34 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   // Pre-exposure (rtx_pre_exposure.h): every radiance source is stored x cb.preExposure. The G-buffer copy
   // (gbuffer_memory_polymorphic_surface_material_interaction.slangh) stores the result, so its decode does not
   // multiply again.
+  // Gate emission only; texture sampling and feedback retain their normal behavior.
+  if (cb.windowLightArgs.enabled != 0 && surface.windowLightClass == 2u)
+  {
+    if (cb.windowLightArgs.streetLampOn == 0)
+    {
+      emissiveColor = vec3(0.0f);
+    }
+  }
+  else if (cb.windowLightArgs.enabled != 0 && surface.windowLightClass == 1u)
+  {
+    const int2 windowCell = int2(floor(surfaceInteraction.textureCoordinates));
+    const uint windowIslandId = windowIslandIds[surface.windowIslandBase + primitiveIndex];
+    uint windowHash = surface.windowStableHash * 0x9E3779B1u
+                    ^ uint(surface.hashPacked) * 0x85EBCA77u
+                    ^ windowIslandId * 0xC2B2AE3Du
+                    ^ uint(windowCell.x) * 0x165667B1u
+                    ^ uint(windowCell.y) * 0x27D4EB2Fu
+                    ^ cb.windowLightArgs.nightSeed;
+    windowHash = (windowHash ^ (windowHash >> 16)) * 0x7FEB352Du;
+    windowHash = (windowHash ^ (windowHash >> 15)) * 0x846CA68Bu;
+    windowHash = windowHash ^ (windowHash >> 16);
+    const float windowRandom = float(windowHash & 0xFFFFFFu) * (1.0f / 16777216.0f);
+    if (windowRandom >= saturate(cb.windowLightArgs.litRatio))
+    {
+      emissiveColor = vec3(0.0f);
+    }
+  }
+
   opaqueSurfaceMaterialInteraction.emissiveRadiance =
     emissiveBlendOverrideInfluence * emissiveColor * opaqueSurfaceMaterial.emissiveIntensity * cb.preExposure;
 

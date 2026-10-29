@@ -441,7 +441,7 @@ void resolveVertex<T: IBasePayloadState>(
 #endif
 
     OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction =
-      opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction);
+      opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction, rayInteraction.primitiveIndex);
 
     // Blend any decal(s) that happened before this interaction
     if (decalMaterialBlending && resolveVertexState.decalEncountered)
@@ -1037,7 +1037,7 @@ void resolveVertexUnorderedParticles<
       const OpaqueSurfaceMaterial opaqueSurfaceMaterial = opaqueSurfaceMaterialCreate(memoryPolymorphicSurfaceMaterial);
 
       const OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction =
-        opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction);
+        opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction, rayInteraction.primitiveIndex);
 
       evaluateOpaqueApproximations(
         resolveMode | resolveModeForceOpacityLightingApprox,
@@ -1417,7 +1417,7 @@ void resolveVertexUnordered<
       const OpaqueSurfaceMaterial opaqueSurfaceMaterial = opaqueSurfaceMaterialCreate(memoryPolymorphicSurfaceMaterial);
 
       const OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction =
-        opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction);
+        opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction, rayInteraction.primitiveIndex);
 
       if (ENABLE_DECALS && isDecal)
       {

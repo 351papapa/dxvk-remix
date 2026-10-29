@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- 2026-10-29 (local fork): `__window.hour`, `__window.day` and `__window.badweather`
+  conventions for window and street-lamp emission. See `RemixWindowLighting.md`.
+  The API table and version are unchanged.
 - 2026-10-29 (local fork): `__wetness.norain_zones_v1` and
   `__wetness.rain_ending` game-value conventions, plus wetness fields in NUMOS
   weather presets. See `documentation/RemixWetnessAPI.md`. The C API table and

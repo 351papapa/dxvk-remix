@@ -695,6 +695,9 @@ struct PooledBlas : public RcObject {
 
 // Information about a geometry, such as vertex buffers, and possibly a static BLAS for that geometry
 struct BlasEntry {
+  std::vector<uint32_t> windowIslandRoots;
+  uint64_t windowIslandRootsHash = 0;
+  bool windowIslandRootsValid = false;
   // input contains legacy or replacements (the data can be on CPU or GPU)
   //  - Data on CPU is guaranteed to be alive during draw call's submission.
   //  - Data can be made alive on CPU for longer with an explicit ref hold on it

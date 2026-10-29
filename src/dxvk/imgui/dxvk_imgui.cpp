@@ -54,6 +54,7 @@
 #include "rtx_render/rtx_hash_collision_detection.h"
 #include "rtx_render/rtx_options.h"
 #include "../shaders/rtx/pass/wetness_args.h"
+#include "../shaders/rtx/pass/window_light_args.h"
 #include "rtx_render/rtx_pipeline_stats.h"
 #include "rtx_render/rtx_stress.h"
 #include "rtx_render/rtx_fork_api_recorder.h"
@@ -820,6 +821,19 @@ namespace dxvk {
   void ImGUI::showMaterialOptions() {
     if (RemixGui::CollapsingHeader("Material Options (optional)", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
+
+      if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());
+        RemixGui::InputText("Window texture names", &WindowLightOptions::textureNamesObject());
+        RemixGui::SliderFloat("Lit share at night start", &WindowLightOptions::litRatioObject(), 0.0f, 1.0f);
+        RemixGui::SliderFloat("Night start hour", &WindowLightOptions::startHourObject(), 0.0f, 24.0f);
+        RemixGui::SliderFloat("Night end hour", &WindowLightOptions::endHourObject(), 0.0f, 24.0f);
+        RemixGui::InputInt("Night seed", &WindowLightOptions::nightSeedObject());
+        RemixGui::Checkbox("Enable street lamps", &WindowLightOptions::streetLampsEnabledObject());
+        RemixGui::InputText("Street lamp texture names", &WindowLightOptions::streetLampTextureNamesObject());
+        ImGui::Unindent();
+      }
 
       if (RemixGui::CollapsingHeader("Wetness / Rain", collapsingHeaderClosedFlags)) {
         ImGui::Indent();

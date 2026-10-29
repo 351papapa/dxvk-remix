@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "dff": "window_smoke",
+  "meshes": [
+    {
+      "materials": [
+        {
+          "texture": "test_window",
+          "draw_calls": [
+            {
+              "hashes": [
+                {
+                  "remix_mesh_hash": "4576c1f9571c4d8e",
+                  "texture0_hash": "b5eb6b71a7136b32"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

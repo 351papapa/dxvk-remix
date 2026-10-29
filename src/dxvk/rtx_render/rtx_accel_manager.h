@@ -156,6 +156,7 @@ public:
   ~AccelManager();
 
   // Returns a GPU buffer containing the surface data for active instances
+  const Rc<DxvkBuffer> getWindowIslandBuffer() const { return m_windowIslandBuffer; }
   const Rc<DxvkBuffer> getSurfaceBuffer() const { return m_surfaceBuffer; }
 
   const Rc<DxvkBuffer> getSurfaceMappingBuffer() const { return m_surfaceMappingBuffer; }
@@ -645,6 +646,12 @@ private:
 
   Rc<DxvkBuffer> m_vkInstanceBuffer; // Note: Holds Vulkan AS Instances, not RtInstances
   Rc<DxvkBuffer> m_surfaceBuffer;
+  Rc<DxvkBuffer> m_windowIslandBuffer;
+  struct WindowSurfaceRecord { uint32_t base = 0, hash = 0; };
+  std::vector<WindowSurfaceRecord> m_windowSurfaceRecords;
+  std::vector<uint32_t> m_uploadedWindowIslandIds;
+  void prepareWindowIslands(const Rc<DxvkContext>& ctx);
+  void patchWindowSurfaceRecord(unsigned char* record, uint32_t slot, const RtInstance& instance) const;
   Rc<DxvkBuffer> m_surfaceMappingBuffer;
   Rc<DxvkBuffer> m_transformBuffer;
   Rc<DxvkBuffer> m_primitiveIDPrefixSumBuffer;

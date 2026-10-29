@@ -30,6 +30,17 @@ Entry format:
 
 ## 2026-10-29
 
+### Window and street-lamp emission
+Restore opt-in random window emission and host-clock lamp control on the v2
+scene path. Window patterns remain stable across midnight; daytime lamps now
+turn off unless bad weather requests them. Split and parallel surface uploads
+keep independent island offsets without growing the 256-byte GPU record.
+- Options: `rtx.windowLight.enabled` and `streetLampsEnabled` default off; matching,
+  ratio, night hours and seed are exposed in Material Options > Window Lighting.
+- Build: cap shader subprocess workers at 4 to match the documented resource limit.
+- Docs: [RemixWindowLighting.md](../documentation/RemixWindowLighting.md).
+
+
 ### Per-instance wet surfaces and weather integration
 Restores wet sheen, puddles, rain detail, exclusions and rain-ending controls
 without mutating shared material identities. Typed wetness values blend with

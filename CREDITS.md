@@ -124,3 +124,8 @@ interaction files (copyright notices retained), including the local reference
 MIT notice. The v2 instance metadata and NUMOS integration are local changes.
 DFF JSON parsing uses the existing, unmodified nlohmann/json header bundled
 with FidelityFX-SDK. Its MIT notice is included in ThirdPartyLicenses.txt.
+
+Window lighting rules, clock inputs and island emission derive from the same
+local `c17b36af` runtime and saved working-tree changes. The v2 per-instance
+classification, per-slot packing and bounded CPU topology reader are local
+adaptations. Existing NVIDIA shader copyright and MIT notices are retained.

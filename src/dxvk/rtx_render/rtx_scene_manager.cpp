@@ -3142,22 +3142,49 @@ namespace dxvk {
     }
 
     // Call on the other managers to prepare their GPU data for the current scene
-    auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
-    if (captureFolder.filename() == L".trex") {
-      captureFolder = captureFolder.parent_path();
+    const bool wetnessEnabled = WetnessOptions::enabled();
+    const bool windowsEnabled = WindowLightOptions::enabled();
+    if (wetnessEnabled || windowsEnabled) {
+      auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
+      if (captureFolder.filename() == L".trex") {
+        captureFolder = captureFolder.parent_path();
+      }
+      m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
+        WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
     }
-    m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
-      WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
-    for (RtInstance* instance : m_instanceManager.getInstanceTable()) {
-      auto& surface = instance->surface;
-      surface.wetnessTag = surface.sourceWetnessTag;
-      const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
-      if (rule == WetnessDffRules::Rule::Disable) {
-        surface.wetnessTag |= 0x800u;
-      } else if (rule == WetnessDffRules::Rule::Enable) {
-        surface.wetnessTag |= 0x400u;
+    if (windowsEnabled) {
+      m_windowLights.beginFrame();
+    }
+    if (wetnessEnabled || windowsEnabled || m_windowLightsWereEnabled) {
+      const auto& textures = textureManager.getTextureTable();
+      for (RtInstance* instance : m_instanceManager.getInstanceTable()) {
+        auto& surface = instance->surface;
+        if (wetnessEnabled) {
+          surface.wetnessTag = surface.sourceWetnessTag;
+          const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
+          if (rule == WetnessDffRules::Rule::Disable) {
+            surface.wetnessTag |= 0x800u;
+          } else if (rule == WetnessDffRules::Rule::Enable) {
+            surface.wetnessTag |= 0x400u;
+          }
+        }
+        surface.windowLightClass = 0;
+        const auto* material = getSurfaceMaterialOrNull(surface.surfaceMaterialIndex);
+        if (windowsEnabled && !surface.eyeParams && material && material->getType() == RtSurfaceMaterialType::Opaque) {
+          const uint32_t textureIndex = material->getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
+          const char* replacementName = nullptr;
+          if (textureIndex < textures.size()) {
+            const auto& texture = textures[textureIndex].getManagedTexture();
+            if (texture.ptr() && texture->m_assetData.ptr()) {
+              replacementName = texture->m_assetData->info().filename;
+            }
+          }
+          surface.windowLightClass = m_windowLights.classify(surface.windowSourceTextureHash,
+            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.windowSourceTextureHash), replacementName);
+        }
       }
     }
+    m_windowLightsWereEnabled = windowsEnabled;
     m_accelManager.prepareSceneData(ctx, execBarriers, m_instanceManager);
     // [PerfGpu] sub-stages of the scene data and TLAS work.
     ctx->recordGpuStageTiming("SceneInstanceUpload");

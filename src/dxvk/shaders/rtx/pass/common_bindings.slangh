@@ -178,6 +178,9 @@ Texture2D<float4> NightSkyMoon;
 #define ATMOSPHERE_AVAILABLE
 #define NIGHT_SKY_AVAILABLE
 
+layout(binding = BINDING_WINDOW_ISLANDS)
+StructuredBuffer<uint> windowIslandIds;
+
 #ifdef ENABLE_SURFACE_WETNESS
 struct WetnessZoneNode {
   float4 lower;

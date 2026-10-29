@@ -1922,6 +1922,7 @@ namespace dxvk {
     if (WetnessOptions::enabled() || getCommonObjects()->metaNumos().active()) {
       weather.update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
     }
+    getSceneManager().getWindowLights().fillShaderParams(constants.windowLightArgs);
     WetnessOptions::fillShaderParams(constants.wetnessArgs);
     weather.fillWetnessArgs(constants.wetnessArgs);
     constants.wetnessArgs.noRainNodeCount = static_cast<uint32_t>(m_wetnessZones.nodes().size());
@@ -2119,6 +2120,7 @@ namespace dxvk {
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_UNORDERED, getResourceManager().getTLAS(Tlas::Unordered).accelStructure);
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_SSS, getResourceManager().getTLAS(Tlas::SSS).accelStructure);
     bindResourceBuffer(BINDING_WETNESS_ZONES, DxvkBufferSlice(m_wetnessZoneBuffer));
+    bindResourceBuffer(BINDING_WINDOW_ISLANDS, DxvkBufferSlice(getSceneManager().getAccelManager().getWindowIslandBuffer()));
     bindResourceBuffer(BINDING_SURFACE_DATA_BUFFER, DxvkBufferSlice(surfaceBuffer, 0, surfaceBuffer->info().size));
     bindResourceBuffer(BINDING_SURFACE_MAPPING_BUFFER, DxvkBufferSlice(surfaceMappingBuffer, 0, surfaceMappingBuffer.ptr() ? surfaceMappingBuffer->info().size : 0));
     bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, DxvkBufferSlice(surfaceMaterialBuffer, 0, surfaceMaterialBuffer->info().size));

@@ -56,6 +56,7 @@
 #include "graph/rtx_graph_manager.h"
 #include "rtx_particle_system.h"
 #include "rtx_wetness_dff_rules.h"
+#include "rtx_window_light.h"
 
 namespace dxvk 
 {
@@ -211,6 +212,8 @@ namespace fork_hooks {
 // BLAS entries in raytracing terminology.
 class SceneManager : public CommonDeviceObject, public ResourceCache {
   WetnessDffRules m_wetnessDffRules;
+  WindowLightState m_windowLights;
+  bool m_windowLightsWereEnabled = false;
   friend class ImGUI;
   // The scene's own retained instances build and keep RT instances themselves.
   friend class RetainedScene;
@@ -325,6 +328,7 @@ public:
   Rc<DxvkBuffer> getSurfaceMaterialBuffer() { return m_surfaceMaterialBuffer; }
   Rc<DxvkBuffer> getSurfaceMaterialExtensionBuffer() { return m_surfaceMaterialExtensionBuffer; }
   Rc<DxvkBuffer> getVolumeMaterialBuffer() { return m_volumeMaterialBuffer; }
+  WindowLightState& getWindowLights() { return m_windowLights; }
   Rc<DxvkBuffer> getSurfaceBuffer() const { return m_accelManager.getSurfaceBuffer(); }
   Rc<DxvkBuffer> getSurfaceMappingBuffer() const { return m_accelManager.getSurfaceMappingBuffer(); }
   Rc<DxvkBuffer> getCurrentFramePrimitiveIDPrefixSumBuffer() const { return m_accelManager.getCurrentFramePrimitiveIDPrefixSumBuffer(); }

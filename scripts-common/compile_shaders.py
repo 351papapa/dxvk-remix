@@ -680,7 +680,7 @@ for root, dirs, files in os.walk(args.input):
 
 if len(tasks):
     threads = []
-    threadCount = multiprocessing.cpu_count() if args.parallel else 1
+    threadCount = min(4, multiprocessing.cpu_count()) if args.parallel else 1
     for i in range(threadCount):
         thread = threading.Thread(target = runTasks, args = (tasks,))
         thread.start()

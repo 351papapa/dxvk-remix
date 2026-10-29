@@ -1500,6 +1500,12 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.wetness.streakSize|float|1|||Streak head size multiplier\.|
 |rtx.wetness.waterWaveScale|float|1|||Water \(AnimatedWater\) micro\-wave size multiplier\. Larger = bigger, sparser chop\.|
 |rtx.wetness.waterWaveStrength|float|0.5|||Water \(AnimatedWater\) micro\-wave normal wobble amplitude\. 0 = off\.|
+|rtx.windowLight.enabled|bool|False|||Enable per\-window emission and clock\-driven street lamps\.|
+|rtx.windowLight.endHour|float|5|||Night end in game hours, from 0 to 24\. Night can cross midnight\.|
+|rtx.windowLight.litRatio|float|0.3|||Share of window islands lit at the start of the night, from 0 to 1\. The share falls to zero by the end hour\.|
+|rtx.windowLight.nightSeed|int|0|||Additional random seed\. Each game night has a stable pattern; changing this value selects another pattern\.|
+|rtx.windowLight.startHour|float|19|||Night start in game hours, from 0 to 24\. Equal start and end hours keep a constant lit share\.|
+|rtx.windowLight.streetLampsEnabled|bool|False|||Classify street lamps separately\. Lamps emit at night or in bad weather and are dark otherwise\. Lamp matching takes precedence over window matching\.|
 |rtx.worldOrigin.enable|bool|False|||For hosts that submit the scene relative to a moving render origin and publish that origin, in render units, in the game values \_\_mcrtx\.world\_origin\.x/y/z \(remixapi\_SetGameValue\) before each SetupCamera\. When the origin moves, the previous camera and every instance's previous transform are moved with it, so motion vectors, camera\-cut detection and temporal history see no jump, and NUMOS clouds stay anchored to the world\. When off, those game values are ignored\.|
 |rtx.worldOrigin.preciseCamera|bool|False|||Keeps a Remix API parameterized camera \(SetupCamera with CameraInfoParameterizedEXT\) in double precision instead of rounding its view matrix to float\. At world coordinates around 100,000 units, float rounding changes every frame as the camera turns, which makes a nearby view model wobble\.|
 |rtx.worldSpaceUiBackgroundOffset|float|-0.01|||Distance along normal to offset objects rendered as worldspace UI, specifically for the background of screens\.|
@@ -1598,5 +1604,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.welcomeMessage|string||||Display a message to the user on startup, leave empty if no message is to be displayed\.|
 |rtx.wetness.forceDisableDff|string||||DFF name substrings separated by semicolons\. Disables wetness; takes precedence over enable matches\.|
 |rtx.wetness.forceEnableDff|string||||DFF name substrings separated by semicolons\. Overrides road and no\-rain zone filtering; still requires rain\.|
+|rtx.windowLight.streetLampTextureNames|string||||Case\-insensitive street lamp texture name fragments separated by semicolons\. Lamp textures keep their original emissive footprint\.|
+|rtx.windowLight.textureNames|string||||Case\-insensitive window texture name fragments separated by semicolons\. Matches original captured names and replacement filenames\.|
 |rtx.worldSpaceUiBackgroundTextures|hash set||||Hack/workaround option for dynamic world space UI textures with a coplanar background\.<br>Apply to backgrounds if the foreground material is a dynamic world texture rendered in UI that is unpredictable and rapidly changing\.<br>This offsets the background texture backwards\.|
 |rtx.worldSpaceUiTextures|hash set||||Textures on draw calls that should be treated as worldspace UI elements\.<br>Unlike typical UI textures this option is useful for improved rendering of UI elements which appear as part of the scene \(moving around in 3D space rather than as a screenspace element\)\.|

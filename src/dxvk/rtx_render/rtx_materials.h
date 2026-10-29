@@ -288,7 +288,7 @@ struct RtSurface {
     textureFlags |= ((static_cast<uint32_t>(textureAlphaOperation)  & 0x7) << 11);
 
     textureFlags |= eyeParams ? (1 << 14) : 0;
-    // textureFlags bits 15-16 unused
+    textureFlags |= eyeParams ? 0u : ((uint32_t(windowLightClass) & 3u) << 15);
 
     static_assert(static_cast<uint32_t>(TexGenMode::Count) <= 4);
     textureFlags |= ((static_cast<uint32_t>(texgenMode) & 0x3) << 17);
@@ -352,6 +352,8 @@ struct RtSurface {
   uint32_t wetnessTag = 0;
   uint32_t sourceWetnessTag = 0;
   uint64_t wetnessMeshHash = 0;
+  uint64_t windowSourceTextureHash = 0;
+  uint8_t windowLightClass = 0;
   bool isPreservePath = false;
   bool hasMaterialChanged = false;
   bool isAnimatedWater = false;
