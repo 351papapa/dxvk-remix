@@ -177,3 +177,28 @@ Texture2D<float4> NightSkyMoon;
 
 #define ATMOSPHERE_AVAILABLE
 #define NIGHT_SKY_AVAILABLE
+
+#ifdef ENABLE_SURFACE_WETNESS
+struct WetnessZoneNode {
+  float4 lower;
+  float4 upper;
+};
+layout(binding = BINDING_WETNESS_ZONES)
+StructuredBuffer<WetnessZoneNode> wetnessZones;
+
+float wetnessExposure(float3 position) {
+  uint index = 0;
+  while (index < cb.wetnessArgs.noRainNodeCount) {
+    WetnessZoneNode node = wetnessZones[index];
+    if (all(position > node.lower.xyz) && all(position < node.upper.xyz)) {
+      if (node.upper.w > 0.5f) {
+        return 0.0f;
+      }
+      ++index;
+    } else {
+      index = uint(node.lower.w);
+    }
+  }
+  return 1.0f;
+}
+#endif

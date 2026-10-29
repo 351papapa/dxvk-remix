@@ -227,8 +227,7 @@ namespace dxvk {
     loadNightSky();
     // The user's settings with the weather presets blended over them (rtx_numos_weather.h). The weather
     // reaches NUMOS inside the settings, so FrameInputs::weather stays null.
-    m_impl->renderer.setSettings(ctx.getCommonObjects()->metaNumosWeather().update(NumosSettings::resolved(),
-                                                                                    GlobalTime::get().deltaTime()));
+    m_impl->renderer.setSettings(ctx.getCommonObjects()->metaNumosWeather().current());
 
     Rc<DxvkContext> dxvkCtx = &ctx;
     const uint32_t deviceFrame = ctx.getDevice()->getCurrentFrameId();

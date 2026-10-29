@@ -49,6 +49,7 @@
 #define BINDING_VALUE_NOISE_SAMPLER              18
 #define BINDING_SAMPLER_READBACK_BUFFER          19
 #define BINDING_LIGHT_IDENTITY_BUFFER            20
+#define BINDING_WETNESS_ZONES                    221
 
 // Sky provider (NUMOS, submodules/numos) outputs, at slots 200-217, clear of pass-local slots. The
 // shader names are the ones numos/host/numos_host.slangh expects (its binding contract); passes that
@@ -110,6 +111,7 @@
   STRUCTURED_BUFFER(BINDING_SURFACE_MAPPING_BUFFER)                 \
   STRUCTURED_BUFFER(BINDING_SURFACE_MATERIAL_DATA_BUFFER)           \
   STRUCTURED_BUFFER(BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER)       \
+  STRUCTURED_BUFFER(BINDING_WETNESS_ZONES)                         \
   STRUCTURED_BUFFER(BINDING_VOLUME_MATERIAL_DATA_BUFFER)            \
   STRUCTURED_BUFFER(BINDING_LIGHT_DATA_BUFFER)                      \
   STRUCTURED_BUFFER(BINDING_PREVIOUS_LIGHT_DATA_BUFFER)             \

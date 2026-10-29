@@ -31,6 +31,7 @@
 #include "rtx_shader_manager.h"
 #include "dxvk_adapter.h"
 #include "rtx_context.h"
+#include "rtx_fork_game_state.h"
 #include "rtx_session_log.h"
 #include "rtx_asset_exporter.h"
 #include "rtx_options.h"
@@ -1916,6 +1917,25 @@ namespace dxvk {
     RtxGlobalVolumetrics& globalVolumetrics = getCommonObjects()->metaGlobalVolumetrics();
     constants.volumeArgs = globalVolumetrics.getVolumeArgs(cameraManager, getSceneManager().getFogState(), enablePortalVolumes);
     constants.startInMediumMaterialIndex = getSceneManager().getStartInMediumMaterialIndex();
+    updateWetnessZones();
+    auto& weather = getCommonObjects()->metaNumosWeather();
+    if (WetnessOptions::enabled() || getCommonObjects()->metaNumos().active()) {
+      weather.update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
+    }
+    WetnessOptions::fillShaderParams(constants.wetnessArgs);
+    weather.fillWetnessArgs(constants.wetnessArgs);
+    constants.wetnessArgs.noRainNodeCount = static_cast<uint32_t>(m_wetnessZones.nodes().size());
+    std::string rainEnding;
+    const bool ending = fork_game_state::GameStateStore::get().tryGet("__wetness.rain_ending", rainEnding) && rainEnding == "1";
+    const float deltaSeconds = std::clamp(GlobalTime::get().deltaTimeMs() * 0.001f, 0.0f, 1.0f);
+    m_rainEndKeySeconds = ending ? m_rainEndKeySeconds + deltaSeconds : 0.0f;
+    const bool applyEnding = WetnessOptions::enabled() && WetnessOptions::rainEndRoughnessEnabled() && ending
+      && m_rainEndKeySeconds <= std::max(10.0f, WetnessOptions::rainEndTransitionSeconds());
+    constants.wetnessArgs.rainEndRoughnessWeight = m_rainEndRoughness.update(
+      applyEnding, deltaSeconds, WetnessOptions::rainEndTransitionSeconds());
+    if (!WetnessOptions::enabled()) {
+      constants.wetnessArgs.rainEndRoughnessWeight = 0.0f;
+    }
     OpaqueMaterialOptions::fillShaderParams(constants.opaqueMaterialArgs);
     constants.opaqueMaterialArgs.legacySpecularLevel = std::clamp(LegacyMaterialDefaults::specularLevel(), 0.0f, 1.0f);
     constants.opaqueMaterialArgs.legacyFresnelGrazing = std::clamp(LegacyMaterialDefaults::fresnelGrazing(), 0.0f, 1.0f);
@@ -2098,6 +2118,7 @@ namespace dxvk {
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_PREVIOUS, getResourceManager().getTLAS(Tlas::Opaque).previousAccelStructure.ptr() ? getResourceManager().getTLAS(Tlas::Opaque).previousAccelStructure : getResourceManager().getTLAS(Tlas::Opaque).accelStructure);
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_UNORDERED, getResourceManager().getTLAS(Tlas::Unordered).accelStructure);
     bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_SSS, getResourceManager().getTLAS(Tlas::SSS).accelStructure);
+    bindResourceBuffer(BINDING_WETNESS_ZONES, DxvkBufferSlice(m_wetnessZoneBuffer));
     bindResourceBuffer(BINDING_SURFACE_DATA_BUFFER, DxvkBufferSlice(surfaceBuffer, 0, surfaceBuffer->info().size));
     bindResourceBuffer(BINDING_SURFACE_MAPPING_BUFFER, DxvkBufferSlice(surfaceMappingBuffer, 0, surfaceMappingBuffer.ptr() ? surfaceMappingBuffer->info().size : 0));
     bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, DxvkBufferSlice(surfaceMaterialBuffer, 0, surfaceMaterialBuffer->info().size));
@@ -3778,3 +3799,28 @@ namespace dxvk {
   }
 #endif
 } // namespace dxvk
+
+namespace dxvk {
+  void RtxContext::updateWetnessZones() {
+    std::string wire;
+    const bool changed = fork_game_state::GameStateStore::get().tryGet("__wetness.norain_zones_v1", wire)
+      && m_wetnessZones.update(wire);
+    if (!changed && m_wetnessZoneBuffer.ptr()) {
+      return;
+    }
+    const auto& nodes = m_wetnessZones.nodes();
+    DxvkBufferCreateInfo info;
+    info.size = std::max(size_t(32), nodes.size() * sizeof(WetnessZoneIndex::Node));
+    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    info.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+    info.access = VK_ACCESS_SHADER_READ_BIT;
+    // Replace storage still referenced by in-flight frames instead of overwriting it.
+    m_wetnessZoneBuffer = getDevice()->createBuffer(info,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      DxvkMemoryStats::Category::RTXBuffer, "Wetness no-rain zones");
+    memset(m_wetnessZoneBuffer->mapPtr(0), 0, info.size);
+    if (!nodes.empty()) {
+      memcpy(m_wetnessZoneBuffer->mapPtr(0), nodes.data(), nodes.size() * sizeof(WetnessZoneIndex::Node));
+    }
+  }
+}

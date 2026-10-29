@@ -768,6 +768,7 @@ independently of the typed C API.
 
 | Namespace | Channel | Reference |
 | :-- | :-- | :-- |
+| `__wetness.*`, `rtx.wetness.*` | `SetGameValue`, `SetConfigVariable`, weather preset files | [`RemixWetnessAPI.md`](../documentation/RemixWetnessAPI.md) |
 | `rtx.atmosphere.*`, `rtx.weather.*` | `SetConfigVariable` | [`RemixSkyAPI.md`](RemixSkyAPI.md) |
 | `__mcrtx.world_origin.x/y/z` | `SetGameValue` (read while `rtx.worldOrigin.enable` is on) | [`RemixApi-Migration.md`](RemixApi-Migration.md#49-game-values) |
 

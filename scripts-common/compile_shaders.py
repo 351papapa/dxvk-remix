@@ -514,7 +514,7 @@ def expandVariantMatrix(inputFile, lineno, inputType, matrix):
 
     return result
 
-def parseShaderVariants(inputFile):
+def parseBaseShaderVariants(inputFile):
     result = []
     lineno = 0
     inputWithType = getShaderName(inputFile)
@@ -630,6 +630,21 @@ def parseShaderVariants(inputFile):
         print(f'{inputFile}:{lineno}: no !end-variants found in the file')
         return []
     return result
+
+def parseShaderVariants(inputFile):
+    variants = parseBaseShaderVariants(inputFile)
+    with open(inputFile, "r") as file:
+        features = [line.split()[1:] for line in file if line.startswith("//!feature ")]
+    for feature in features:
+        if len(feature) < 2 or re.fullmatch(r"[a-z][a-z0-9_]*", feature[0]) is None:
+            raise ValueError(f"{inputFile}: invalid feature axis")
+        suffix, *defines = feature
+        enabled = []
+        for spec in variants:
+            name, stage = os.path.splitext(spec[0])
+            enabled.append([name + "_" + suffix + stage] + spec[1:] + defines)
+        variants += enabled
+    return variants
 
 tasks = []
 

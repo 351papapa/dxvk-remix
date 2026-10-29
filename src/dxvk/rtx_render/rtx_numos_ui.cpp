@@ -1468,6 +1468,32 @@ namespace dxvk {
         presetWeathers(weather, p, window);
       }
 
+      if (ImGui::CollapsingHeader("Wet surfaces")) {
+        WetnessArgs defaults;
+        WetnessOptions::fillShaderParams(defaults);
+        ImGui::TextWrapped("Overrides require Wetness / Rain to be enabled. Unset rain intensity uses each instance's rain tag.");
+        for (size_t i = 0; i < p.wetness.values.size(); ++i) {
+          ImGui::PushID(int(i));
+          bool enabled = p.wetness.values[i].has_value();
+          if (ImGui::Checkbox(kWetnessParameters[i].name, &enabled)) {
+            p.wetness.values[i] = enabled ? std::optional<float>(defaults.*kWetnessParameters[i].member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::DragFloat("##value", &*p.wetness.values[i], 0.01f, 0.0f, 100.0f, "%.3f", kClamp)) {
+              p.dirty = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Multiply", &p.wetness.relative[i])) {
+              p.dirty = true;
+            }
+          }
+          ImGui::PopID();
+        }
+      }
+
       ImGui::TextDisabled("Tick a setting to override it in this preset. Edits apply live; Save writes the file.");
       for (const PresetSection& section : presetSections()) {
         if (!ImGui::CollapsingHeader(section.title, section.open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {

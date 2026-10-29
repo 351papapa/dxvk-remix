@@ -1,0 +1,44 @@
+/*
+* Copyright (c) 2023-2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+#include "rtx/external/simplex_noise.slangh"
+vec2 wetHash22(vec2 p)
+{
+  const vec2 k1 = vec2(127.1f, 311.7f);
+  const vec2 k2 = vec2(269.5f, 183.3f);
+  p = vec2(dot(p, k1), dot(p, k2));
+  return frac(sin(p) * 43758.5453123f) * 2.0f - 1.0f;
+}
+
+
+float wetUpNormal(float3 normal) { return cb.isZUp ? normal.z : normal.y; }
+float2 wetGroundPosition(float3 position) { return cb.isZUp ? position.xy : position.xz; }
+float3 wetWorldVector(float3 value) { return cb.isZUp ? value : value.xzy; }
+
+// Shared by wet surface shading and contact-particle spawning.
+float wetPuddleCoverage(float3 position, float zNormal, float wetStrength) {
+  float horizontalFactor = saturate((zNormal - 0.78f) / 0.2f);
+  float scale = cb.wetnessArgs.puddleNoiseScale;
+  float noise = saturate(simplexNoise3D(position * scale) + simplexNoise3D(position * scale * 2.3f) * 0.4f);
+  float threshold = cb.wetnessArgs.puddleThresholdBase - wetStrength * cb.wetnessArgs.puddleThresholdSpan;
+  return pow(smoothstep(threshold - 0.075f, threshold + 0.075f, noise), 1.5f) * wetStrength * horizontalFactor;
+}

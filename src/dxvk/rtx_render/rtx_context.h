@@ -33,6 +33,8 @@
 #include <optional>
 #include <array>
 #include "rtx_options.h"
+#include "rtx_wetness_zones.h"
+#include "rtx_wetness_transition.h"
 #include "rtx_perf_log.h"
 #include "rtx_fork_frame_features.h"
 
@@ -222,6 +224,12 @@ namespace dxvk {
     virtual void updateRaytracingShaderResources() override;
 
   private:
+    WetnessZoneIndex m_wetnessZones;
+    WetnessTransition m_rainEndRoughness;
+    float m_rainEndKeySeconds = 0.0f;
+    Rc<DxvkBuffer> m_wetnessZoneBuffer;
+    void updateWetnessZones();
+
     // SceneCommandQueue::issued() when the next injectRTX was emitted (setInjectionSceneCommandBound).
     uint64_t m_injectionSceneCommandBound = 0;
     // The highest drain bound applied so far; a drain never goes below it.

@@ -37,12 +37,21 @@
 #include <rtx_shaders/particle_system_generate_geometry.h>
 #include "math.h"
 
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/particle_system_evolve_wetness.h>
+#include <rtx_shaders/particle_system_generate_geometry_wetness.h>
+#include <rtx_shaders/particle_system_spawn_wetness.h>
+#define RTX_WETNESS_SHADER_particle_system_evolve particle_system_evolve_wetness
+#define RTX_WETNESS_SHADER_particle_system_generate_geometry particle_system_generate_geometry_wetness
+#define RTX_WETNESS_SHADER_particle_system_spawn particle_system_spawn_wetness
+
 namespace dxvk {
 
   // Defined within an unnamed namespace to ensure unique definition across binary
   namespace {
     class ParticleSystemSpawn : public ManagedShader {
-      SHADER_SOURCE(ParticleSystemSpawn, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_spawn)
+      WETNESS_SHADER_SOURCE(ParticleSystemSpawn, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_spawn)
 
         BINDLESS_ENABLED()
 
@@ -64,7 +73,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(ParticleSystemSpawn);
 
     class ParticleSystemEvolve : public ManagedShader {
-      SHADER_SOURCE(ParticleSystemEvolve, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_evolve)
+      WETNESS_SHADER_SOURCE(ParticleSystemEvolve, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_evolve)
 
         BINDLESS_ENABLED()
 
@@ -85,7 +94,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(ParticleSystemEvolve);
 
     class ParticleSystemGenerateGeometry : public ManagedShader {
-      SHADER_SOURCE(ParticleSystemGenerateGeometry, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_generate_geometry)
+      WETNESS_SHADER_SOURCE(ParticleSystemGenerateGeometry, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_generate_geometry)
 
         BINDLESS_ENABLED()
 

@@ -225,6 +225,8 @@ namespace dxvk {
           desc.vertexShader = state.usesVertexShader;
           desc.raytracedRenderTarget = state.isUsingRaytracedRenderTarget;
           desc.objectPickingValue = state.drawCallID;
+          desc.wetnessTag = state.wetnessTag;
+          desc.wetnessMeshHash = state.getHash(RtxOptions::geometryAssetHashRule());
           desc.legacyMaterial = std::make_shared<const LegacyMaterialData>(state.getMaterialData());
           // A draw whose vertices use one bone has it in its transforms and no bones left.
           const SkinningData& skinning = state.getSkinningState();
@@ -517,13 +519,13 @@ namespace dxvk {
           const struct {
             XXH64_hash_t geometry, bones, material, legacyMaterial, fog;
             uint64_t replacementVersion;
-            uint32_t categories, cameraType, texgenMode, pad;
+            uint32_t categories, cameraType, texgenMode, wetnessTag;
           } k = {
             state.getGeometryData().getHashForRule<rules::FullGeometryHash>(), state.getSkinningState().boneHash,
             material.getHash(), state.getMaterialData().computeIdentityHash(),
             state.getFogState().mode != frontend::FogMode::None ? state.getFogState().getHash() : 0,
             replacement, state.getCategoryFlags().raw(), uint32_t(state.cameraType),
-            uint32_t(transforms.texgenMode), 0u
+            uint32_t(transforms.texgenMode), state.wetnessTag
           };
           static_assert(sizeof(k) == 64, "no implicit padding");
           const XXH64_hash_t h = XXH3_64bits(&k, sizeof(k));

@@ -24,6 +24,17 @@
 #include "../dxvk_device.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_shader_manager.h"
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/light_bvh_select_wetness.h>
+#include <rtx_shaders/light_bvh_select_slim_wetness.h>
+#include <rtx_shaders/light_bvh_select_slim_all_wetness.h>
+#include <rtx_shaders/light_bvh_select_slim_area_wetness.h>
+#define RTX_WETNESS_SHADER_light_bvh_select light_bvh_select_wetness
+#define RTX_WETNESS_SHADER_light_bvh_select_slim light_bvh_select_slim_wetness
+#define RTX_WETNESS_SHADER_light_bvh_select_slim_all light_bvh_select_slim_all_wetness
+#define RTX_WETNESS_SHADER_light_bvh_select_slim_area light_bvh_select_slim_area_wetness
+
 #include "rtx_context.h"
 #include "rtx_fork_light_bvh_pass.h"
 #include "rtx_fork_shadow_rays.h"
@@ -80,7 +91,7 @@ namespace dxvk {
     // Same parameter block as RTXDIInitialSamplingShader (rtx_rtxdi_rayquery.cpp): the select pass reads the
     // primary G-buffer through the RTXDI application bridge and writes RTXDI reservoirs.
     class LightBvhSelectShader : public ManagedShader {
-      SHADER_SOURCE(LightBvhSelectShader, VK_SHADER_STAGE_COMPUTE_BIT, light_bvh_select)
+      WETNESS_SHADER_SOURCE(LightBvhSelectShader, VK_SHADER_STAGE_COMPUTE_BIT, light_bvh_select)
 
       BINDLESS_ENABLED()
 
@@ -131,12 +142,12 @@ namespace dxvk {
       const bool rectOrDisk = (features.lightTypes & ((1u << lightTypeRect) | (1u << lightTypeDisk))) != 0u;
       const bool cylinder = (features.lightTypes & (1u << lightTypeCylinder)) != 0u;
       if (cylinder) {
-        return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_all);
+        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_all);
       }
       if (rectOrDisk) {
-        return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_area);
+        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_area);
       }
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim);
     }
   } // namespace
 
@@ -146,9 +157,9 @@ namespace dxvk {
     if (LightBvh::mode() == LightSamplingMode::RTXDI || !LightBvh::bvhSeparateSelectPass()) {
       return;
     }
-    GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim);
-    GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_area);
-    GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_all);
+    GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim);
+    GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_area);
+    GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, LightBvhSelectShader, light_bvh_select_slim_all);
   }
 
   namespace {

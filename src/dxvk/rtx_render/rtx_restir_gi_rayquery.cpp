@@ -23,6 +23,15 @@
 #include "rtx_rtxdi_rayquery.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/restir_gi_final_shading_wetness.h>
+#include <rtx_shaders/restir_gi_spatial_reuse_wetness.h>
+#include <rtx_shaders/restir_gi_temporal_reuse_wetness.h>
+#define RTX_WETNESS_SHADER_restir_gi_final_shading restir_gi_final_shading_wetness
+#define RTX_WETNESS_SHADER_restir_gi_spatial_reuse restir_gi_spatial_reuse_wetness
+#define RTX_WETNESS_SHADER_restir_gi_temporal_reuse restir_gi_temporal_reuse_wetness
+
 
 #include "rtx/pass/common_binding_indices.h"
 #include "rtx/pass/rtxdi/restir_gi_reuse_binding_indices.h"
@@ -55,7 +64,7 @@ namespace dxvk {
 
     class ReSTIRGITemporalReuseShader : public ManagedShader
     {
-      SHADER_SOURCE(ReSTIRGITemporalReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_temporal_reuse)
+      WETNESS_SHADER_SOURCE(ReSTIRGITemporalReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_temporal_reuse)
       
       BINDLESS_ENABLED()
 
@@ -92,7 +101,7 @@ namespace dxvk {
 
     class ReSTIRGISpatialReuseShader : public ManagedShader
     {
-      SHADER_SOURCE(ReSTIRGISpatialReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_spatial_reuse)
+      WETNESS_SHADER_SOURCE(ReSTIRGISpatialReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_spatial_reuse)
       
       BINDLESS_ENABLED()
 
@@ -128,7 +137,7 @@ namespace dxvk {
 
 
     class ReSTIRGIFinalShadingShader : public ManagedShader {
-      SHADER_SOURCE(ReSTIRGIFinalShadingShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_final_shading)
+      WETNESS_SHADER_SOURCE(ReSTIRGIFinalShadingShader, VK_SHADER_STAGE_COMPUTE_BIT, restir_gi_final_shading)
       
       BINDLESS_ENABLED()
 

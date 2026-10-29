@@ -53,6 +53,7 @@
 #include "rtx_render/rtx_pathtracer_gbuffer.h"
 #include "rtx_render/rtx_hash_collision_detection.h"
 #include "rtx_render/rtx_options.h"
+#include "../shaders/rtx/pass/wetness_args.h"
 #include "rtx_render/rtx_pipeline_stats.h"
 #include "rtx_render/rtx_stress.h"
 #include "rtx_render/rtx_fork_api_recorder.h"
@@ -819,6 +820,45 @@ namespace dxvk {
   void ImGUI::showMaterialOptions() {
     if (RemixGui::CollapsingHeader("Material Options (optional)", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
+
+      if (RemixGui::CollapsingHeader("Wetness / Rain", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enabled", &WetnessOptions::enabledObject());
+        RemixGui::Checkbox("Respect no rain zones", &WetnessOptions::respectNoRainZonesObject());
+        RemixGui::Checkbox("Non road roughness only", &WetnessOptions::nonRoadRoughnessOnlyObject());
+        RemixGui::Checkbox("Road only", &WetnessOptions::roadOnlyObject());
+        RemixGui::InputText("Force enable dff", &WetnessOptions::forceEnableDffObject());
+        RemixGui::InputText("Force disable dff", &WetnessOptions::forceDisableDffObject());
+        RemixGui::Checkbox("Rain end roughness enabled", &WetnessOptions::rainEndRoughnessEnabledObject());
+        RemixGui::DragFloat("Rain end roughness", &WetnessOptions::rainEndRoughnessObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Rain end transition seconds", &WetnessOptions::rainEndTransitionSecondsObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle noise scale", &WetnessOptions::puddleNoiseScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle threshold base", &WetnessOptions::puddleThresholdBaseObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle threshold span", &WetnessOptions::puddleThresholdSpanObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle albedo darken", &WetnessOptions::puddleAlbedoDarkenObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle wave strength", &WetnessOptions::puddleWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle wave scale", &WetnessOptions::puddleWaveScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple grid scale", &WetnessOptions::rippleGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple spawn period", &WetnessOptions::rippleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple radius", &WetnessOptions::rippleRadiusObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle grid scale", &WetnessOptions::rippleVehicleGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle spawn period", &WetnessOptions::rippleVehicleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle radius", &WetnessOptions::rippleVehicleRadiusObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop density", &WetnessOptions::dropDensityObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop size", &WetnessOptions::dropSizeObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop strength", &WetnessOptions::dropStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop roughness", &WetnessOptions::dropRoughnessObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak grid scale", &WetnessOptions::streakGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak cycle", &WetnessOptions::streakCycleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak length", &WetnessOptions::streakLengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak size", &WetnessOptions::streakSizeObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Water wave strength", &WetnessOptions::waterWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Water wave scale", &WetnessOptions::waterWaveScaleObject(), 0.01f, 0.0f, 100.0f);
+        auto& rules = m_device->getCommon()->getSceneManager().m_wetnessDffRules;
+        if (ImGui::Button("Reload captured asset mappings")) { rules.requestReload(); }
+        ImGui::Text("Captured meshes: %zu | Ambiguous: %zu | Invalid files: %zu", rules.mappedHashes(), rules.ambiguousHashes(), rules.skippedFiles());
+        ImGui::Unindent();
+      }
 
       if (RemixGui::CollapsingHeader("Legacy Material Defaults", collapsingHeaderFlags)) {
         ImGui::Indent();

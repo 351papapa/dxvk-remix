@@ -113,3 +113,14 @@ What that means for releases:
 
 - `rtx_screenshot_pq_icc.h`: a libjxl-generated PQ ICC profile (desc `RGB_D65_202_Rel_PeQ`, 4344 bytes), the one
   SKIV (SpecialKO/SKIV) and the NVIDIA app embed in their HDR PNGs. Its copyright tag states CC0; included unmodified.
+
+### Local runtime surface features
+
+Wetness helpers, DFF rules, no-rain zones and rain transition behavior were
+ported from the user's local runtime at `c17b36af` plus its saved working-tree
+changes. Material shading derives from NVIDIA RTX Remix MIT-licensed material
+interaction files (copyright notices retained), including the local reference
+`ref_xoxor4d_opaque_surface_material_interaction.slangh` with its NVIDIA 2023
+MIT notice. The v2 instance metadata and NUMOS integration are local changes.
+DFF JSON parsing uses the existing, unmodified nlohmann/json header bundled
+with FidelityFX-SDK. Its MIT notice is included in ThirdPartyLicenses.txt.

@@ -130,6 +130,7 @@ namespace dxvk {
     bool usesVertexShader = false;
 
     uint32_t drawCallID = 0;
+    uint32_t wetnessTag = 0;
 
     // Snapshot of the caller's capture correlation at draw submission, before asynchronous execution.
     uint32_t captureSession = 0;

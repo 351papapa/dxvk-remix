@@ -497,10 +497,15 @@ struct Surface
   }
 
   // Bindless slot of the geometry's SCCR shell data (sccr_shell_args.h), BINDING_INDEX_INVALID when it has none.
-  // The low 16 bits of data15.w. The high 16 bits are reserved.
+  // The low 16 bits of data15.w. The high half stores per-instance wetness.
   property uint16_t shellBufferIndex
   {
     get { return uint16_t(data15.w & 0xFFFFu); }
+  }
+
+  property uint wetnessTag
+  {
+    get { return ((data15.w >> 16) & 0xFFFu) | ((data15.w >> 28) << 24); }
   }
 };
 

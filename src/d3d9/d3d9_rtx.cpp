@@ -1107,6 +1107,7 @@ namespace dxvk {
       params.vertexCount = drawInfo.vertexCount;
     }
 
+    m_activeDrawCallState.wetnessTag = d3d9State().renderStates[210];
     m_activeDrawCallState.captureSession = d3d9State().renderStates[213];
     m_activeDrawCallState.captureToken = d3d9State().renderStates[214];
     submitActiveDrawCallState();
@@ -1631,6 +1632,8 @@ namespace dxvk {
       in.declaration = d3d9State().vertexDecl->GetRemixElementsHash();
     }
     in.extra = hashDrawExtras();
+    const uint32_t wetnessTag = d3d9State().renderStates[210];
+    in.extra = XXH3_64bits_withSeed(&wetnessTag, sizeof(wetnessTag), in.extra);
     // Fixed-function skinning, the bone matrices the draw's vertices use (a new pose is a change). When the blend
     // indices cannot be read, every bone set so far is hashed.
     if (!programmableVS && d3d9State().renderStates[D3DRS_VERTEXBLEND] != D3DVBF_DISABLE) {

@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "rtx_option.h"
+#include "rtx_wetness_preset.h"
 
 namespace numos {
   struct Settings;
@@ -85,6 +86,7 @@ namespace dxvk {
       std::unique_ptr<numos::Settings> values;  // only the keys in `set` mean anything
       std::vector<bool> set;             // indexed like numos::settingInfos()
       std::vector<bool> relative;        // indexed like `set`: the value multiplies the user's setting
+      WetnessPreset wetness;
       bool dirty = false;                // edited since the last load or save
       bool numosBuiltIn = false;         // the name of one of NUMOS's presets (it can be reset)
 
@@ -163,6 +165,7 @@ namespace dxvk {
     float transitionProgress() const;
     const numos::Settings& lastBase() const;
     const numos::Settings& current() const;
+    void fillWetnessArgs(WetnessArgs& args) const;
 
   private:
     void ensureLoaded();

@@ -60,4 +60,5 @@ flag workaround.
   retained their Meson metadata/logs and the active Release build.
 - Runtime baseline: full x64 release build passed with D3D11/DXGI enabled. The default D3D9-only build has unresolved exports in the upstream definition file.
 - Draw capture: integrated runtime build, x86/x64 bridge builds and isolated log tests passed. Native x64 and bridged x86 D3D9 GPU tests each produced exactly four records (two sessions, two tokens) with identical hashes. DffCapture plugin copy builds. Full Vice City traversal remains untested.
-- Other modules: pending implementation and validation.
+- Wetness: runtime and RemixCoreVC copy build. CPU packing/identity/zones/DFF/weather-blend tests pass. Native GPU tests cover rain restoration, Y/Z-up and NUMOS wetness presets; x86 bridge GPU tests cover SetGameValue no-rain boxes and force eligibility. Seven final cases exit zero. Full-game traversal and animated-water appearance await later integration tests.
+- Window lighting, grass, full water and remaining modules: pending implementation and validation.

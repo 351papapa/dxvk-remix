@@ -22,6 +22,29 @@
 #include "rtx_rtxdi_rayquery.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/rtxdi_compute_gradients_wetness.h>
+#include <rtx_shaders/rtxdi_initial_sampling_wetness.h>
+#include <rtx_shaders/rtxdi_initial_sampling_no_portals_wetness.h>
+#include <rtx_shaders/rtxdi_spatial_reuse_wetness.h>
+#include <rtx_shaders/rtxdi_spatial_reuse_no_bsdf_detail_wetness.h>
+#include <rtx_shaders/rtxdi_spatial_reuse_no_portals_wetness.h>
+#include <rtx_shaders/rtxdi_spatial_reuse_no_portals_no_bsdf_detail_wetness.h>
+#include <rtx_shaders/rtxdi_temporal_reuse_wetness.h>
+#include <rtx_shaders/rtxdi_temporal_reuse_no_portals_wetness.h>
+#define RTX_WETNESS_SHADER_rtxdi_compute_confidence rtxdi_compute_confidence
+#define RTX_WETNESS_SHADER_rtxdi_compute_gradients rtxdi_compute_gradients_wetness
+#define RTX_WETNESS_SHADER_rtxdi_filter_gradients rtxdi_filter_gradients
+#define RTX_WETNESS_SHADER_rtxdi_initial_sampling rtxdi_initial_sampling_wetness
+#define RTX_WETNESS_SHADER_rtxdi_initial_sampling_no_portals rtxdi_initial_sampling_no_portals_wetness
+#define RTX_WETNESS_SHADER_rtxdi_spatial_reuse rtxdi_spatial_reuse_wetness
+#define RTX_WETNESS_SHADER_rtxdi_spatial_reuse_no_bsdf_detail rtxdi_spatial_reuse_no_bsdf_detail_wetness
+#define RTX_WETNESS_SHADER_rtxdi_spatial_reuse_no_portals rtxdi_spatial_reuse_no_portals_wetness
+#define RTX_WETNESS_SHADER_rtxdi_spatial_reuse_no_portals_no_bsdf_detail rtxdi_spatial_reuse_no_portals_no_bsdf_detail_wetness
+#define RTX_WETNESS_SHADER_rtxdi_temporal_reuse rtxdi_temporal_reuse_wetness
+#define RTX_WETNESS_SHADER_rtxdi_temporal_reuse_no_portals rtxdi_temporal_reuse_no_portals_wetness
+
 #include "rtx_restir_gi_rayquery.h"
 
 #include "rtx/pass/common_binding_indices.h"
@@ -64,7 +87,7 @@ namespace dxvk {
     }
 
     class RTXDIInitialSamplingShader : public ManagedShader {
-      SHADER_SOURCE(RTXDIInitialSamplingShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_initial_sampling)
+      WETNESS_SHADER_SOURCE(RTXDIInitialSamplingShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_initial_sampling)
 
       BINDLESS_ENABLED()
 
@@ -106,7 +129,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDIInitialSamplingShader);
 
     class RTXDITemporalReuseShader : public ManagedShader {
-      SHADER_SOURCE(RTXDITemporalReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_temporal_reuse)
+      WETNESS_SHADER_SOURCE(RTXDITemporalReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_temporal_reuse)
 
       BINDLESS_ENABLED()
 
@@ -150,7 +173,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDITemporalReuseShader);
 
     class RTXDISpatialReuseShader : public ManagedShader {
-      SHADER_SOURCE(RTXDISpatialReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_spatial_reuse)
+      WETNESS_SHADER_SOURCE(RTXDISpatialReuseShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_spatial_reuse)
 
       BINDLESS_ENABLED()
 
@@ -195,7 +218,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDISpatialReuseShader);
 
     class RTXDIComputeGradientsShader : public ManagedShader {
-      SHADER_SOURCE(RTXDIComputeGradientsShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_compute_gradients)
+      WETNESS_SHADER_SOURCE(RTXDIComputeGradientsShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_compute_gradients)
 
       BINDLESS_ENABLED()
 
@@ -209,7 +232,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDIComputeGradientsShader);
 
     class RTXDIFilterGradientsShader : public ManagedShader {
-      SHADER_SOURCE(RTXDIFilterGradientsShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_filter_gradients)
+      WETNESS_SHADER_SOURCE(RTXDIFilterGradientsShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_filter_gradients)
 
       PUSH_CONSTANTS(FilterGradientsArgs)
 
@@ -221,7 +244,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDIFilterGradientsShader);
 
     class RTXDIComputeConfidenceShader : public ManagedShader {
-      SHADER_SOURCE(RTXDIComputeConfidenceShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_compute_confidence)
+      WETNESS_SHADER_SOURCE(RTXDIComputeConfidenceShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_compute_confidence)
 
       PUSH_CONSTANTS(ComputeConfidenceArgs)
 
@@ -237,7 +260,7 @@ namespace dxvk {
         return RTXDIInitialSamplingShader::getShader();
       }
 
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDIInitialSamplingShader, rtxdi_initial_sampling_no_portals);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDIInitialSamplingShader, rtxdi_initial_sampling_no_portals);
     }
 
     Rc<DxvkShader> getRtxdiTemporalReuseShader(bool usePortalShaderVariants) {
@@ -245,7 +268,7 @@ namespace dxvk {
         return RTXDITemporalReuseShader::getShader();
       }
 
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDITemporalReuseShader, rtxdi_temporal_reuse_no_portals);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDITemporalReuseShader, rtxdi_temporal_reuse_no_portals);
     }
 
     bool useRtxdiSpatialBsdfDetailShaderVariant(const Resources::RaytracingOutput& rtOutput) {
@@ -257,12 +280,12 @@ namespace dxvk {
       if (usePortalShaderVariants) {
         return useBsdfDetailShaderVariant
           ? RTXDISpatialReuseShader::getShader()
-          : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_bsdf_detail);
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_bsdf_detail);
       }
 
       return useBsdfDetailShaderVariant
-        ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_portals)
-        : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_portals_no_bsdf_detail);
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_portals)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDISpatialReuseShader, rtxdi_spatial_reuse_no_portals_no_bsdf_detail);
     }
 
     struct RTXDIReuseShaderVariantPrewarmer {

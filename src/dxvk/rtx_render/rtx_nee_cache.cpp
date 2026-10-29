@@ -35,6 +35,12 @@
 #include <rtx_shaders/demodulate.h>
 #include <rtx_shaders/update_nee_cache.h>
 
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/update_nee_cache_wetness.h>
+#define RTX_WETNESS_SHADER_demodulate demodulate
+#define RTX_WETNESS_SHADER_update_nee_cache update_nee_cache_wetness
+
 namespace dxvk {
 
   RemixGui::ComboWithKey<NeeEnableMode> enableModeAfterFirstBounceCombo {
@@ -49,7 +55,7 @@ namespace dxvk {
   // Defined within an unnamed namespace to ensure unique definition across binary
   namespace {
     class UpdateNEECacheShader : public ManagedShader {
-      SHADER_SOURCE(UpdateNEECacheShader, VK_SHADER_STAGE_COMPUTE_BIT, update_nee_cache)
+      WETNESS_SHADER_SOURCE(UpdateNEECacheShader, VK_SHADER_STAGE_COMPUTE_BIT, update_nee_cache)
 
       BINDLESS_ENABLED()
 

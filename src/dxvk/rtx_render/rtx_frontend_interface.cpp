@@ -100,6 +100,8 @@ namespace dxvk {
         transforms.clipPlane = *desc.clipPlane;
       }
       drawCall.categories = CategoryFlags(desc.categories);
+      drawCall.wetnessTag = desc.wetnessTag;
+      drawCall.wetnessMeshHash = desc.wetnessMeshHash;
       drawCall.usesVertexShader = desc.vertexShader;
       drawCall.isUsingRaytracedRenderTarget = desc.raytracedRenderTarget;
 

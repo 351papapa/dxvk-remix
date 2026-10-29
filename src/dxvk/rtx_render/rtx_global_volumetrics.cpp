@@ -38,12 +38,28 @@
 #include "rtx_context.h"
 #include "rtx_imgui.h"
 
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/volume_integrate_rayquery_wetness.h>
+#include <rtx_shaders/volume_restir_initial_wetness.h>
+#include <rtx_shaders/volume_restir_spatial_resampling_wetness.h>
+#include <rtx_shaders/volume_restir_temporal_wetness.h>
+#include <rtx_shaders/volume_restir_visibility_wetness.h>
+#define RTX_WETNESS_SHADER_volume_integrate_raygen volume_integrate_raygen
+#define RTX_WETNESS_SHADER_volume_integrate_raygen_ser volume_integrate_raygen_ser
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery volume_integrate_rayquery_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_raygen volume_integrate_rayquery_raygen
+#define RTX_WETNESS_SHADER_volume_restir_initial volume_restir_initial_wetness
+#define RTX_WETNESS_SHADER_volume_restir_spatial_resampling volume_restir_spatial_resampling_wetness
+#define RTX_WETNESS_SHADER_volume_restir_temporal volume_restir_temporal_wetness
+#define RTX_WETNESS_SHADER_volume_restir_visibility volume_restir_visibility_wetness
+
 namespace dxvk {
 
   // Defined within an unnamed namespace to ensure unique definition across binary
   namespace {
     class VolumeRestirShaderInitial : public ManagedShader {
-      SHADER_SOURCE(VolumeRestirShaderInitial, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_initial)
+      WETNESS_SHADER_SOURCE(VolumeRestirShaderInitial, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_initial)
 
       BINDLESS_ENABLED()
 
@@ -59,7 +75,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(VolumeRestirShaderInitial);
 
     class VolumeRestirShaderVisibility : public ManagedShader {
-      SHADER_SOURCE(VolumeRestirShaderVisibility, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_visibility)
+      WETNESS_SHADER_SOURCE(VolumeRestirShaderVisibility, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_visibility)
 
         BINDLESS_ENABLED()
 
@@ -73,7 +89,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(VolumeRestirShaderVisibility);
 
     class VolumeRestirShaderTemporal : public ManagedShader {
-      SHADER_SOURCE(VolumeRestirShaderTemporal, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_temporal)
+      WETNESS_SHADER_SOURCE(VolumeRestirShaderTemporal, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_temporal)
 
         BINDLESS_ENABLED()
 
@@ -89,7 +105,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(VolumeRestirShaderTemporal);
 
     class VolumeRestirShaderSpatialResampling : public ManagedShader {
-      SHADER_SOURCE(VolumeRestirShaderSpatialResampling, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_spatial_resampling)
+      WETNESS_SHADER_SOURCE(VolumeRestirShaderSpatialResampling, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_spatial_resampling)
 
         BINDLESS_ENABLED()
 
@@ -105,7 +121,7 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(VolumeRestirShaderSpatialResampling);
 
     class VolumeIntegrateShader : public ManagedShader {
-      SHADER_SOURCE(VolumeIntegrateShader, VK_SHADER_STAGE_COMPUTE_BIT, volume_integrate_rayquery)
+      WETNESS_SHADER_SOURCE(VolumeIntegrateShader, VK_SHADER_STAGE_COMPUTE_BIT, volume_integrate_rayquery)
 
       BINDLESS_ENABLED()
 
@@ -847,13 +863,13 @@ namespace dxvk {
     // Todo: Implement TraceRay path if needed some day, currently not though.
     /*
     if (useRayQuery) {
-      shaders.addGeneralShader(GET_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_rayquery_raygen));
+      shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_rayquery_raygen));
       shaders.debugName = "Volume Integrate RayQuery (RGS)";
     } else {
       if (isShaderExecutionReorderingInVolumeIntegrateEnabled())
-        shaders.addGeneralShader(GET_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_raygen_ser));
+        shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_raygen_ser));
       else
-        shaders.addGeneralShader(GET_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_raygen));
+        shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, VolumeIntegrateShader, volume_integrate_raygen));
       shaders.addGeneralShader(VolumeIntegrateMissShader::getShader());
 
       ADD_HIT_GROUPS(VolumeIntegrateClosestHitShader, volume_integrate);

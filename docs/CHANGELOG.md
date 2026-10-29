@@ -30,6 +30,17 @@ Entry format:
 
 ## 2026-10-29
 
+### Per-instance wet surfaces and weather integration
+Restores wet sheen, puddles, rain detail, exclusions and rain-ending controls
+without mutating shared material identities. Typed wetness values blend with
+the current NUMOS weather preset, and disabled shaders omit the optional path.
+- Options: added `rtx.wetness.*`; the master switch and filtering/override
+  switches default off. Numeric controls tune the enabled effect. These options
+  are independent of quality presets because they change the material look.
+- Commits: this local feature commit (`feat/20261029-wetness`).
+- Docs: [Wetness integration](../documentation/RemixWetnessAPI.md).
+
+
 ### Asset capture correlation on the D3D9 frontend
 Opt-in session/token render states now produce the hash and fixed-function state
 logs consumed by DffCapture. Tagged draws bypass unchanged-object elision and

@@ -55,6 +55,7 @@
 #include "rtx_mod_manager.h"
 #include "graph/rtx_graph_manager.h"
 #include "rtx_particle_system.h"
+#include "rtx_wetness_dff_rules.h"
 
 namespace dxvk 
 {
@@ -209,6 +210,7 @@ namespace fork_hooks {
 // directly for "SceneObject"'s - which are "unique meshes/geometry", which map 1-to-1 with
 // BLAS entries in raytracing terminology.
 class SceneManager : public CommonDeviceObject, public ResourceCache {
+  WetnessDffRules m_wetnessDffRules;
   friend class ImGUI;
   // The scene's own retained instances build and keep RT instances themselves.
   friend class RetainedScene;

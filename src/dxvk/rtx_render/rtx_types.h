@@ -525,6 +525,8 @@ struct SceneDraw {
   bool usesVertexShader = false;
 
   uint32_t drawCallID = 0;
+  uint32_t wetnessTag = 0;
+  uint64_t wetnessMeshHash = 0;
 
   bool isUsingRaytracedRenderTarget = false;
 

@@ -29,6 +29,14 @@
 #include "rtx_ray_reconstruction.h"
 #include "rtx_options.h"
 #include "rtx_shader_manager.h"
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/active_pixel_sampling_rate_wetness.h>
+#define RTX_WETNESS_SHADER_active_pixel_mask active_pixel_mask
+#define RTX_WETNESS_SHADER_active_pixel_sampling_rate active_pixel_sampling_rate_wetness
+#define RTX_WETNESS_SHADER_compact_active_pixels compact_active_pixels
+#define RTX_WETNESS_SHADER_compact_active_pixels_args compact_active_pixels_args
+
 #include "rtx_pathtracer_integrate_direct.h"
 #include "rtx_imgui.h"
 
@@ -59,7 +67,7 @@ namespace dxvk {
     };
 
     class ActivePixelMaskShader : public ManagedShader {
-      SHADER_SOURCE(ActivePixelMaskShader, VK_SHADER_STAGE_COMPUTE_BIT, active_pixel_mask)
+      WETNESS_SHADER_SOURCE(ActivePixelMaskShader, VK_SHADER_STAGE_COMPUTE_BIT, active_pixel_mask)
 
       BEGIN_PARAMETER()
         COMMON_RAYTRACING_BINDINGS
@@ -73,7 +81,7 @@ namespace dxvk {
     };
 
     class ActivePixelSamplingRateShader : public ManagedShader {
-      SHADER_SOURCE(ActivePixelSamplingRateShader, VK_SHADER_STAGE_COMPUTE_BIT, active_pixel_sampling_rate)
+      WETNESS_SHADER_SOURCE(ActivePixelSamplingRateShader, VK_SHADER_STAGE_COMPUTE_BIT, active_pixel_sampling_rate)
 
       BEGIN_PARAMETER()
         COMMON_RAYTRACING_BINDINGS
@@ -92,7 +100,7 @@ namespace dxvk {
     };
 
     class CompactActivePixelsShader : public ManagedShader {
-      SHADER_SOURCE(CompactActivePixelsShader, VK_SHADER_STAGE_COMPUTE_BIT, compact_active_pixels)
+      WETNESS_SHADER_SOURCE(CompactActivePixelsShader, VK_SHADER_STAGE_COMPUTE_BIT, compact_active_pixels)
 
       BEGIN_PARAMETER()
         COMMON_RAYTRACING_BINDINGS
@@ -109,7 +117,7 @@ namespace dxvk {
     };
 
     class CompactActivePixelsArgsShader : public ManagedShader {
-      SHADER_SOURCE(CompactActivePixelsArgsShader, VK_SHADER_STAGE_COMPUTE_BIT, compact_active_pixels_args)
+      WETNESS_SHADER_SOURCE(CompactActivePixelsArgsShader, VK_SHADER_STAGE_COMPUTE_BIT, compact_active_pixels_args)
 
       BEGIN_PARAMETER()
         COMMON_RAYTRACING_BINDINGS

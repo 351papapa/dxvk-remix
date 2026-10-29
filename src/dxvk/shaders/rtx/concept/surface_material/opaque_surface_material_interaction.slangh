@@ -22,6 +22,9 @@
 #pragma once
 
 #include "opaque_surface_material_blending.slangh"
+#ifdef ENABLE_SURFACE_WETNESS
+#include "rtx/pass/wetness_helpers.slangh"
+#endif
 
 // Opaque Surface Material Interaction Constants
 
@@ -1060,6 +1063,414 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   // Apply material modifiers
   const float roughnessScale = cb.opaqueMaterialArgs.roughnessScale * (isHairCardMaterial ? cb.hairCardRoughnessScale : 1.0f);
   roughness = saturate(roughness * roughnessScale + cb.opaqueMaterialArgs.roughnessBias);
+
+#ifdef ENABLE_SURFACE_WETNESS
+  if (surface.wetnessTag && cb.wetnessArgs.enabled) {
+    const uint wetnessTag = surface.wetnessTag;
+    const bool roughnessOnly = cb.wetnessArgs.nonRoadRoughnessOnly != 0u &&
+      cb.wetnessArgs.roadOnly != 0u && (wetnessTag >> 24) == 2u && (wetnessTag & 0x500u) == 0u;
+    const bool wetnessAllowed = (wetnessTag & 0x800u) == 0u &&
+      ((wetnessTag >> 24) != 2u || cb.wetnessArgs.roadOnly == 0u || (wetnessTag & 0x500u) != 0u || roughnessOnly);
+    const bool bypassZones = (wetnessTag & 0x400u) != 0u || cb.wetnessArgs.respectNoRainZones == 0u;
+    const float wetStrength = wetnessAllowed
+      ? resolveWeatherWetness(wetnessTag, cb.wetnessArgs)
+        * (bypassZones ? 1.0f : wetnessExposure(surfaceInteraction.position)) : 0.0f;
+    const uint wetClass = (wetnessTag >> 24) & 0xFFu;
+
+    if (wetStrength > 0.0f) {
+
+      const float zNormal = wetUpNormal(surfaceInteraction.geometryNormal);
+      const float wetBlend = saturate(smoothstep(0.25f, 0.75f, zNormal));
+      const float wetRoughnessScale = lerp(1.0f, 0.25f, wetStrength);
+      roughness = saturate(lerp(roughness, roughness * wetRoughnessScale, wetBlend));
+
+      float wetPuddleMask = 0.0f;
+      if (wetClass == 2u && !roughnessOnly) {
+        const float zNorm = wetUpNormal(surfaceInteraction.geometryNormal);
+        const float horizontalFactor = saturate((zNorm - 0.78f) / 0.2f);
+        if (horizontalFactor > 0.001f) {
+
+          float puddleMask = wetPuddleCoverage(surfaceInteraction.position, zNorm, wetStrength);
+          wetPuddleMask = puddleMask;
+
+          if (puddleMask > 0.001f) {
+            const float targetRoughness = lerp(roughness, 0.0f, wetStrength);
+            roughness = lerp(roughness, targetRoughness, puddleMask);
+
+            const float flatten = puddleMask * wetStrength;
+            normal = normalize(lerp(normal, surfaceInteraction.geometryNormal, flatten));
+            albedo *= lerp(1.0f, cb.wetnessArgs.puddleAlbedoDarken, flatten);
+
+            const float waveScale = max(cb.wetnessArgs.puddleWaveScale, 1e-3f);
+            const vec3 wpos = surfaceInteraction.position * (0.5f / waveScale);
+            const float t = cb.timeSinceStartSeconds;
+            const vec3 p1 = vec3(wpos.x * 0.2f, wpos.y + t * 0.15f, wpos.z * 2.0f);
+            const vec3 p2 = vec3(wpos.x * 2.0f, wpos.y + t * 0.15f, wpos.z * 0.2f);
+            const float streakX = abs(simplexNoise3D(p1));
+            const float streakZ = abs(simplexNoise3D(p2));
+            const float streak = pow(saturate((streakX + streakZ) * 0.4f), 1.0f / 2.4f);
+
+            const float waveAmp = streak * puddleMask * wetStrength * cb.wetnessArgs.puddleWaveStrength;
+            const vec3 waveN = normalize(vec3(streakX - 0.5f, streakZ - 0.5f, 2.0f));
+            normal = normalize(normal + wetWorldVector(waveN) * waveAmp);
+            roughness = saturate(roughness + waveAmp * 0.125f);
+          }
+        }
+      }
+
+      if (wetClass == 2u && !roughnessOnly) {
+        const float flatW = wetUpNormal(surfaceInteraction.geometryNormal);
+        const float flatness = saturate((flatW - 0.55f) / 0.45f);
+        const float camDist = length(surfaceInteraction.position - cameraGetWorldPosition(cb.camera));
+
+        const float distFade = 1.0f - smoothstep(25.0f, 40.0f, camDist);
+        if (flatness > 0.05f && wetBlend > 0.05f && distFade > 0.001f) {
+          const float animTime = cb.timeSinceStartSeconds * 0.4f;
+          const int GRID_NEIGHBOR = 2;
+          const float gridScale = max(cb.wetnessArgs.rippleGridScale, 0.5f);
+          const float spawnPeriod = max(cb.wetnessArgs.rippleSpawnPeriod, 0.1f);
+          const float dropLife = 0.4f;
+          const float rippleSpeed = 1.1f * max(cb.wetnessArgs.rippleRadius, 0.05f);
+          const float visibilityMult = 14.0f;
+          const float rippleStrength = 0.18f * visibilityMult * 0.54f;
+          const float normalScaleRipple = 0.18f * 0.5f;
+          const float roughnessRipple = 0.14f * 2.7f;
+
+          const vec2 gridPos = wetGroundPosition(surfaceInteraction.position) * gridScale;
+          const vec2 cell = floor(gridPos);
+
+          float accVis = 0.0f;
+          float accRough = 0.0f;
+          vec3 accNorm = vec3(0.0f);
+          for (int oy = -1; oy <= 1; ++oy) {
+            for (int ox = -1; ox <= 1; ++ox) {
+              const vec2 ncell = cell + vec2(float(ox), float(oy));
+              const vec2 h = wetHash22(ncell);
+              const float seed = h.x;
+              const float spawnOffset = seed * spawnPeriod;
+              const float timeSinceSpawn = animTime - spawnOffset;
+              const float cycle = floor(timeSinceSpawn / spawnPeriod);
+              const float localT = timeSinceSpawn - cycle * spawnPeriod;
+              const float cellLife = dropLife * lerp(0.85f, 1.25f, frac(seed * 7.3f));
+              if (localT < 0.0f || localT > cellLife) {
+                  continue;
+                }
+              const float tnorm = localT / cellLife;
+
+              const vec2 cycleJitter = (wetHash22(ncell + vec2(97.0f, cycle * 0.618f)) - 0.5f) * 0.8f;
+              const vec2 centerJitter = (wetHash22(ncell + 17.0f) - 0.5f) * 0.7f;
+              const vec2 dropCenter = (ncell + 0.5f + centerJitter + cycleJitter) / gridScale;
+
+              const float rippleRadius = rippleSpeed * lerp(0.85f, 1.15f, frac(seed * 3.1f + cycle * 0.37f)) * localT;
+              const float dist = length(wetGroundPosition(surfaceInteraction.position) - dropCenter);
+              const float ringDist = abs(dist - rippleRadius);
+              const float ringThickness = max(0.035f * (0.5f + 0.5f * tnorm), 0.01f);
+              float ringMask = saturate(1.0f - ringDist / ringThickness);
+              ringMask *= smoothstep(0.12f, 0.30f, tnorm) * (1.0f - smoothstep(0.78f, 0.98f, tnorm));
+              if (ringMask < 0.003f) {
+                  continue;
+                }
+
+              const float ringAmp = rippleStrength * lerp(0.7f, 1.0f, tnorm);
+              const float rndAngle = frac(seed * 19.7f) * 6.2831853f;
+              const vec3 ringDir = normalize(vec3(cos(rndAngle), sin(rndAngle), -0.45f));
+              accNorm += ringDir * (ringMask * ringAmp * normalScaleRipple);
+              accRough += ringMask * ringAmp * roughnessRipple;
+
+              const float cellWeight = saturate(1.0f - length(ncell - cell) * 0.38f);
+              accVis += clamp(ringMask * ringAmp * 0.75f, 0.0f, 1.0f) * cellWeight;
+            }
+          }
+
+          float rippleMask = saturate(accVis * (1.4f * visibilityMult)) * (5.0f * 0.85f);
+          rippleMask *= wetPuddleMask * wetStrength * distFade;
+
+          const float nOffLen = length(accNorm);
+          if (nOffLen > 0.0005f) {
+              accNorm = normalize(accNorm) * (nOffLen * 0.45f);
+            }
+
+          if (rippleMask > 0.0001f) {
+            const float normalIntensity = saturate(flatW * 2.0f) * rippleMask;
+            normal = normalize(normal + wetWorldVector(accNorm) * normalIntensity);
+            roughness = saturate(roughness + saturate(accRough) * 0.28f * wetStrength);
+          }
+        }
+      }
+
+      if (wetClass == 1u) {
+ {
+        const vec3 right = surface.objectToWorld[0].xyz;
+        const vec3 upVec = surface.objectToWorld[1].xyz;
+        const vec3 fwd = surface.objectToWorld[2].xyz;
+        const float3 trans = float3(surface.objectToWorld[0].w, surface.objectToWorld[1].w, surface.objectToWorld[2].w);
+        const mat3 rot = mat3(right, upVec, fwd);
+        const mat3 invRot = transpose(rot);
+        const vec2 baseCoord = mul(invRot, surfaceInteraction.position - trans).xy;
+
+        const float animTime = float(cb.frameIdx) * 0.04f * 0.4f * 1.6f;
+        const int layerCount = 3;
+        const int neighborRadius = 1;
+        const float dropletCycle = 2.6f;
+        const float growPhase = 0.18f;
+        const float restPhase = 0.32f;
+        const float fadePhase = 1.0f - growPhase - restPhase;
+        const float baseRadiusObj = 0.01f;
+        const float densityBias = max(0.1f, cb.wetnessArgs.dropDensity);
+        const float radiusBias = 0.1f;
+        const float normalBias = 8.9f;
+        const float raindropScaleMult = max(cb.wetnessArgs.dropSize, 0.1f);
+        const float raindropVisibilityMult = 14.0f;
+
+        float combinedRaindropMask = 0.0f;
+        float combinedRoughnessMask = 0.0f;
+        vec3 raindropNormalOffset = vec3(0.0f);
+
+        [unroll]
+        for (int layer = 0; layer < layerCount; ++layer) {
+          const float baseLayerScale = 4.0f + float(layer) * 1.4f;
+          const float layerScale = baseLayerScale * raindropScaleMult * 8.0f;
+          const float densityScale = densityBias * (1.0f + float(layer) * 0.3f);
+          const float gridScale = layerScale * densityScale;
+          const vec2 baseCell = floor(baseCoord * gridScale);
+          const float layerWeight = 1.0f / (1.0f + float(layer) * 0.4f);
+          const float radiusScale = (baseRadiusObj * radiusBias) * (1.0f + float(layer) * 0.25f);
+          const float layerNormalStrengthScale = layerWeight * 0.5f * normalBias;
+
+          for (int oy = -neighborRadius; oy <= neighborRadius; ++oy) {
+            for (int ox = -neighborRadius; ox <= neighborRadius; ++ox) {
+              const vec2 nCell = baseCell + vec2(float(ox), float(oy));
+              const vec2 cellSeed = wetHash22(nCell + float(layer) * 23.0f);
+              const int subDrops = 1 + int(cellSeed.x > 0.65f);
+
+              for (int sub = 0; sub < subDrops; ++sub) {
+                const vec2 subSeed = wetHash22(nCell + vec2(float(sub) * 31.0f + float(layer) * 17.0f, float(sub) * 13.0f));
+                const float spawnSeed = frac(subSeed.x + subSeed.y * 1.37f + float(layer) * 0.11f);
+                const float cycleValue = (animTime + spawnSeed * dropletCycle) / dropletCycle;
+                const float cycleIndex = floor(cycleValue);
+                const float cyclePhase = frac(cycleValue);
+
+                const vec2 cycleJitter = (wetHash22(nCell + vec2(float(layer) * 97.0f, cycleIndex * 0.618f)) - 0.5f) * 0.45f;
+                const vec2 dropCenter = (nCell + subSeed + cycleJitter) / gridScale;
+
+                float envelope;
+                if (cyclePhase < growPhase) {
+                    envelope = smoothstep(0.0f, 1.0f, cyclePhase / growPhase);
+                  }
+                else if (cyclePhase < growPhase + restPhase) {
+                    envelope = 1.0f;
+                  }
+                else
+                  envelope = 1.0f - smoothstep(0.0f, 1.0f, saturate((cyclePhase - growPhase - restPhase) / fadePhase));
+                if (envelope <= 1e-3f) {
+                    continue;
+                  }
+
+                const float randomRadius = lerp(0.75f, 1.4f, frac(subSeed.x * 3.13f));
+                const float dropletRadius = radiusScale * randomRadius / max(raindropScaleMult, 0.001f);
+                const vec2 radial = baseCoord - dropCenter;
+
+                const float shapeAngle = frac(subSeed.x * 2.17f + subSeed.y * 0.91f) * 6.2831853f;
+                const float cosA = cos(shapeAngle);
+                const float sinA = sin(shapeAngle);
+                const vec2 rotated = vec2(cosA * radial.x - sinA * radial.y,
+                                          sinA * radial.x + cosA * radial.y);
+                const vec2 axisStretch = vec2(lerp(0.65f, 1.35f, frac(subSeed.y * 3.97f)),
+                                              lerp(0.65f, 1.35f, frac(subSeed.x * 5.11f)));
+                const vec2 stretched = rotated / axisStretch;
+                const float dist = length(stretched);
+                if (dist > dropletRadius * 1.6f) {
+                    continue;
+                  }
+
+                const float dome = pow(saturate(1.0f - dist / dropletRadius), 1.5f);
+                const float ringDist = abs(dist - dropletRadius * 1.15f);
+                const float ring = pow(saturate(1.0f - ringDist / (dropletRadius * 0.35f)), 2.2f) * 0.55f;
+
+                const float ringVisiblePhase = growPhase + 0.18f;
+                const float ringFade = saturate(1.0f - (cyclePhase - growPhase) / 0.18f);
+                const float ringRamp = smoothstep(0.0f, growPhase * 0.6f, cyclePhase);
+                const float ringVisibility = envelope * ringRamp * ringFade * step(cyclePhase, ringVisiblePhase);
+
+                const float domeContribution = dome * envelope;
+                const float ringContribution = ring * ringVisibility;
+                const float dropletContribution = domeContribution + ringContribution;
+                if (dropletContribution <= 1e-4f) {
+                    continue;
+                  }
+
+                combinedRaindropMask += dropletContribution * layerWeight * raindropVisibilityMult;
+                combinedRoughnessMask += dropletContribution * layerWeight * cb.wetnessArgs.dropRoughness;
+
+                const vec2 gradStretched = stretched / max(dist, 1e-4f);
+                const vec2 gradRotated = gradStretched / axisStretch;
+                const vec2 gradOriginal = vec2(cosA * gradRotated.x + sinA * gradRotated.y,
+                                               -sinA * gradRotated.x + cosA * gradRotated.y);
+                const float radialLen = min(length(gradOriginal), 0.999f);
+                const float height = sqrt(saturate(1.0f - radialLen * radialLen));
+                const vec3 dropletNormal = normalize(vec3(gradOriginal * 0.65f, height));
+                raindropNormalOffset += dropletNormal * (domeContribution * layerNormalStrengthScale);
+              }
+            }
+          }
+        }
+
+        combinedRaindropMask = saturate(combinedRaindropMask * max(cb.wetnessArgs.dropStrength, 0.0f)) * wetStrength;
+
+        const float localNz = float(mul(invRot, surfaceInteraction.geometryNormal).z);
+        const float beadFlat = smoothstep(0.2f, 0.5f, localNz);
+        combinedRaindropMask *= beadFlat;
+
+        const float normalOffsetLen = length(raindropNormalOffset);
+        if (normalOffsetLen > 0.001f) {
+            raindropNormalOffset = normalize(raindropNormalOffset) * (normalOffsetLen * 0.5f);
+          }
+
+        if (combinedRaindropMask > 0.0001f) {
+
+          const float normalIntensity = saturate(wetUpNormal(surfaceInteraction.geometryNormal) * 2.0f + 0.5f) * combinedRaindropMask;
+          normal = normalize(normal + raindropNormalOffset * normalIntensity);
+          roughness = saturate(roughness + saturate(combinedRoughnessMask) * 0.15f * wetStrength);
+        }
+
+        const float absNz = abs(wetUpNormal(surfaceInteraction.geometryNormal));
+        const float slideW = smoothstep(0.55f, 0.85f, absNz);
+        const float horizW = 1.0f - slideW;
+        const vec3 localPos = mul(invRot, surfaceInteraction.position - trans);
+
+        if (slideW > 0.001f) {
+          const float vGridScale = max(cb.wetnessArgs.rippleVehicleGridScale, 0.5f);
+          const float vSpawnPeriod = max(cb.wetnessArgs.rippleVehicleSpawnPeriod, 0.1f);
+          const float vRippleSpeed = max(cb.wetnessArgs.rippleVehicleRadius, 0.05f);
+
+          const vec2 vGridPos = localPos.xy * vGridScale;
+          const vec2 vCell = floor(vGridPos);
+
+          float vVis = 0.0f;
+          float vRough = 0.0f;
+          vec3 vNorm = vec3(0.0f);
+          for (int oy = -1; oy <= 1; ++oy) {
+            for (int ox = -1; ox <= 1; ++ox) {
+              const vec2 ncell = vCell + vec2(float(ox), float(oy));
+              const vec2 h = wetHash22(ncell);
+              const float seed = h.x;
+              const float spawnOffset = seed * vSpawnPeriod;
+              const float timeSinceSpawn = animTime - spawnOffset;
+              const float cycle = floor(timeSinceSpawn / vSpawnPeriod);
+              const float localT = timeSinceSpawn - cycle * vSpawnPeriod;
+              const float cellLife = 0.7f * lerp(0.85f, 1.25f, frac(seed * 7.3f));
+              if (localT < 0.0f || localT > cellLife) {
+                  continue;
+                }
+              const float tnorm = localT / cellLife;
+
+              const vec2 cycleJitter = (wetHash22(ncell + vec2(97.0f, cycle * 0.618f)) - 0.5f) * 0.8f;
+              const vec2 centerJitter = (wetHash22(ncell + 17.0f) - 0.5f) * 0.7f;
+              const vec2 dropCenter = (ncell + 0.5f + centerJitter + cycleJitter) / vGridScale;
+              const float rippleRadius = vRippleSpeed * lerp(0.85f, 1.15f, frac(seed * 3.1f + cycle * 0.37f)) * localT;
+              const float dist = length(localPos.xy - dropCenter);
+              const float ringDist = abs(dist - rippleRadius);
+              const float ringThickness = max(0.07f * (0.5f + 0.5f * tnorm), 0.02f);
+              float ringMask = saturate(1.0f - ringDist / ringThickness);
+              ringMask *= smoothstep(0.12f, 0.30f, tnorm) * (1.0f - smoothstep(0.78f, 0.98f, tnorm));
+              if (ringMask < 0.003f) {
+                  continue;
+                }
+
+              const float ringAmp = 1.36f * lerp(0.7f, 1.0f, tnorm);
+              const vec2 toDrop = dist > 1e-5f ? (localPos.xy - dropCenter) / dist : vec2(1.0f, 0.0f);
+              const vec3 ringDir = normalize(vec3(toDrop.x, toDrop.y, -0.45f));
+              vNorm += ringDir * (ringMask * ringAmp * 0.09f);
+              vRough += ringMask * ringAmp * 0.38f;
+              vVis += ringMask * ringAmp * 0.75f;
+            }
+          }
+
+          const float vMask = saturate(vVis * 2.0f) * slideW * wetStrength;
+          if (vMask > 0.0001f) {
+            const float vOffLen = length(vNorm);
+            if (vOffLen > 0.0005f) {
+                vNorm = normalize(vNorm) * (vOffLen * 0.45f);
+              }
+            normal = normalize(normal + vNorm * (vMask * absNz));
+            roughness = saturate(roughness + saturate(vRough) * 0.28f * wetStrength);
+          }
+        }
+
+        if (horizW > 0.001f) {
+          const vec3 localNrm = mul(invRot, surfaceInteraction.geometryNormal);
+          const vec3 an = abs(localNrm);
+          vec2 panelUV;
+          if (an.y >= an.x && an.y >= an.z) panelUV = vec2(localPos.x, localPos.z);
+          else if (an.x >= an.z)            panelUV = vec2(localPos.y, localPos.z);
+          else                              panelUV = vec2(localPos.x, localPos.y);
+          const vec2 slide2 = vec2(0.0f, -1.0f);
+
+          const float sGridScale = max(cb.wetnessArgs.streakGridScale, 1.0f);
+          const float sCycle = max(cb.wetnessArgs.streakCycle, 0.2f);
+          const float slideLen = max(cb.wetnessArgs.streakLength, 0.05f);
+
+          const vec2 sGridPos = panelUV * sGridScale;
+          const vec2 sCell = floor(sGridPos);
+
+          float stVis = 0.0f;
+          float stRough = 0.0f;
+          vec3 stNorm = vec3(0.0f);
+          for (int oy = -1; oy <= 1; ++oy) {
+            for (int ox = -1; ox <= 1; ++ox) {
+              const vec2 ncell = sCell + vec2(float(ox), float(oy));
+              const vec2 h = wetHash22(ncell + 57.0f);
+              const float cycleVal = (animTime + h.x * sCycle) / sCycle;
+              const float ph = frac(cycleVal);
+              const float env = smoothstep(0.0f, 0.08f, ph) * (1.0f - smoothstep(0.8f, 1.0f, ph));
+              if (env < 0.01f) {
+                  continue;
+                }
+
+              const vec2 basePos = (ncell + 0.5f + (wetHash22(ncell + 73.0f) - 0.5f) * 0.7f) / sGridScale;
+              const vec2 dropPos = basePos + slide2 * (slideLen * ph);
+              const vec2 rel = panelUV - dropPos;
+              const vec2 perp = vec2(-slide2.y, slide2.x);
+              const float along = dot(rel, slide2);
+              const float across = dot(rel, perp);
+              const float headR = lerp(0.012f, 0.018f, frac(h.y * 5.1f)) * max(cb.wetnessArgs.streakSize, 0.1f);
+
+              const float headM = pow(saturate(1.0f - length(rel) / headR), 1.3f);
+              const float tailM = (along < 0.0f ? 1.0f : 0.0f)
+                                * saturate(1.0f - abs(across) / (headR * 0.55f))
+                                * saturate(1.0f + along / (headR * 5.0f));
+              const float contrib = (headM + tailM * 0.45f) * env;
+              if (contrib < 0.02f) {
+                  continue;
+                }
+
+              const float rim = min(length(rel) / headR, 0.999f);
+              const vec3 bumpDir = normalize(vec3(rel / headR * 0.5f, sqrt(1.0f - rim * rim)));
+              stNorm += bumpDir * (contrib * 6.0f);
+              stRough += contrib * 3.5f;
+              stVis += contrib;
+            }
+          }
+
+          const float streakMask = saturate(stVis) * horizW * wetStrength;
+          if (streakMask > 0.0001f) {
+            const float stOffLen = length(stNorm);
+            if (stOffLen > 0.0005f) {
+                stNorm = normalize(stNorm) * (stOffLen * 0.5f);
+              }
+            normal = normalize(normal + stNorm * streakMask);
+            roughness = saturate(roughness + saturate(stRough) * 0.18f * wetStrength);
+          }
+        }
+        }
+      }
+    }
+  }
+
+  roughness = lerp(roughness, saturate(cb.wetnessArgs.rainEndRoughness), cb.wetnessArgs.rainEndRoughnessWeight);
+
+#endif
+
 
   // Load Metallic
 

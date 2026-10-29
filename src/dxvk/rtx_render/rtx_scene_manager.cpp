@@ -32,6 +32,7 @@
 #include "rtx_fork_material_census.h"
 #include "rtx_fork_core_material.h"
 #include "rtx_scene_manager.h"
+#include "rtx/pass/wetness_args.h"
 #include "rtx_game_lights.h"
 #include "rtx_retained_scene.h"
 #include "rtx_scene_transient.h"
@@ -3141,6 +3142,22 @@ namespace dxvk {
     }
 
     // Call on the other managers to prepare their GPU data for the current scene
+    auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
+    if (captureFolder.filename() == L".trex") {
+      captureFolder = captureFolder.parent_path();
+    }
+    m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
+      WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
+    for (RtInstance* instance : m_instanceManager.getInstanceTable()) {
+      auto& surface = instance->surface;
+      surface.wetnessTag = surface.sourceWetnessTag;
+      const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
+      if (rule == WetnessDffRules::Rule::Disable) {
+        surface.wetnessTag |= 0x800u;
+      } else if (rule == WetnessDffRules::Rule::Enable) {
+        surface.wetnessTag |= 0x400u;
+      }
+    }
     m_accelManager.prepareSceneData(ctx, execBarriers, m_instanceManager);
     // [PerfGpu] sub-stages of the scene data and TLAS work.
     ctx->recordGpuStageTiming("SceneInstanceUpload");

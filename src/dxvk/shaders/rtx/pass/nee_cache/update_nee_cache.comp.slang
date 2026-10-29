@@ -1,3 +1,4 @@
+//!feature wetness ENABLE_SURFACE_WETNESS
 /*
 * Copyright (c) 2023-2024, NVIDIA CORPORATION. All rights reserved.
 *

@@ -1,3 +1,4 @@
+//!feature wetness ENABLE_SURFACE_WETNESS
 /*
 * Light BVH selection pass.
 *

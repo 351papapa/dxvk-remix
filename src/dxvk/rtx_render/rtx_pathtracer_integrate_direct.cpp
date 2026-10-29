@@ -22,6 +22,37 @@
 #include "rtx_pathtracer_integrate_direct.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
+// Surface wetness is selected independently of the pass feature matrix.
+#include "rtx_wetness_shaders.h"
+#include <rtx_shaders/integrate_direct_nosss_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_nrc_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_nrc_rayquery_raygen_wetness.h>
+#include <rtx_shaders/integrate_direct_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_rayquery_raygen_wetness.h>
+#include <rtx_shaders/integrate_direct_split_shade_lean_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_split_shade_sun_lean_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_split_trace_lean_core_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_split_trace_lean_legacy_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_split_trace_lean_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_sun_nosss_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_sun_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_sun_validate_rayquery_wetness.h>
+#include <rtx_shaders/integrate_direct_validate_rayquery_wetness.h>
+#define RTX_WETNESS_SHADER_integrate_direct_nosss_rayquery integrate_direct_nosss_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_nrc_rayquery integrate_direct_nrc_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_nrc_rayquery_raygen integrate_direct_nrc_rayquery_raygen_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_rayquery integrate_direct_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_rayquery_raygen integrate_direct_rayquery_raygen_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_split_shade_lean_rayquery integrate_direct_split_shade_lean_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_split_shade_sun_lean_rayquery integrate_direct_split_shade_sun_lean_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_split_trace_lean_core_rayquery integrate_direct_split_trace_lean_core_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_split_trace_lean_legacy_rayquery integrate_direct_split_trace_lean_legacy_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_split_trace_lean_rayquery integrate_direct_split_trace_lean_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_sun_nosss_rayquery integrate_direct_sun_nosss_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_sun_rayquery integrate_direct_sun_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_sun_validate_rayquery integrate_direct_sun_validate_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_direct_validate_rayquery integrate_direct_validate_rayquery_wetness
+
 
 #include "rtx/pass/common_binding_indices.h"
 #include "rtx/pass/integrate/integrate_direct_binding_indices.h"
@@ -228,10 +259,10 @@ namespace dxvk {
         getComputeShader(deferredNrcTrainingSetup, SlimLevel::Full);
       }
       // Dedicated-sun variant (rtx.lightSampling.bvhDedicatedSunSample).
-      GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery);
+      GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery);
       // The slim levels.
-      GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nosss_rayquery);
-      GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
+      GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nosss_rayquery);
+      GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
       getSplitShadeShader(false);
       getSplitShadeShader(true);
       getSplitTraceShader(SlimLevel::Lean);
@@ -413,9 +444,9 @@ namespace dxvk {
     if (useRayQuery) {
       shaders.debugName = deferredNrcTrainingSetup ? "Integrate Direct NRC RayQuery (RGS)" : "Integrate Direct RayQuery (RGS)";
       if (deferredNrcTrainingSetup) {
-        shaders.addGeneralShader(GET_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateDirectRayGenShader, integrate_direct_nrc_rayquery_raygen));
+        shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateDirectRayGenShader, integrate_direct_nrc_rayquery_raygen));
       } else {
-        shaders.addGeneralShader(GET_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateDirectRayGenShader, integrate_direct_rayquery_raygen));
+        shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateDirectRayGenShader, integrate_direct_rayquery_raygen));
       }
     } else {
       assert(!"TraceRay versions of the Integrate Direct pass are not implemented.");
@@ -579,14 +610,14 @@ namespace dxvk {
 
   Rc<DxvkShader> DxvkPathtracerIntegrateDirect::getComputeShader(const bool deferredNrcTrainingSetup, const SlimLevel slimLevel) const {
     if (deferredNrcTrainingSetup) {
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nrc_rayquery);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nrc_rayquery);
     }
 
     // rtx.frameFeatures.validate. The Full kernels' validation variants (sampled light types).
     if (RtxOptions::FrameFeatures::validate()) {
       return LightBvh::dedicatedSunActive()
-        ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_validate_rayquery)
-        : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_validate_rayquery);
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_validate_rayquery)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_validate_rayquery);
     }
 
     // The dedicated distant-light sample is a variant, because a second visibility-ray site in the default kernel costs
@@ -597,12 +628,12 @@ namespace dxvk {
     const bool full = slimLevel == SlimLevel::Full;
     if (LightBvh::dedicatedSunActive()) {
       return full
-        ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery)
-        : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
     }
     return full
-      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_rayquery)
-      : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nosss_rayquery);
+      ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_rayquery)
+      : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_nosss_rayquery);
   }
 
   bool DxvkPathtracerIntegrateDirect::isSplitLevel(const SlimLevel level) {
@@ -623,9 +654,9 @@ namespace dxvk {
       getComputeShader(deferredNrcTrainingSetup, level);
       if (sunPossible && !RtxOptions::FrameFeatures::validate()) {
         if (level == SlimLevel::Full) {
-          GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery);
+          GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_rayquery);
         } else {
-          GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
+          GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectRayGenShader, integrate_direct_sun_nosss_rayquery);
         }
       }
     }
@@ -642,8 +673,8 @@ namespace dxvk {
   Rc<DxvkShader> DxvkPathtracerIntegrateDirect::getSplitShadeShader(const bool dedicatedSun) const {
     // The shade kernel traces nothing, so one serves Lean, LeanCore and LeanLegacy.
     return dedicatedSun
-      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_shade_sun_lean_rayquery)
-      : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_shade_lean_rayquery);
+      ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_shade_sun_lean_rayquery)
+      : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_shade_lean_rayquery);
   }
 
   Rc<DxvkShader> DxvkPathtracerIntegrateDirect::getSplitTraceShader(const SlimLevel slimLevel) const {
@@ -651,11 +682,11 @@ namespace dxvk {
     // in the record.
     switch (slimLevel) {
     case SlimLevel::LeanCore:
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_core_rayquery);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_core_rayquery);
     case SlimLevel::LeanLegacy:
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_legacy_rayquery);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_legacy_rayquery);
     default:
-      return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_rayquery);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateDirectSplitShader, integrate_direct_split_trace_lean_rayquery);
     }
   }
 

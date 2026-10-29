@@ -2312,6 +2312,10 @@ namespace dxvk {
             break;
           }
 
+        case 210:
+          // Per-instance wetness classification and intensity.
+          break;
+
         case 213:
         case 214:
           // Asset capture correlation is stored per device and consumed at draw submission.

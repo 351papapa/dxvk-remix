@@ -245,9 +245,11 @@ namespace dxvk {
   }
 
   void SccrShellManager::patchSurfaceRecord(unsigned char* record, const RtInstance& instance) const {
-    // data15.w is the record's last dword (RtSurface::writeGPUData); the high 16 bits are reserved (0).
+    // Patch only the shell slot. The high half stores per-instance wetness.
     const uint32_t slot = slotFor(instance);
-    const uint32_t value = slot < kSurfaceInvalidBufferIndex ? slot : kSurfaceInvalidBufferIndex;
+    uint32_t value;
+    std::memcpy(&value, record + kSurfaceGPUSize - sizeof(uint32_t), sizeof(value));
+    value = (value & 0xFFFF0000u) | (slot < kSurfaceInvalidBufferIndex ? slot : kSurfaceInvalidBufferIndex);
     std::memcpy(record + kSurfaceGPUSize - sizeof(uint32_t), &value, sizeof(value));
   }
 

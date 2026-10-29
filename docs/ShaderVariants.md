@@ -34,3 +34,11 @@ return useFeature
 If the entry point already has a complex variant matrix (many axes), adding one more doubles the compiled variant count. Prefer this cost over unconditional compilation: the shader cache takes the hit once at build time, whereas unconditional code runs in every dispatch even when the feature is disabled.
 
 For the full variant system syntax and C++ integration pattern, see `src/dxvk/shaders/rtx/README.md`.
+
+## Material feature axis
+
+`//!feature wetness ENABLE_SURFACE_WETNESS` adds a disabled/enabled axis to an existing explicit list or matrix.
+Disabled variants retain their names and enabled variants append `_wetness` before the stage extension.
+The existing matrix selector keys remain unchanged. `GET_WETNESS_SHADER_VARIANT` and `WETNESS_SHADER_SOURCE`
+select the enabled binary using the authored master option. The feature declaration must appear before any
+variant declaration. This also covers passes whose entry point includes another entry point.

@@ -161,6 +161,9 @@ namespace dxvk {
       bool vertexShader = false;
       // The draw samples a render target the backend ray traces.
       bool raytracedRenderTarget = false;
+      // Low 8 bits: rain intensity. Bits 8-11: filtering flags. High byte: surface class.
+      uint32_t wetnessTag = 0;
+      uint64_t wetnessMeshHash = 0;
       std::optional<uint32_t> objectPickingValue;
       std::optional<SkinningDesc> skinning;
       // The frontend's own legacy material, with its samplers and hash. A description with one is complete as the

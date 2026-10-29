@@ -1471,6 +1471,35 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.weather.followGame|bool|True|||Show the preset bound to the weather the game reports \(rtx\.weather\.gameWeather\)\. Off: rtx\.weather\.preset only\.|
 |rtx.weather.gameWeatherBlend|float|-1|||Set by the game integration: 0\.\.1 = the game's own blend from rtx\.weather\.gameWeatherOutgoing to rtx\.weather\.gameWeather; negative = the runtime blends over the preset's transition time\.|
 |rtx.weather.transitionSeconds|float|10|||Blend time into a new weather, for presets that set no weather\.transitionSeconds of their own\. 0 = instant\.|
+|rtx.wetness.dropDensity|float|1.3|||Vehicle droplet density multiplier\.|
+|rtx.wetness.dropRoughness|float|2.7|||Vehicle droplet roughness contribution\.|
+|rtx.wetness.dropSize|float|3|||Vehicle droplet size multiplier\.|
+|rtx.wetness.dropStrength|float|5|||Vehicle droplet visibility strength\.|
+|rtx.wetness.enabled|bool|False|||Master switch for the wetness/rain surface system\. Off: no wet sheen, puddles, road ripples, vehicle droplets or streaks, and the rain\-ending roughness override stops being applied\. Weather and rain particles are unaffected\.|
+|rtx.wetness.nonRoadRoughnessOnly|bool|False|||In road\-only mode, allow rain\-driven roughness on non\-road world surfaces without puddles or ripples\. Respects cullzones and DFF disable rules; DFF enable rules retain full wetness\.|
+|rtx.wetness.puddleAlbedoDarken|float|0.85|||Albedo multiplier inside puddles \(water absorbs light\)\.|
+|rtx.wetness.puddleNoiseScale|float|0.045|||Puddle noise frequency \(world\)\. Larger = smaller puddles\.|
+|rtx.wetness.puddleThresholdBase|float|0.56|||Puddle noise threshold when dry\. Lower = more puddles\.|
+|rtx.wetness.puddleThresholdSpan|float|0.4|||How much full wetness lowers the puddle threshold\.|
+|rtx.wetness.puddleWaveScale|float|1|||Puddle micro\-wave size multiplier\. Larger = bigger, sparser waves\.|
+|rtx.wetness.puddleWaveStrength|float|0.4|||Puddle micro\-wave normal wobble amplitude\. 0 = dead\-flat mirror\.|
+|rtx.wetness.rainEndRoughness|float|0.75|||Absolute opaque roughness target while rain is ending\.|
+|rtx.wetness.rainEndRoughnessEnabled|bool|False|||Blend GLOBAL opaque roughness toward rainEndRoughness while the weather goes from rainy to dry\. Off by default: it overrides the authored roughness of every opaque surface and fights the wetness layer's own decay, so materials do not simply return to their normal roughness\. Enable only if you want a uniform damp look while the world dries\.|
+|rtx.wetness.rainEndTransitionSeconds|float|15|||Seconds to blend into and out of the rain\-ending roughness override\.|
+|rtx.wetness.respectNoRainZones|bool|False|||Disable wetness inside no\-rain cullzones\. DFF enable rules override this restriction; rain is still required\.|
+|rtx.wetness.rippleGridScale|float|8.5|||Road ripple cells per world unit\. Higher = more, smaller rings\.|
+|rtx.wetness.rippleRadius|float|1|||Road ripple ring expansion speed multiplier\.|
+|rtx.wetness.rippleSpawnPeriod|float|1.5|||Seconds between raindrops per road cell\. Higher = sparser\.|
+|rtx.wetness.rippleVehicleGridScale|float|4.25|||Vehicle ripple cells per object unit\.|
+|rtx.wetness.rippleVehicleRadius|float|0.5|||Vehicle ripple ring expansion speed multiplier\.|
+|rtx.wetness.rippleVehicleSpawnPeriod|float|3|||Seconds between raindrops per vehicle cell\.|
+|rtx.wetness.roadOnly|bool|False|||Restrict world wetness to road\-flagged models\. Vehicles are unaffected\.|
+|rtx.wetness.streakCycle|float|1.8|||Seconds per streak slide run\.|
+|rtx.wetness.streakGridScale|float|12|||Streak grid cells per object unit\.|
+|rtx.wetness.streakLength|float|0.4|||Object units a streak travels per run\.|
+|rtx.wetness.streakSize|float|1|||Streak head size multiplier\.|
+|rtx.wetness.waterWaveScale|float|1|||Water \(AnimatedWater\) micro\-wave size multiplier\. Larger = bigger, sparser chop\.|
+|rtx.wetness.waterWaveStrength|float|0.5|||Water \(AnimatedWater\) micro\-wave normal wobble amplitude\. 0 = off\.|
 |rtx.worldOrigin.enable|bool|False|||For hosts that submit the scene relative to a moving render origin and publish that origin, in render units, in the game values \_\_mcrtx\.world\_origin\.x/y/z \(remixapi\_SetGameValue\) before each SetupCamera\. When the origin moves, the previous camera and every instance's previous transform are moved with it, so motion vectors, camera\-cut detection and temporal history see no jump, and NUMOS clouds stay anchored to the world\. When off, those game values are ignored\.|
 |rtx.worldOrigin.preciseCamera|bool|False|||Keeps a Remix API parameterized camera \(SetupCamera with CameraInfoParameterizedEXT\) in double precision instead of rounding its view matrix to float\. At world coordinates around 100,000 units, float rounding changes every frame as the camera turns, which makes a nearby view model wobble\.|
 |rtx.worldSpaceUiBackgroundOffset|float|-0.01|||Distance along normal to offset objects rendered as worldspace UI, specifically for the background of screens\.|
@@ -1567,5 +1596,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.weather.preset|string||||The weather preset the sky shows while the game reports no weather bound to a preset \(or rtx\.weather\.followGame is off\)\. Empty: the NUMOS settings alone\.|
 |rtx.weather.presetDirectory|string|rtx-remix/weather|||Folder of the weather preset files \(\<name\>\.conf\), relative to the game's folder unless absolute\.|
 |rtx.welcomeMessage|string||||Display a message to the user on startup, leave empty if no message is to be displayed\.|
+|rtx.wetness.forceDisableDff|string||||DFF name substrings separated by semicolons\. Disables wetness; takes precedence over enable matches\.|
+|rtx.wetness.forceEnableDff|string||||DFF name substrings separated by semicolons\. Overrides road and no\-rain zone filtering; still requires rain\.|
 |rtx.worldSpaceUiBackgroundTextures|hash set||||Hack/workaround option for dynamic world space UI textures with a coplanar background\.<br>Apply to backgrounds if the foreground material is a dynamic world texture rendered in UI that is unpredictable and rapidly changing\.<br>This offsets the background texture backwards\.|
 |rtx.worldSpaceUiTextures|hash set||||Textures on draw calls that should be treated as worldspace UI elements\.<br>Unlike typical UI textures this option is useful for improved rendering of UI elements which appear as part of the scene \(moving around in 3D space rather than as a screenspace element\)\.|

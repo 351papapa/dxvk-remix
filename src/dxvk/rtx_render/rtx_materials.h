@@ -311,10 +311,12 @@ struct RtSurface {
       writeGPUHelper(data, offset, uint32_t{});
       writeGPUHelper(data, offset, uint32_t{});
     }
-    // data15.w: the low 16 bits hold the SCCR shell buffer's bindless slot (0xFFFF: none), the high 16 bits are
-    // reserved (0). AccelManager's surface upload overwrites this last dword of every record it writes with
-    // SccrShellManager::patchSurfaceRecord, the only source of the slot.
-    writeGPUHelper(data, offset, uint32_t(kSurfaceInvalidBufferIndex));
+    // data15.w: shell slot in the low half, per-instance wetness in the high half.
+    // Unknown classes are dry. Supported classes are vehicle, world and painted vehicle.
+    const uint32_t surfaceClass = wetnessTag >> 24;
+    const uint32_t wetness = surfaceClass >= 1 && surfaceClass <= 3
+      ? (wetnessTag & 0xFFFu) | (surfaceClass << 12) : 0u;
+    writeGPUHelper(data, offset, uint32_t(kSurfaceInvalidBufferIndex) | (wetness << 16));
 
     assert(offset - oldOffset == kSurfaceGPUSize);
   }
@@ -347,6 +349,9 @@ struct RtSurface {
   bool isMatte = false;
   bool isStatic = false;
   // True when SceneManager took the preserve replacement-instance path (usePreservePath); unrelated to motion isStatic.
+  uint32_t wetnessTag = 0;
+  uint32_t sourceWetnessTag = 0;
+  uint64_t wetnessMeshHash = 0;
   bool isPreservePath = false;
   bool hasMaterialChanged = false;
   bool isAnimatedWater = false;

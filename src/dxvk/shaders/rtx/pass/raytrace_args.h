@@ -36,6 +36,7 @@
 #include "rtx/pass/sharc/sharc_args.h"
 #include "rtx/pass/volume_args.h"
 #include "rtx/pass/material_args.h"
+#include "rtx/pass/wetness_args.h"
 #include "rtx/pass/view_distance_args.h"
 #include "rtx/concept/light/light_types.h"
 #include "rtx/concept/surface/surface_shared.h"
@@ -155,6 +156,7 @@ struct RaytraceArgs {
   OpaqueMaterialArgs opaqueMaterialArgs;
   TranslucentMaterialArgs translucentMaterialArgs;
   ViewDistanceArgs viewDistanceArgs;
+  WetnessArgs wetnessArgs;
 
   LightRangeInfo lightRanges[lightTypeCount];
 

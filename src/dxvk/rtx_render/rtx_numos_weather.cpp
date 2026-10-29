@@ -229,6 +229,34 @@ namespace dxvk {
 
     // Reads one preset file. The preset is named after the file.
     // Returns false when the file cannot be read.
+    bool parseWetnessPreset(WetnessPreset& preset, const std::string& key, const std::string& text) {
+      for (size_t i = 0; i < std::size(kWetnessParameters); ++i) {
+        const std::string name = kWetnessParameters[i].name;
+        std::string legacy = "wetness" + name;
+        legacy[7] = char(std::toupper(static_cast<unsigned char>(legacy[7])));
+        if (key != "rtx.wetness." + name && key != legacy
+            && !(name == "rainIntensity" && key == "precipitationIntensity")) {
+          continue;
+        }
+        const bool relative = !text.empty() && (text[0] == 'x' || text[0] == 'X' || text[0] == '*');
+        const std::string body = relative ? text.substr(1) : text;
+        try {
+          size_t end = 0;
+          const float value = std::stof(body, &end);
+          if (end == body.size() && std::isfinite(value) && value >= 0.0f && value <= 100.0f) {
+            preset.values[i] = value;
+            preset.relative[i] = relative;
+          } else {
+            Logger::warn("[NUMOS weather] Invalid wetness value for " + key);
+          }
+        } catch (...) {
+          Logger::warn("[NUMOS weather] Invalid wetness value for " + key);
+        }
+        return true;
+      }
+      return false;
+    }
+
     bool readPresetFile(const fs::path& path, NumosWeather::Preset& p) {
       std::ifstream f(path, std::ios::binary);
       if (!f) {
@@ -254,6 +282,9 @@ namespace dxvk {
         if (eq != std::string::npos) {
           const std::string key = trim(code.substr(0, eq));
           const std::string value = trim(code.substr(eq + 1));
+          if (parseWetnessPreset(p.wetness, key, value)) {
+            continue;
+          }
           if (key == "weather.bindings") {
             std::istringstream ids(value);
             std::string id;
@@ -414,6 +445,9 @@ namespace dxvk {
       LegacyValue layer2Color;
 
       for (const auto& [key, text] : section.keys) {
+        if (parseWetnessPreset(p.wetness, key, text)) {
+          continue;
+        }
         LegacyValue v;
         bool handled = true;
         if (key == "enabled") {
@@ -495,7 +529,7 @@ namespace dxvk {
       relative(numos::settingInfos().size(), false) { }
   NumosWeather::Preset::Preset(const Preset& o)
     : name(o.name), bindings(o.bindings), transitionSeconds(o.transitionSeconds), enabled(o.enabled),
-      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), dirty(o.dirty),
+      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), dirty(o.dirty),
       numosBuiltIn(o.numosBuiltIn) { }
   NumosWeather::Preset& NumosWeather::Preset::operator=(const Preset& o) {
     if (this != &o) {
@@ -506,6 +540,7 @@ namespace dxvk {
       values = std::make_unique<numos::Settings>(*o.values);
       set = o.set;
       relative = o.relative;
+      wetness = o.wetness;
       dirty = o.dirty;
       numosBuiltIn = o.numosBuiltIn;
     }
@@ -516,6 +551,7 @@ namespace dxvk {
   struct NumosWeather::State {
     numos::Settings base, from, current;
     numos::WeatherSnapshot snapshot;
+    WetnessArgs wetnessFrom, wetnessCurrent;
     float elapsed = 0.0f;
     float duration = 0.0f;
     bool hasCurrent = false;
@@ -633,6 +669,12 @@ namespace dxvk {
     for (size_t i = 0; i < infos.size(); ++i) {
       if (p.set[i]) {
         text << infos[i].key << " = " << (p.relative[i] ? "x" : "") << numos::formatSetting(*p.values, infos[i]) << "\n";
+      }
+    }
+    for (size_t i = 0; i < p.wetness.values.size(); ++i) {
+      if (p.wetness.values[i].has_value()) {
+        text << "rtx.wetness." << kWetnessParameters[i].name << " = "
+             << (p.wetness.relative[i] ? "x" : "") << *p.wetness.values[i] << "\n";
       }
     }
     std::error_code ec;
@@ -1084,6 +1126,15 @@ namespace dxvk {
     ensureLoaded();
     State& s = *m_state;
     s.base = base;
+    WetnessArgs wetnessBase;
+    WetnessOptions::fillShaderParams(wetnessBase);
+    const auto wetnessFor = [&](const Preset* selected) {
+      WetnessArgs args = wetnessBase;
+      if (selected != nullptr) {
+        selected->wetness.apply(args);
+      }
+      return args;
+    };
 
     const std::string legacyFile = legacyPresetFile();
     if (legacyFile != s.lastLegacyFile) {
@@ -1095,6 +1146,7 @@ namespace dxvk {
 
     // While tuning, the sliders are the look: no preset, no blend.
     if (m_tuning) {
+      s.wetnessCurrent = wetnessBase;
       s.current = base;
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
@@ -1133,6 +1185,7 @@ namespace dxvk {
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
       blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
       s.snap = false;
@@ -1143,7 +1196,9 @@ namespace dxvk {
 
     numos::Settings goal = base;
     applyPreset(target, goal);
+    const WetnessArgs wetnessGoal = wetnessFor(target);
     if (!s.hasCurrent || targetName != m_targetName) {
+      s.wetnessFrom = s.hasCurrent ? s.wetnessCurrent : wetnessGoal;
       s.from = s.hasCurrent ? s.current : goal;
       s.duration = !s.hasCurrent || s.snap ? 0.0f
                  : (target && target->transitionSeconds >= 0.0f ? target->transitionSeconds : transitionSeconds());
@@ -1154,6 +1209,7 @@ namespace dxvk {
     }
     s.elapsed += std::max(deltaSeconds, 0.0f);
     const float t = s.duration > 0.0f ? s.elapsed / s.duration : 1.0f;
+    s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t));
     if (t >= 1.0f) {
       s.current = goal;  // settled: live edits to the preset or the settings show at once
     } else {
@@ -1161,6 +1217,16 @@ namespace dxvk {
     }
     s.snapshot = numos::weatherFromSettings(s.current);
     return s.current;
+  }
+
+  void NumosWeather::fillWetnessArgs(WetnessArgs& args) const {
+    if (!m_state->hasCurrent) {
+      return;
+    }
+    for (const auto& parameter : kWetnessParameters) {
+      args.*parameter.member = m_state->wetnessCurrent.*parameter.member;
+    }
+    args.weatherWetnessActive = m_state->wetnessCurrent.weatherWetnessActive;
   }
 
   const numos::WeatherSnapshot* NumosWeather::currentSnapshot() const {
