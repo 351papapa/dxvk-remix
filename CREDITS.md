@@ -129,3 +129,8 @@ Window lighting rules, clock inputs and island emission derive from the same
 local `c17b36af` runtime and saved working-tree changes. The v2 per-instance
 classification, per-slot packing and bounded CPU topology reader are local
 adaptations. Existing NVIDIA shader copyright and MIT notices are retained.
+
+Procedural grass placement, worker generation and GPU selection derive from the
+same local MIT-licensed runtime. The unified retained-scene adapter, Y-up support,
+bounded nonindexed input and v2 batch/template ownership are local adaptations.
+USD loading uses the existing unmodified OpenUSD dependency and its notices.

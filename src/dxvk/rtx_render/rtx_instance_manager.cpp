@@ -1030,7 +1030,7 @@ namespace dxvk {
         currentInstance.surface.wetnessTag = drawCall.wetnessTag;
         currentInstance.surface.sourceWetnessTag = drawCall.wetnessTag;
         currentInstance.surface.wetnessMeshHash = drawCall.wetnessMeshHash;
-        currentInstance.surface.windowSourceTextureHash = drawCall.getMaterialData().getColorTexture().getImageHash();
+        currentInstance.surface.originalTextureHash = drawCall.getMaterialData().getColorTexture().getImageHash();
 
         if (materialData->getType() == MaterialDataType::Opaque)
         {

@@ -56,6 +56,7 @@
 #include "graph/rtx_graph_manager.h"
 #include "rtx_particle_system.h"
 #include "rtx_wetness_dff_rules.h"
+#include "rtx_grass.h"
 #include "rtx_window_light.h"
 
 namespace dxvk 
@@ -212,6 +213,7 @@ namespace fork_hooks {
 // BLAS entries in raytracing terminology.
 class SceneManager : public CommonDeviceObject, public ResourceCache {
   WetnessDffRules m_wetnessDffRules;
+  std::unique_ptr<GrassSystem> m_grass;
   WindowLightState m_windowLights;
   bool m_windowLightsWereEnabled = false;
   friend class ImGUI;
@@ -328,6 +330,10 @@ public:
   Rc<DxvkBuffer> getSurfaceMaterialBuffer() { return m_surfaceMaterialBuffer; }
   Rc<DxvkBuffer> getSurfaceMaterialExtensionBuffer() { return m_surfaceMaterialExtensionBuffer; }
   Rc<DxvkBuffer> getVolumeMaterialBuffer() { return m_volumeMaterialBuffer; }
+  GrassSystem& getGrass() { return *m_grass; }
+  const std::string* getOriginalTextureName(uint64_t hash) const { return m_wetnessDffRules.originalTextureName(hash); }
+  bool submitGrass(const Rc<DxvkContext>& ctx, const std::shared_ptr<const ReplacementBucket>& asset, uint64_t identity, const Matrix4& transform);
+  void retireGrass();
   WindowLightState& getWindowLights() { return m_windowLights; }
   Rc<DxvkBuffer> getSurfaceBuffer() const { return m_accelManager.getSurfaceBuffer(); }
   Rc<DxvkBuffer> getSurfaceMappingBuffer() const { return m_accelManager.getSurfaceMappingBuffer(); }

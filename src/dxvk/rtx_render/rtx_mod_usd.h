@@ -49,6 +49,7 @@ namespace dxvk {
     static const ModTypeInfo& getTypeInfo();
 
     static void loadUsdPlugins();
+    static std::shared_ptr<ReplacementBucket> loadStandaloneMesh(const Rc<DxvkContext>& context, const Mod::Path& path);
 
     RTX_OPTION("rtx.usd", bool, reloadOnChanged, true,
                "Watches for changes to USD files and reloads them in-game when saved. Uses OS file-change notifications (no polling overhead). "

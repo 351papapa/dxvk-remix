@@ -184,6 +184,7 @@ namespace dxvk {
 
     // The scene's own retained instances hear synchronously about every instance that dies, so the pointers they
     // hold never dangle.
+    m_grass = std::make_unique<GrassSystem>();
     m_retainedScene = std::make_unique<RetainedScene>(*this);
     m_gameLights = std::make_unique<GameLights>(*this);
     m_instanceManager.setInstanceFreedHook([this](RtInstance* instance) {
@@ -300,6 +301,7 @@ namespace dxvk {
     ScopedCpuProfileZone();
 
     ++m_clearEpoch;
+    m_grass->clear();
     // The retained scene releases its geometry's buffer slots before the check below.
     m_retainedScene->onSceneClear();
     // The core material records release their table slot too.
@@ -970,6 +972,54 @@ namespace dxvk {
     }
     return nullptr;
   }
+
+  bool SceneManager::submitGrass(const Rc<DxvkContext>& ctx,
+      const std::shared_ptr<const ReplacementBucket>& asset, uint64_t identity, const Matrix4& transform) {
+    constexpr uint64_t domain = 0x47524153535f5553ull;
+    const uint64_t rootHash = XXH64(&identity, sizeof(identity), domain);
+    // The exact-match fast path assumes the transform is part of the identity.
+    // Keep each root in its own tracking bucket so shrinking/fading roots retain identity.
+    const uint64_t hash = XXH64(&transform, sizeof(transform), rootHash);
+    const ReplacementInstance::LookupKey key { hash, rootHash, kEmptyHash, kEmptyHash, transform[3].xyz(), transform };
+    auto* instance = m_drawCallTracker.findOrCreateReplacementInstance(key);
+    if (instance->activeReplacements && instance->activeReplacements != asset) {
+      instance->clear();
+    }
+    const bool created = instance->root.getUntyped() == nullptr;
+    instance->proceduralGrass = true;
+    instance->categoryFlags = CategoryFlags(InstanceCategories::IgnoreAntiCulling).raw();
+    SceneDraw input;
+    input.cameraType = CameraType::Main;
+    auto& transforms = input.modifyTransformData();
+    transforms.objectToWorld = transform;
+    transforms.worldToView = getCamera().getWorldToViewf();
+    transforms.viewToProjection = getCamera().getViewToProjectionf();
+    transforms.objectToView = transforms.worldToView * transform;
+    input.modifyCategoryFlags().set(InstanceCategories::IgnoreAntiCulling);
+    input.modifyMaterialData().setColorTexture(0, TextureRef(), getOrCreateExternalSampler(), 0);
+    input.modifyMaterialData().setColorTexture(1, TextureRef(), getOrCreateExternalSampler(), 0);
+    // Stable clumps need per-frame table registration, not full USD/material translation.
+    if (!created && instance->dirtyFlags.isClear() && RtxOptions::enablePreservePath() &&
+        !RtxOptionManager::isDrawcallTranslationInvalid()) {
+      preserveReplacementInstance(ctx, input, asset, instance);
+    } else {
+      instance->dirtyFlags.clr(ReplacementInstance::kDynamicFeatureMask);
+      MaterialData material(LegacyMaterialData::createDefault());
+      drawReplacements(ctx, &input, asset, material, instance);
+    }
+    instance->frameLastSeen = m_device->getCurrentFrameId();
+    return created;
+  }
+
+  void SceneManager::retireGrass() {
+    const uint32_t frame = m_device->getCurrentFrameId();
+    for (auto& instance : m_drawCallTracker.getReplacementInstances()) {
+      if (instance->proceduralGrass && instance->frameLastSeen != frame) {
+        instance->clear();
+      }
+    }
+  }
+
 
   void SceneManager::submitDrawState(Rc<DxvkContext> ctx, const SceneDraw& input, const MaterialData* overrideMaterialData) {
     ScopedCpuProfileZone();
@@ -2933,7 +2983,7 @@ namespace dxvk {
             if (i + 8 < end) {
               _mm_prefetch(reinterpret_cast<const char*>(&replacementInstances[i + 8]->frameLastSeen), _MM_HINT_T0);
             }
-            if (replacementInstances[i]->frameLastSeen != currentFrameId) {
+            if (!replacementInstances[i]->proceduralGrass && replacementInstances[i]->frameLastSeen != currentFrameId) {
               unseen[chunk].push_back(i);
             }
           }
@@ -2945,7 +2995,7 @@ namespace dxvk {
         }
       } else {
         for (auto& ri : replacementInstances) {
-          if (ri->frameLastSeen == currentFrameId) {
+          if (ri->proceduralGrass || ri->frameLastSeen == currentFrameId) {
             continue;
           }
           preserveUnseen(ri.get());
@@ -2956,6 +3006,20 @@ namespace dxvk {
     }
 
     m_graphManager.applySceneOverrides(ctx);
+    const bool wetnessEnabled = WetnessOptions::enabled();
+    const bool windowsEnabled = WindowLightOptions::enabled();
+    if (wetnessEnabled || windowsEnabled || GrassSystem::enabled()) {
+      auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
+      if (captureFolder.filename() == L".trex") {
+        captureFolder = captureFolder.parent_path();
+      }
+      m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
+        WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
+    }
+
+    m_grass->update(ctx, *this);
+    retireGrass();
+    m_instanceManager.garbageCollection();
 
     m_terrainBaker->prepareSceneData(ctx);
 
@@ -3142,16 +3206,6 @@ namespace dxvk {
     }
 
     // Call on the other managers to prepare their GPU data for the current scene
-    const bool wetnessEnabled = WetnessOptions::enabled();
-    const bool windowsEnabled = WindowLightOptions::enabled();
-    if (wetnessEnabled || windowsEnabled) {
-      auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
-      if (captureFolder.filename() == L".trex") {
-        captureFolder = captureFolder.parent_path();
-      }
-      m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
-        WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
-    }
     if (windowsEnabled) {
       m_windowLights.beginFrame();
     }
@@ -3179,8 +3233,8 @@ namespace dxvk {
               replacementName = texture->m_assetData->info().filename;
             }
           }
-          surface.windowLightClass = m_windowLights.classify(surface.windowSourceTextureHash,
-            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.windowSourceTextureHash), replacementName);
+          surface.windowLightClass = m_windowLights.classify(surface.originalTextureHash,
+            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.originalTextureHash), replacementName);
         }
       }
     }

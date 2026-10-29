@@ -640,6 +640,19 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.graph.enable|bool|True|||Enable graph loading\.  If disabled, all graphs will be unloaded, losing any state\.|
 |rtx.graph.pauseGraphUpdates|bool|False|||Pause graph updating\.  If enabled, graphs logic will not be updated, but graph state will be retained\.|
 |rtx.graphicsPreset|int|5|||Overall rendering preset, higher presets result in higher image quality, lower presets result in better performance\.<br>Environment variable: DXVK\_GRAPHICS\_PRESET\_TYPE|
+|rtx.grass.density|float|0.4|||Grass clumps per square game unit of surface\.|
+|rtx.grass.enabled|bool|False|||Generate USD grass on surfaces selected by original or replacement texture names\.|
+|rtx.grass.fadeDistance|float|5|||Fade local Z inside the range boundary, including the front/rear transition\.|
+|rtx.grass.frontRearRange|bool|False|||Use camera\-facing half discs: front radius R, rear radius R/2\.|
+|rtx.grass.frustumCull|bool|False|||Cull grass outside the expanded camera frustum beyond 6 world units\. Disable to preserve all in\-range grass for offscreen reflections and shadows\.|
+|rtx.grass.groundOffset|float|-0.02|||Root offset along the ground normal\.|
+|rtx.grass.height|float|0.65|||Scale only local Z, aligned with the ground normal\. Does not change width\.|
+|rtx.grass.keepInsideSurface|bool|False|||Inset roots by grass bounds at open mesh edges\. Shared triangle edges are welded\.|
+|rtx.grass.maxInstances|int|256|||Maximum submitted grass clumps \(1\-512\); nearest clumps take priority\.|
+|rtx.grass.maxSlopeDegrees|float|45|||Maximum ground slope in degrees\.|
+|rtx.grass.radius|float|35|||Horizontal camera radius in game units\.|
+|rtx.grass.reloadVersion|int|0|||Increment to reload the grass USD and clear placement caches\.|
+|rtx.grass.width|float|0.65|||Independent local XY scale of the normalized USD grass\.|
 |rtx.gui.backgroundAlpha|float|1|0|1|A value controlling the alpha of the GUI background\.|
 |rtx.gui.compactGui|bool|False|||A setting to toggle between compact and spacious GUI modes\.|
 |rtx.gui.enableExternalPresenter|bool|False|||Enables GUI rendering for external presenters\.|
@@ -1554,6 +1567,9 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.geometryAssetHashRuleString|string|positions,indices,geometrydescriptor|||Defines which hashes we need to include when sampling from replacements and doing USD capture\.|
 |rtx.geometryGenerationHashRuleString|string|positions,indices,texcoords,geometrydescriptor,vertexlayout,vertexshader|||Defines which asset hashes we need to generate via the geometry processing engine\.|
 |rtx.gpuCrashHotkey|virtual keys|CTRL,SHFT,ALT,G|||The hotkey that triggers a GPU crash when the crash hotkey feature is armed\.<br>Default is Ctrl\+Shift\+Alt\+G\.|
+|rtx.grass.assetPath|string||||Grass USD path relative to the host executable directory, or an absolute path\.|
+|rtx.grass.diffuseTextures|string||||Semicolon\-separated replacement diffuse filenames\. Exact, case\-insensitive matching\.|
+|rtx.grass.originalTextures|string||||Exact captured texture names for unreplaced geometry, resolved through logs/DffDrawCalls captures\. Ambiguous names are skipped\.|
 |rtx.gui.donateUrl|string||||A link the welcome window, the About tab and the top of the user graphics menu show as a Donate button\. Empty hides the button\. Only https links are opened\.|
 |rtx.gui.logHelpText|string||||The instructions the log section of the menus shows above the log folder, such as which file to send with a bug report and where to send it\.<br>Empty shows a short generic instruction\.|
 |rtx.gui.productName|string|Remix Plus|||The product name the menus show to the player: in the startup message, the welcome window, the developer menu title and the About tab\.<br>A game's rtx\.conf can set it to the name of its RTX release\. The license text keeps the name RTX Remix\.|

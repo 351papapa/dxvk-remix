@@ -199,6 +199,7 @@ struct ReplacementInstance {
   // rtx.retainedSteadyFastPath: a retained entry caches a pointer to this instance. Its
   // destruction or re-keying then bumps DrawCallTracker::getRetainedSteadyEpoch().
   bool retainedSteady = false;
+  bool proceduralGrass = false;
   XXH64_hash_t spatialCacheTransformHash = kEmptyHash;
 
   // The replacement data this RI was set up with. Used to detect when replacements

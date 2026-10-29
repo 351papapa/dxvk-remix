@@ -28,6 +28,7 @@
 #include <cwctype>
 
 #include "rtx_mod_usd.h"
+#include <pxr/usd/usdGeom/metrics.h>
 #include "rtx_asset_replacer.h"
 #include "../../lssusd/curve_utils.h"
 
@@ -113,6 +114,7 @@ public:
   {}
 
   ~Impl();
+  std::shared_ptr<ReplacementBucket> loadStandaloneMesh(const Rc<DxvkContext>& context);
 
   void load(const Rc<DxvkContext>& context);
   void unload();
@@ -2454,6 +2456,87 @@ bool UsdMod::Impl::processMesh(const pxr::UsdPrim& prim, Args& args) {
   }
 
   return true;
+}
+
+std::shared_ptr<ReplacementBucket> UsdMod::Impl::loadStandaloneMesh(const Rc<DxvkContext>& context) {
+  auto stage = pxr::UsdStage::Open(m_owner.m_filePath.string(), pxr::UsdStage::LoadAll);
+  if (!stage) {
+    throw DxvkError("Grass USD could not be opened");
+  }
+  auto root = stage->GetDefaultPrim();
+  if (!root) {
+    throw DxvkError("Grass USD requires a default prim");
+  }
+  AssetReplacements assets;
+  auto bucket = std::make_shared<ReplacementBucket>();
+  pxr::UsdGeomXformCache transforms;
+  Args args { context, transforms, root, bucket->replacements, {}, &assets };
+  processReplacementRecursive(args, root, true);
+  auto& meshes = bucket->replacements;
+  std::vector<AssetReplacement> meshOnly;
+  for (const auto& mesh : meshes) {
+    if (mesh.type == AssetReplacement::eMesh && mesh.geometry && mesh.materialData) {
+      meshOnly.push_back(mesh);
+    }
+  }
+  meshes.swap(meshOnly);
+  if (meshes.empty()) {
+    throw DxvkError("Grass USD has no meshes with supported materials");
+  }
+  Matrix4 axis;
+  if (pxr::UsdGeomGetStageUpAxis(stage) == pxr::UsdGeomTokens->y) {
+    axis[1] = Vector4(0, 0, 1, 0);
+    axis[2] = Vector4(0, -1, 0, 0);
+  }
+  AxisAlignedBoundingBox bounds;
+  for (auto& mesh : meshes) {
+    if (mesh.geometry->data.numBonesPerVertex || mesh.instancesToObject) {
+      throw DxvkError("Grass prototype must be a static mesh, not skinned or point-instanced");
+    }
+    mesh.replacementToObject = axis * mesh.replacementToObject;
+    const auto& box = mesh.geometry->data.boundingBox;
+    for (unsigned i = 0; i < 8; ++i) {
+      const Vector3 p = (mesh.replacementToObject * Vector4(
+        (i & 1) ? box.maxPos.x : box.minPos.x,
+        (i & 2) ? box.maxPos.y : box.minPos.y,
+        (i & 4) ? box.maxPos.z : box.minPos.z, 1)).xyz();
+      bounds.minPos = min(bounds.minPos, p);
+      bounds.maxPos = max(bounds.maxPos, p);
+    }
+    if (mesh.materialData->getType() == MaterialDataType::Opaque) {
+      auto& material = mesh.materialData->getOpaqueMaterialData();
+      if (material.getUseLegacyAlphaState()) {
+        material.setUseLegacyAlphaState(false);
+        material.setBlendEnabled(false);
+        material.setAlphaTestType(AlphaTestType::kGreater);
+        material.setAlphaTestReferenceValue(128);
+      }
+    }
+    mesh.particleSystem.reset();
+    mesh.categories = Categorizer {};
+    mesh.geometry->data.cullMode = VK_CULL_MODE_NONE;
+    mesh.geometry->data.forceCullBit = true;
+  }
+  const float height = bounds.maxPos.z - bounds.minPos.z;
+  if (!bounds.isValid() || !std::isfinite(height) || height < 0.00001f) {
+    throw DxvkError("Grass USD has invalid bounds");
+  }
+  const Vector3 anchor((bounds.minPos.x + bounds.maxPos.x) * 0.5f,
+                       (bounds.minPos.y + bounds.maxPos.y) * 0.5f, bounds.minPos.z);
+  Matrix4 normalize;
+  normalize[0].x = normalize[1].y = normalize[2].z = 1.0f / height;
+  normalize[3] = Vector4(-anchor / height, 1);
+  for (auto& mesh : meshes) {
+    mesh.replacementToObject = normalize * mesh.replacementToObject;
+  }
+  Logger::info(str::format("[Grass] Loaded ", m_owner.m_filePath.string(), ": ", meshes.size(),
+                          " meshes; original height ", height, "; normalized base to Z=0, height=1."));
+  return bucket;
+}
+
+std::shared_ptr<ReplacementBucket> UsdMod::loadStandaloneMesh(const Rc<DxvkContext>& context, const Mod::Path& path) {
+  UsdMod mod(path);
+  return mod.m_impl->loadStandaloneMesh(context);
 }
 
 UsdMod::UsdMod(const Mod::Path& usdFilePath)

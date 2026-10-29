@@ -30,6 +30,15 @@ Entry format:
 
 ## 2026-10-29
 
+### Procedural grass on retained scenes
+Restore opt-in USD grass placement and GPU instance selection on the v2 unified
+scene. Original retained ground and replacement meshes use the same placement
+pipeline, with Y-up/Z-up world handling and independent template slots.
+- Options: added `rtx.grass.*`; the master and optional culling/insetting switches
+  default off. Numeric controls author content and are preset-independent.
+- Validation: release build, three CPU suites, 17 grass GPU cases and two window/wetness regressions. Game performance acceptance remains pending.
+- Docs: [RemixProceduralGrass.md](../documentation/RemixProceduralGrass.md).
+
 ### Window and street-lamp emission
 Restore opt-in random window emission and host-clock lamp control on the v2
 scene path. Window patterns remain stable across midnight; daytime lamps now

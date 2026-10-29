@@ -352,7 +352,7 @@ struct RtSurface {
   uint32_t wetnessTag = 0;
   uint32_t sourceWetnessTag = 0;
   uint64_t wetnessMeshHash = 0;
-  uint64_t windowSourceTextureHash = 0;
+  uint64_t originalTextureHash = 0;
   uint8_t windowLightClass = 0;
   bool isPreservePath = false;
   bool hasMaterialChanged = false;

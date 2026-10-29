@@ -40,6 +40,7 @@
 #include "implot.h"
 #include "imgui_remix_exports.h"
 #include "dxvk_imgui.h"
+#include "../rtx_render/rtx_grass.h"
 #include "rtx_fault_notice.h"
 #include "rtx_render/rtx_imgui.h"
 #include "dxvk_device.h"
@@ -821,6 +822,30 @@ namespace dxvk {
   void ImGUI::showMaterialOptions() {
     if (RemixGui::CollapsingHeader("Material Options (optional)", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
+
+      if (RemixGui::CollapsingHeader("Procedural Grass", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enable grass", &GrassSystem::enabledObject());
+        RemixGui::InputText("Grass USD path", &GrassSystem::assetPathObject());
+        RemixGui::InputText("Replacement texture names", &GrassSystem::diffuseTexturesObject());
+        RemixGui::InputText("Original texture names", &GrassSystem::originalTexturesObject());
+        RemixGui::DragFloat("Radius", &GrassSystem::radiusObject(), 0.1f, 1.0f, 200.0f);
+        RemixGui::Checkbox("Front/rear range", &GrassSystem::frontRearRangeObject());
+        RemixGui::Checkbox("Cull distant offscreen grass", &GrassSystem::frustumCullObject());
+        RemixGui::DragFloat("Clumps per square unit", &GrassSystem::densityObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Height", &GrassSystem::heightObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Width", &GrassSystem::widthObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Maximum slope degrees", &GrassSystem::maxSlopeDegreesObject(), 0.1f, 0.0f, 80.0f);
+        RemixGui::DragFloat("Boundary fade distance", &GrassSystem::fadeDistanceObject(), 0.1f, 0.01f, 200.0f);
+        RemixGui::DragFloat("Root offset", &GrassSystem::groundOffsetObject(), 0.001f, -1.0f, 1.0f);
+        RemixGui::Checkbox("Keep inside surface", &GrassSystem::keepInsideSurfaceObject());
+        RemixGui::SliderInt("Instance budget", &GrassSystem::maxInstancesObject(), 1, 512);
+        RemixGui::InputInt("Reload version", &GrassSystem::reloadVersionObject());
+        const auto& grass = m_device->getCommon()->getSceneManager().getGrass();
+        ImGui::TextWrapped("%s", grass.m_status.c_str());
+        ImGui::Text("Ground surfaces: %zu | Candidates: %zu | GPU slots: %zu", grass.m_matchedSurfaces, grass.m_candidateCount, grass.m_visibleClumps);
+        ImGui::Unindent();
+      }
 
       if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
         ImGui::Indent();

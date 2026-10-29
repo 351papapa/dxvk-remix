@@ -35,6 +35,8 @@
 #include "rtx_opacity_micromap_manager.h"
 #include "rtx_scene_manager.h"
 #include "rtx_accel_manager.h"
+#include "rtx_grass.h"
+#include "rtx_grass_gpu.h"
 #include "rtx_point_instancer_system.h"
 #include "rtx_scene_interface.h"
 
@@ -2555,6 +2557,11 @@ namespace dxvk {
   }
 
   namespace {
+    bool isProceduralGrass(const RtInstance* instance) {
+      const auto* owner = const_cast<RtInstance*>(instance)->getPrimInstanceOwner().getReplacementInstance();
+      return owner && owner->proceduralGrass;
+    }
+
     bool isSkinnedGeometry(const BlasEntry& entry) {
       return entry.input.getSkinningState().numBones != 0 && entry.input.getGeometryData().numBonesPerVertex != 0;
     }
@@ -2702,7 +2709,7 @@ namespace dxvk {
             }
           } else {
             const uint32_t n = uint32_t(inst->surface.instancesToObject->size());
-            c.surfaces += n;
+            c.surfaces += n + (isProceduralGrass(inst) ? 1u : 0u);
             c.piSlots[unordered ? Tlas::Unordered : Tlas::Opaque] += n;
             c.batches += 1;
             if (!unordered && inst->isSubsurface()) {
@@ -2784,13 +2791,15 @@ namespace dxvk {
             // addPointInstancerBlas
             const auto& transforms = inst->surface.instancesToObject;
             const uint32_t instanceCount = uint32_t(transforms->size());
+            const bool grass = isProceduralGrass(inst);
+            const uint32_t surfaceSlots = instanceCount + (grass ? 1u : 0u);
             const uint32_t surfaceIndex = cursor.surfaces;
             inst->surface.surfaceIndexOfFirstInstance = surfaceIndex;
-            for (uint32_t k = 0; k < instanceCount; ++k) {
+            for (uint32_t k = 0; k < surfaceSlots; ++k) {
               m_reorderedSurfaces[surfaceIndex + k] = inst;
               m_reorderedSurfacesFirstIndexOffset[surfaceIndex + k] = 0;
             }
-            cursor.surfaces += instanceCount;
+            cursor.surfaces += surfaceSlots;
             const auto primaryType = unordered ? Tlas::Unordered : Tlas::Opaque;
             const uint32_t firstIndexInType = cursor.piSlots[primaryType];
             cursor.piSlots[primaryType] += instanceCount;
@@ -2800,6 +2809,8 @@ namespace dxvk {
               flags ^= VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
             }
             PointInstancerBatch batch {};
+            batch.proceduralGrass = grass;
+            batch.grassBatchId = inst->getCacheIdentity();
             batch.transforms = transforms;
             batch.objectToWorld = inst->surface.objectToWorld;
             batch.prevObjectToWorld = inst->surface.prevObjectToWorld;
@@ -2863,7 +2874,8 @@ namespace dxvk {
         for (size_t i = 0; i < parallelBatches.size(); ++i) {
           const PointInstancerBatch& a = parallelBatches[i];
           const PointInstancerBatch& b = m_pointInstancerBatches[batchBase + i];
-          if (a.transforms != b.transforms || a.instanceCount != b.instanceCount || a.baseSurfaceIndex != b.baseSurfaceIndex ||
+          if (a.proceduralGrass != b.proceduralGrass || a.grassBatchId != b.grassBatchId ||
+              a.transforms != b.transforms || a.instanceCount != b.instanceCount || a.baseSurfaceIndex != b.baseSurfaceIndex ||
               a.firstIndexInType != b.firstIndexInType || a.tlasType != b.tlasType || a.blasReference != b.blasReference ||
               a.customIndexFlags != b.customIndexFlags || a.instanceMask != b.instanceMask || a.sbtOffsetAndFlags != b.sbtOffsetAndFlags ||
               std::memcmp(&a.objectToWorld, &b.objectToWorld, sizeof(Matrix4)) != 0 || a.fromHost != b.fromHost) {
@@ -3368,7 +3380,20 @@ namespace dxvk {
     RtxPointInstancerSystem& system = m_device->getCommon()->metaPointInstancerSystem();
     const Vector3 cameraPos = cameraManager.getMainCamera().getPosition();
 
-    system.dispatchCulling(ctx, m_vkInstanceBuffer, m_surfaceBuffer, surfaceMaterialBuffer, m_pointInstancerBatches, cameraPos);
+    const bool hasGrass = std::any_of(m_pointInstancerBatches.begin(), m_pointInstancerBatches.end(),
+      [](const auto& batch) { return batch.proceduralGrass; });
+    if (hasGrass) {
+      std::vector<PointInstancerBatch> regularBatches;
+      for (const auto& batch : m_pointInstancerBatches) {
+        if (!batch.proceduralGrass) { regularBatches.push_back(batch); }
+      }
+      system.dispatchCulling(ctx, m_vkInstanceBuffer, m_surfaceBuffer, surfaceMaterialBuffer, regularBatches, cameraPos);
+      if (auto* grass = m_device->getCommon()->getSceneManager().getGrass().gpu()) {
+        grass->dispatch(ctx, m_vkInstanceBuffer, m_surfaceBuffer, surfaceMaterialBuffer, m_surfaceMappingBuffer, m_pointInstancerBatches);
+      }
+    } else {
+      system.dispatchCulling(ctx, m_vkInstanceBuffer, m_surfaceBuffer, surfaceMaterialBuffer, m_pointInstancerBatches, cameraPos);
+    }
   }
 
   // rtx.accelIncrementalSelfCheckFrames ([PointInstancerCheck]). The GPU culling pass writes every
@@ -3410,7 +3435,8 @@ namespace dxvk {
       }
       ++writingBatches;
       const size_t base = batch.baseSurfaceIndex;
-      if (batch.transforms == nullptr || base + count > surfaceCount) {
+      const uint32_t slots = count + (batch.proceduralGrass ? 1u : 0u);
+      if (batch.transforms == nullptr || base + slots > surfaceCount) {
         ++batchErrors;
         continue;
       }
@@ -3419,8 +3445,8 @@ namespace dxvk {
       bool ok = surface.surfaceIndexOfFirstInstance == base &&
         batch.transforms->size() >= count &&
         (base == 0 || m_reorderedSurfaces[base - 1] != instance) &&
-        (base + count == surfaceCount || m_reorderedSurfaces[base + count] != instance);
-      for (uint32_t k = 1; ok && k < count; ++k) {
+        (base + slots == surfaceCount || m_reorderedSurfaces[base + slots] != instance);
+      for (uint32_t k = 1; ok && k < slots; ++k) {
         ok = m_reorderedSurfaces[base + k] == instance;
       }
       const BlasEntry* blas = instance->getBlas();
@@ -3442,7 +3468,7 @@ namespace dxvk {
         ++overlaps;
       }
       written[base] = 1;
-      for (uint32_t k = 1; k < count; ++k) {
+      for (uint32_t k = 1; k < slots; ++k) {
         if (written[base + k] != 0) {
           ++overlaps;
           break;
@@ -4623,6 +4649,8 @@ namespace dxvk {
     // surface/material ID in customInstanceIndex.  Only the first slot is
     // fully populated on the CPU; the GPU culling shader copies the template
     // surface data and patches per-instance transforms for the rest.
+    const bool grass = isProceduralGrass(rtInstance);
+    const uint32_t templateSlots = grass ? 1u : 0u;
     const auto& transforms = rtInstance->surface.instancesToObject;
     uint32_t instanceCount = static_cast<uint32_t>(transforms->size());
 
@@ -4635,8 +4663,8 @@ namespace dxvk {
     // Exceeding SURFACE_INDEX_MAX_VALUE would cause the GPU culling shader to write
     // truncated customInstanceIndex values, leading to surface/material aliasing or OOB access.
     // An empty instancer needs no slot. The instanceCount check keeps 0 - 1 from wrapping.
-    if (instanceCount != 0 && surfaceIndex + instanceCount - 1 > SURFACE_INDEX_MAX_VALUE) {
-      const uint32_t maxAllowed = (surfaceIndex <= SURFACE_INDEX_MAX_VALUE) ? (SURFACE_INDEX_MAX_VALUE - surfaceIndex + 1) : 0;
+    if (instanceCount != 0 && uint64_t(surfaceIndex) + instanceCount + templateSlots - 1 > SURFACE_INDEX_MAX_VALUE) {
+      const uint32_t maxAllowed = (uint64_t(surfaceIndex) + templateSlots <= SURFACE_INDEX_MAX_VALUE) ? (SURFACE_INDEX_MAX_VALUE - surfaceIndex + 1 - templateSlots) : 0;
       ONCE(Logger::err(str::format("DxvkRaytrace: PointInstancer needs ", instanceCount, " surface slots starting at ", surfaceIndex, " but only ", maxAllowed,
                                    " fit within SURFACE_INDEX_MAX_VALUE (", SURFACE_INDEX_MAX_VALUE, "). Clamping to ", maxAllowed, " instances.")));
       instanceCount = maxAllowed;
@@ -4646,8 +4674,8 @@ namespace dxvk {
     }
 
     rtInstance->surface.surfaceIndexOfFirstInstance = surfaceIndex;
-    m_reorderedSurfaces.insert(m_reorderedSurfaces.end(), instanceCount, rtInstance);
-    m_reorderedSurfacesFirstIndexOffset.insert(m_reorderedSurfacesFirstIndexOffset.end(), instanceCount, 0);
+    m_reorderedSurfaces.insert(m_reorderedSurfaces.end(), instanceCount + templateSlots, rtInstance);
+    m_reorderedSurfacesFirstIndexOffset.insert(m_reorderedSurfacesFirstIndexOffset.end(), instanceCount + templateSlots, 0);
 
     // Determine TLAS type
     const bool isUnordered = rtInstance->usesUnorderedApproximations() &&
@@ -4667,6 +4695,8 @@ namespace dxvk {
 
     // Record batch for GPU dispatch
     PointInstancerBatch batch {};
+    batch.proceduralGrass = grass;
+    batch.grassBatchId = rtInstance->getCacheIdentity();
     batch.transforms = transforms;
     batch.objectToWorld = rtInstance->surface.objectToWorld;
     batch.prevObjectToWorld = rtInstance->surface.prevObjectToWorld;

@@ -63,6 +63,8 @@ namespace dxvk {
     * Consumed by dispatchCulling() to drive the GPU compute.
     */
   struct PointInstancerBatch {
+    bool proceduralGrass = false;
+    uint64_t grassBatchId = 0;
     std::shared_ptr<const std::vector<Matrix4>> transforms; // Source instanceToObject transforms (CPU data, uploaded per batch)
     Matrix4 objectToWorld;                         // Object-to-world for this instancer
     Matrix4 prevObjectToWorld;                     // Previous-frame object-to-world (for motion vectors in surface data)
