@@ -85,9 +85,11 @@ namespace dxvk {
   void testPresetBlend() {
     WetnessArgs base;
     base.puddleWaveStrength = 0.25f;
+    base.waterWaveStrength = 0.4f;
     WetnessPreset preset;
     size_t rain = 0;
     size_t wave = 0;
+    size_t waterWave = 0;
     for (size_t i = 0; i < std::size(kWetnessParameters); ++i) {
       if (kWetnessParameters[i].member == &WetnessArgs::weatherWetness) {
         rain = i;
@@ -95,10 +97,14 @@ namespace dxvk {
       if (kWetnessParameters[i].member == &WetnessArgs::puddleWaveStrength) {
         wave = i;
       }
+      if (kWetnessParameters[i].member == &WetnessArgs::waterWaveStrength) {
+        waterWave = i;
+      }
     }
     preset.values[rain] = 0.2f;
     preset.values[wave] = 2.0f;
     preset.relative[wave] = true;
+    preset.values[waterWave] = 0.8f;
     WetnessArgs rainy = base;
     preset.apply(rainy);
     require(rainy.weatherWetnessActive == 65535 && rainy.puddleWaveStrength == 0.5f,
@@ -106,7 +112,8 @@ namespace dxvk {
     const WetnessArgs half = WetnessPreset::blend(base, rainy, 0.5f);
     require(half.weatherWetnessActive == 32768 && std::abs(half.weatherWetness - 0.2f) < 0.0001f,
       "Unconfigured rain blended as a constant instead of retaining the instance tag");
-    require(std::abs(half.puddleWaveStrength - 0.375f) < 0.0001f, "Wetness parameter did not interpolate");
+    require(half.puddleWaveStrength == rainy.puddleWaveStrength, "Incoming puddle waveform changed during transition");
+    require(std::abs(half.waterWaveStrength - 0.6f) < 0.0001f, "Linear wetness parameter did not interpolate");
     const WetnessArgs start = WetnessPreset::blend(base, rainy, 0);
     const WetnessArgs end = WetnessPreset::blend(base, rainy, 1);
     require(start.weatherWetnessActive == 0 && end.weatherWetnessActive == 65535, "Rain override endpoints changed");
