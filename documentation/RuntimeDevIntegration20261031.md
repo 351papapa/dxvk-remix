@@ -50,8 +50,12 @@ same source revision.
 
 ## Validation scope
 
-Build the release runtime twice so generated shader headers are relinked, and
-build both bridge architectures. Run the existing standalone runtime tests in
+Use `--buildtype release -Drelease_build=true -Denable_d3d11=true
+-Denable_dxgi=true -Denable_tracy=false`, matching the installed baseline. The
+unified D3D9 module exports D3D11/DXGI entry points and therefore needs those
+frontends enabled. `release_build=true` also runs the official SPIR-V optimizer
+and validator. Build twice so generated shader headers are relinked, and build
+both bridge architectures. Run the existing standalone runtime tests in
 `_Comp64UnitTest` and bridge logic/payload tests in their architecture-specific
 directories. Verify cross-architecture API serialization and streaming before
 testing the game. A source merge or successful compilation alone does not
