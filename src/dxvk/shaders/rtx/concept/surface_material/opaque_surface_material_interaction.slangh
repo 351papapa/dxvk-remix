@@ -1109,7 +1109,7 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
         }
       }
 
-      if (wetClass == 2u && !roughnessOnly) {
+      if (wetClass == 2u && !roughnessOnly && wetPuddleMask > 0.0f) {
         const float flatW = wetUpNormal(surfaceInteraction.geometryNormal);
         const float flatness = saturate((flatW - 0.55f) / 0.45f);
         const float camDist = length(surfaceInteraction.position - cameraGetWorldPosition(cb.camera));

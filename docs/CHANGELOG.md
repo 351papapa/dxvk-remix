@@ -1,5 +1,23 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Skip road ripples outside puddle coverage
+
+Skip the GPU ripple neighborhood when road puddle coverage is exactly zero.
+The block already gates its material writes on a coverage-scaled positive mask;
+positive coverage, puddle edges and the other wetness classes keep their paths.
+No options or presets change, and the work remains on the GPU.
+
+Release-optimized GPU outputs matched bit for bit for 131,072 extracted-code
+cases, including 135 active ripple cases. Only 556 wetness shader binaries
+changed; the other 1,039 Slang binaries remained identical.
+One 60-second warmup and one 300-second Vice City route per configuration gave
+33.091 → 33.475 base FPS (30.219 → 29.873 ms), 1% low 17.876 → 18.281 FPS,
+P99 49.099 → 46.613 ms, and 87 → 66 frames over 50 ms. Both had no frames over
+100 ms. This is a small single-run observation, not a statistically established
+percentage gain. Rendering settings and the other installed modules were fixed.
+Validated binary source: `285aea91` (`build/20261031-wetness-zero`). This entry
+is recorded with the shader change; it adds no further runtime code.
+
 ## Local runtime integration — 2026-10-31
 
 Merged upstream main and then dev while preserving the integrated GPU features.
