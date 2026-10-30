@@ -138,6 +138,11 @@ struct CompositeArgs {
   float cloudMotionVectorCoverage;
   // The depth a primary miss writes (RaytraceArgs::clearColorDepth). Cloud depth never lies beyond it.
   float cloudMotionVectorMissDepth;
-  // Reuses the former trailing pad; the CompositeArgs size and all preceding offsets stay unchanged.
+  // Particle volume gain shares the cloud-motion row; the SAB search controls follow in their own row.
   float stochasticAlphaBlendRadianceVolumeFroxelGain;
+
+  uint stochasticAlphaBlendAverageSearchMatches;
+  uint alphaBlendSearchPad0;
+  uint alphaBlendSearchPad1;
+  uint alphaBlendSearchPad2;
 };

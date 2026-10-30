@@ -19,7 +19,7 @@ The hemisphere samples use world Y-up or Z-up from the renderer and call `skyPro
 
 ## Layout and verification
 
-RaytraceArgs uses its existing eight trailing padding bytes for two scalar fields after softOmmFlags: consumer scale at8776 and raw scale at8780. Its size remains8784; prior fields are unchanged. CompositeArgs reuses unused trailing padding at5756 and remains5760bytes. Independent C++ header objects and the SPIR-V layout probe agree on every offset. Rebuild binaries and shaders together.
+RaytraceArgs places the two scalar fields after softOmmFlags: consumer scale at8792 and raw scale at8796, with a total size of8800bytes. CompositeArgs places the particle froxel gain at5772 and the SAB average-search control at5776, with a total size of5792bytes. The dev NUMOS AtmosphereArgs is1440bytes (16bytes larger than the previous pin), shifting both structures' later fields; the SAB controls add another16bytes to CompositeArgs. CPU objects and the SPIR-V layout probe agree on these offsets. Rebuild binaries and shaders together.
 
 The opaque hemisphere path is a compile-time GBuffer feature selected by `rtx.particles.skyAmbientHemisphere`; it needs no constant-buffer boolean. Each existing GBuffer variant has independent wetness and particle-sky axes. The selector uses actual wetness variants for slim, compact, validation, decal and PSR preparation paths as well as the standard path. Sky-lit surface resolution is enabled in the GBuffer resolver; passes that include only the generic resolver do not compile the sky branch.
 

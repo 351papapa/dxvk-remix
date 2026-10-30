@@ -13,6 +13,9 @@ For the local fixed-width catalog and captured-surface bridge extension used by 
 For local bridge persistent-light capability negotiation, see
 [`RemixBridgeCapabilities.md`](../documentation/RemixBridgeCapabilities.md).
 
+To get the best CPU and GPU performance from an integration, see
+[`RemixApi-Performance.md`](RemixApi-Performance.md).
+
 For SDK setup and the high-level mental model, see
 [`RemixSDK.md`](RemixSDK.md). For per-subsystem string-keyed conventions
 that ride on top of the API (weather, etc.), see the
@@ -812,6 +815,7 @@ For the dated change log, see
 ## See also
 
 - [`RemixApi-Migration.md`](RemixApi-Migration.md) — moving an integration from `rebased-9-19` to this API.
+- [`RemixApi-Performance.md`](RemixApi-Performance.md) — getting the best CPU and GPU performance from an integration.
 - [`RemixSDK.md`](RemixSDK.md) — SDK setup, mental model, minimal C example.
 - [`RemixApiChangelog.md`](RemixApiChangelog.md) — dated API change log.
 - [`RemixConfig.md`](RemixConfig.md) — `RtxOptions` config-layer architecture.

@@ -42,3 +42,13 @@ Disabled variants retain their names and enabled variants append `_wetness` befo
 The existing matrix selector keys remain unchanged. `GET_WETNESS_SHADER_VARIANT` and `WETNESS_SHADER_SOURCE`
 select the enabled binary using the authored master option. The feature declaration must appear before any
 variant declaration. This also covers passes whose entry point includes another entry point.
+
+## Slim variant tables
+
+The RayQuery G-buffer picks a slim kernel per frame from the table in `src/dxvk/rtx_render/rtx_pathtracer_gbuffer_variants.h`. A feature that changes the G-buffer's feature set (the `gbuffer_rayquery` features axis) or its mode key must either add slim entries for the new combinations or add a case to `kGbufferExpectedFull` with a one-line reason. Otherwise frames with that feature run the Full kernels without saying so.
+
+Two checks enforce this:
+- a `static_assert` in `rtx_pathtracer_gbuffer.cpp` fails the build when a combination of the frame inputs (scene 0) has neither;
+- the unit test `test_gbuffer_variant_coverage` walks every combination, including every scene bit the table can remove, and lists the gaps.
+
+At runtime, a frame whose table entry is Full logs a one-time `[GBuffer] A frame fell back to the Full G-buffer kernels` warning with its feature variant, mode key and blocking entry, and the `[Perf]` summary shows each slim level's share of the frames.
