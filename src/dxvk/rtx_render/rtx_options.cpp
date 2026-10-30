@@ -39,6 +39,7 @@
 
 #include "dxvk_device.h"
 #include "rtx_global_volumetrics.h"
+#include "rtx_point_instancer_system.h"
 #include "rtx_scene_manager.h"
 #include "rtx_sharc.h"
 #include "rtx_fork_sccr_shell.h"
@@ -541,6 +542,11 @@ namespace dxvk {
     {
       std::lock_guard<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
       DxvkDLFG::litePreset.disableLayerValue(RtxOptionLayer::getQualityLayer());
+    }
+
+    if (graphicsPreset() != GraphicsPreset::Custom) {
+      rtxdiRayQuery.localSphereInitialSampleCount.setDeferred(0);
+      RtxPointInstancerSystem::frustumCull.setDeferred(false);
     }
 
     if (graphicsPreset() == GraphicsPreset::Ultra) {

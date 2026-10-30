@@ -24,6 +24,7 @@
 #include "rtx_numos_settings.h"
 #include "rtx_numos_weather.h"
 #include "rtx_precipitation.h"
+#include "rtx_global_volumetrics.h"
 #include "rtx_photometer.h"
 #include "rtx_scene_manager.h"
 #include "../dxvk_context.h"
@@ -1507,6 +1508,59 @@ namespace dxvk {
           if (ImGui::Checkbox("Multiply color", &p.precipitation.colorRelative)) { p.dirty = true; }
         }
       }
+      if (ImGui::CollapsingHeader("Volumetric fog")) {
+        const auto defaults = RtxGlobalVolumetrics::baseWeatherState();
+        ImGui::TextWrapped("Requires Weather controls volumetric fog. Unset fields inherit global volumetrics. Fog simulation and lighting run on the GPU.");
+        ImGui::PushID("VolumetricWeather");
+        for (size_t i = 0; i < p.volumetric.values.size(); ++i) {
+          const auto& parameter = kVolumetricWeatherParameters[i];
+          ImGui::PushID(parameter.name);
+          bool enabled = p.volumetric.values[i].has_value();
+          if (ImGui::Checkbox(parameter.name, &enabled)) {
+            p.volumetric.values[i] = enabled ? std::optional<float>(defaults.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120.0f);
+            const float minimum = p.volumetric.relative[i] ? 0.0f : parameter.minimum;
+            const float maximum = p.volumetric.relative[i] ? 100.0f : parameter.maximum;
+            if (ImGui::DragFloat("##value", &*p.volumetric.values[i], 0.01f, minimum, maximum, "%.3f", kClamp)) { p.dirty = true; }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Multiply", &p.volumetric.relative[i])) { p.dirty = true; }
+          }
+          ImGui::PopID();
+        }
+        for (size_t i = 0; i < p.volumetric.colors.size(); ++i) {
+          const auto& parameter = kVolumetricWeatherColors[i];
+          ImGui::PushID(parameter.name);
+          bool enabled = p.volumetric.colors[i].has_value();
+          if (ImGui::Checkbox(parameter.name, &enabled)) {
+            p.volumetric.colors[i] = enabled ? std::optional<Vector3>(defaults.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            if (ImGui::ColorEdit3("##color", p.volumetric.colors[i]->data)) { p.dirty = true; }
+            if (ImGui::Checkbox("Multiply", &p.volumetric.colorRelative[i])) { p.dirty = true; }
+          }
+          ImGui::PopID();
+        }
+        for (size_t i = 0; i < p.volumetric.switches.size(); ++i) {
+          const auto& parameter = kVolumetricWeatherSwitches[i];
+          ImGui::PushID(parameter.name);
+          bool enabled = p.volumetric.switches[i].has_value();
+          if (ImGui::Checkbox(parameter.name, &enabled)) {
+            p.volumetric.switches[i] = enabled ? std::optional<bool>(defaults.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("On", &*p.volumetric.switches[i])) { p.dirty = true; }
+          }
+          ImGui::PopID();
+        }
+        ImGui::PopID();
+      }
       if (ImGui::CollapsingHeader("Wet surfaces")) {
         WetnessArgs defaults;
         WetnessOptions::fillShaderParams(defaults);
@@ -1843,6 +1897,7 @@ namespace dxvk {
       ImGui::EndDisabled();
       ImGui::SameLine();
       RemixGui::Checkbox("Follow game weather", &NumosWeather::followGameObject());
+      RemixGui::Checkbox("Weather controls volumetric fog", &NumosWeather::controlVolumetricFogObject());
       ImGui::SameLine();
       ImGui::SetNextItemWidth(120.0f);
       RemixGui::DragFloat("Ease (s)", &NumosWeather::transitionSecondsObject(), 0.1f, 0.0f, 600.0f, "%.1f", kClamp);

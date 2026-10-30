@@ -27,7 +27,17 @@
 //!variant rtxdi_temporal_reuse_no_portals.comp
 //!>       RTXDI_NO_PORTALS=1
 
+//!variant rtxdi_temporal_reuse_local_spheres.comp
+//!>       RTXDI_NO_PORTALS=0 ENABLE_LOCAL_SPHERES=1
+
+//!variant rtxdi_temporal_reuse_no_portals_local_spheres.comp
+//!>       RTXDI_NO_PORTALS=1 ENABLE_LOCAL_SPHERES=1
+
 //!end-variants
+
+#ifndef ENABLE_LOCAL_SPHERES
+#define ENABLE_LOCAL_SPHERES 0
+#endif
 
 #define USE_32BIT_RAY_DIRECTION 1
 #define RAB_HAS_PREVIOUS_GBUFFER 1
@@ -102,6 +112,12 @@ void reprojectInactivePixelReservoir(int2 pixelCoordinate) {
   RAB_StoreReservoir(reservoir, pixelCoordinate, RTXDI_GetTemporalOutputPage());
 }
 
+#if ENABLE_LOCAL_SPHERES
+layout(binding = RTXDI_REUSE_BINDING_LOCAL_LIGHTS_INPUT)
+StructuredBuffer<uint2> LocalSphereCandidates;
+
+#endif
+
 // The pass can be launched over the active-pixel list, which counts groups of the consumer group size.
 #if COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_X != 16 || COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_Y != 8
 #error "The RTXDI passes run 16x8 groups, which must match COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_X / _Y."
@@ -161,6 +177,10 @@ void main(int2 threadIndex : SV_DispatchThreadID)
     RTXDI_SkipRandomLightsRng(rng);
     RTXDI_SkipSingleLightRng(rng, previousBestLightIndex);
     RAB_SkipRandoms(rng, 1);
+#if ENABLE_LOCAL_SPHERES
+    const uint localCount = min(LocalSphereCandidates[0].x, 64u);
+    if (localCount) { RAB_SkipRandoms(rng, localCount * 3u + 1u); }
+#endif
   }
 
   const float3 virtualMotionVector = PrimaryVirtualMotionVector[pixelCoordinate].xyz;

@@ -132,7 +132,6 @@ namespace dxvk {
     root = PrimInstance();
     activeReplacements.reset();
     legacyMaterialIdentityHash = kEmptyHash;
-    lensFlareMaterialGeneration = 0;
     geometryBoundingBox.invalidate();
     lightBoundingBox.invalidate();
     boundingBoxDirty = true;

@@ -1,38 +1,20 @@
-# Emissive flare materials
+# Flare cards through standard material replacements
 
-The Flare Materials section of Material Options identifies legacy-draw flare cards
-from an uncompressed 32-bit RGBA/BGRA DDS. It derives the four channel-order and
-vertical-orientation hashes used by the old local runtime. DDS dimensions, masks,
-pitch and payload size are checked. Unsupported files leave the submitted material
-alone. Optional albedo and emission masks use the existing texture asset manager.
-An empty or missing emission mask uses the albedo texture as its falloff.
+The host plugin draws camera-facing cards. A USD material replacement supplies the
+diffuse mask, emissive mask, emission color and intensity. The runtime uses its
+normal material and transparency paths; no flare identity cache or feature toggle
+is needed.
 
-The `rtx.fork.lensFlare.*` names are retained. The master defaults off, paths are
-empty and the neutral emission level is one. Game-specific paths and appearance
-belong in the game's configuration. Existing configurations with explicit level
-and texture paths retain those values. The old unused corona override is not
-activated by this feature.
+Author a material named `mat_<submitted texture hash>` under `/RootNode/Looks`.
+Set `enable_emission = true`, `emissive_color_constant = (1, 1, 1)`,
+`use_legacy_alpha_state = false`, `blend_enabled = true`, and `blend_type = 1`
+(alpha-emissive). Set both texture inputs and the desired `emissive_intensity`.
 
-Matched materials use explicit additive emission and retain vertex lamp tint and
-RGB fade. The additive `kEmissive` blend retains the previous runtime semantics:
-vertex alpha alone does not attenuate emission. They bypass the legacy emissive-blend intensity override and clear the v2
-GPU legacy-defaults flag so legacy-only specular controls cannot affect this
-authored material. This adapts the active legacy-draw path of the previous local runtime; API materials
-continue to use their authored public API emission settings.
+The host puts normalized lamp tint in RGB and its brightness/fade in vertex alpha.
+The fixed-function alpha stage selects diffuse alpha. This retains intensity even
+when `rtx.vertexColorIsBakedLighting` normalizes RGB. Use SRCALPHA/ONE blending for
+the original raster renderer as well. Keep card size proportional to camera-space
+depth for constant angular size.
 
-The device owns identity and replacement-texture caches. Reference-file modification times
-are checked once per frame. Saves that retain the exact timestamp require changing
-the reference option or reloading the runtime. Failed reads are retried only when inputs change,
-avoiding per-draw disk access and repeated warnings. A generation stored on the
-scene's replacement instance invalidates the preserved material when its reference
-or options change. The v2 frontend resolves these materials through SceneInterface;
-its scene event stream requests retranslation when the reference changes. Both
-scene-owned D3D9 objects and transient draws use that entry point. The internal
-legacy draw path also tracks the generation.
-Material preparation and file identity are host metadata; lighting, blending and
-instance rendering continue through the GPU pipeline.
-
-The implementation derives from the user's local `rtx_fork_texture_emissive.cpp`
-at `c17b36af` plus saved working-tree changes. Device ownership, bounded DDS loading,
-cache generations and the generic UI are local adaptations. Repository licensing
-and retained NVIDIA notices apply; the bundled dependencies are unmodified.
+The removed `rtx.fork.lensFlare.*` settings have no effect. Material strength belongs
+in the USD file; plugin visibility and geometry controls remain in its own config.

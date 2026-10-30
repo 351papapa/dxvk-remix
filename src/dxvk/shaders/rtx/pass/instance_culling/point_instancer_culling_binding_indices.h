@@ -33,6 +33,11 @@ struct PointInstancerCullingConstants {
   uint firstThread;           // First thread (global) of this dispatch
   float fadeStartRadius;      // Distance at which density starts reducing (0 = no fade)
   uint pad0;
+  vec4 viewPlanes[4];
+  float frustumSpherePad;
+  uint frustumCull;
+  float frustumNearSkip;
+  uint pad1;
 };
 
 // One PointInstancer batch (one RtInstance in one TLAS type).

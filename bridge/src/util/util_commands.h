@@ -460,6 +460,16 @@ namespace Commands {
 
     // Appended to preserve existing command IDs.
     RemixApi_SetCameraMediumMaterial,
+    RemixApi_AutoInstancePersistentLights,
+    RemixApi_CreateMeshLegacy,
+    RemixApi_RetainedGetInterface,
+    RemixApi_RetainedUpsert,
+    RemixApi_RetainedRemove,
+    RemixApi_RetainedClear,
+    RemixApi_RetainedCommit,
+    RemixApi_RetainedStatus,
+    RemixApi_RetainedDrawOrdered,
+    RemixApi_GetTextureHash,
   };
 
   // Maybe this will be useful...  
@@ -498,6 +508,17 @@ namespace Commands {
     case RemixApi_CreateMaterial: return "RemixApi_CreateMaterial";
     case RemixApi_DestroyMaterial: return "RemixApi_DestroyMaterial";
     case RemixApi_SetCameraMediumMaterial: return "RemixApi_SetCameraMediumMaterial";
+    case RemixApi_AutoInstancePersistentLights: return "RemixApi_AutoInstancePersistentLights";
+    case RemixApi_CreateMeshLegacy: return "RemixApi_CreateMeshLegacy";
+    case RemixApi_RetainedGetInterface: return "RemixApi_RetainedGetInterface";
+    case RemixApi_RetainedUpsert: return "RemixApi_RetainedUpsert";
+    case RemixApi_RetainedRemove: return "RemixApi_RetainedRemove";
+    case RemixApi_RetainedClear: return "RemixApi_RetainedClear";
+    case RemixApi_RetainedCommit: return "RemixApi_RetainedCommit";
+    case RemixApi_RetainedStatus: return "RemixApi_RetainedStatus";
+    case RemixApi_RetainedDrawOrdered: return "RemixApi_RetainedDrawOrdered";
+    case RemixApi_GetTextureHash: return "RemixApi_GetTextureHash";
+
     case RemixApi_CreateTexture: return "RemixApi_CreateTexture";
     case RemixApi_DestroyTexture: return "RemixApi_DestroyTexture";
     case RemixApi_CreateMesh: return "RemixApi_CreateMesh";

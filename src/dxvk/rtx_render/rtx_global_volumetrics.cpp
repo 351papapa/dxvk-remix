@@ -29,6 +29,12 @@
 #include "rtx/pass/volumetrics/volume_integrate_binding_indices.h"
 
 #include <rtx_shaders/volume_integrate_rayquery.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8_wetness.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4_wetness.h>
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x8 volume_integrate_rayquery_8x8_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x4 volume_integrate_rayquery_8x4_wetness
 #include <rtx_shaders/volume_restir_initial.h>
 #include <rtx_shaders/volume_restir_visibility.h>
 #include <rtx_shaders/volume_restir_temporal.h>
@@ -296,6 +302,8 @@ namespace dxvk {
       RemixGui::Checkbox("Show Advanced Options", &showAdvanced);
 
       if (showAdvanced) {
+        RemixGui::Checkbox("Integrate with 8x8 Workgroups", &integrateWorkgroup8x8Object());
+        RemixGui::Checkbox("Integrate with 8x4 Workgroups", &integrateWorkgroup8x4Object());
         RemixGui::DragInt("Froxel Grid Resolution Scale", &froxelGridResolutionScaleObject(), 0.1f, 1, INT_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::DragInt("Froxel Depth Slices", &froxelDepthSlicesObject(), 0.1f, 1, UINT16_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
         RemixGui::DragInt("Max Accumulation Frames", &maxAccumulationFramesObject(), 0.1f, 1, UINT8_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
@@ -336,6 +344,14 @@ namespace dxvk {
         ImGui::EndDisabled();
       }
 
+      ImGui::Unindent();
+    }
+
+    if (RemixGui::CollapsingHeader("Particle Surface Lighting")) {
+      ImGui::Indent();
+      RemixGui::Checkbox("Rescale Sky-Lit Particle Cache", &rescaleSkyLitFroxelGainObject());
+      RemixGui::Checkbox("Particle Hemisphere Sky Fill", &skyAmbientHemisphereObject());
+      RemixGui::DragFloat("Particle / Alpha Cache Gain", &particleSkyLitFroxelGainObject(), 0.01f, 0.0f, 32.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       ImGui::Unindent();
     }
 
@@ -528,15 +544,46 @@ namespace dxvk {
     return approximateDensity < fogDensityThrehold;
   }
 
-  VolumeArgs RtxGlobalVolumetrics::getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes) const {
+  VolumetricWeatherState RtxGlobalVolumetrics::baseWeatherState() {
+    VolumetricWeatherState state;
+    state.transmittanceMeasurementDistanceMeters = transmittanceMeasurementDistanceMeters();
+    state.fogSunVisibilityGain = fogSunVisibilityGain();
+    state.volumetricConsumerGain = volumetricConsumerGain();
+    state.noiseFieldDensityScale = noiseFieldDensityScale();
+    state.noiseFieldDensityExponent = noiseFieldDensityExponent();
+    state.noiseFieldInitialFrequencyPerMeter = noiseFieldInitialFrequencyPerMeter();
+    state.noiseFieldLacunarity = noiseFieldLacunarity();
+    state.noiseFieldGain = noiseFieldGain();
+    state.noiseFieldTimeScale = noiseFieldTimeScale();
+    state.noiseFieldSubStepSizeMeters = noiseFieldSubStepSizeMeters();
+    state.froxelMaxDistanceMeters = froxelMaxDistanceMeters();
+    state.fogRemapMaxDistanceMinMeters = fogRemapMaxDistanceMinMeters();
+    state.fogRemapMaxDistanceMaxMeters = fogRemapMaxDistanceMaxMeters();
+    state.fogRemapTransmittanceMeasurementDistanceMinMeters = fogRemapTransmittanceMeasurementDistanceMinMeters();
+    state.fogRemapTransmittanceMeasurementDistanceMaxMeters = fogRemapTransmittanceMeasurementDistanceMaxMeters();
+    state.fogRemapColorMultiscatteringScale = fogRemapColorMultiscatteringScale();
+    state.depthOffset = depthOffset();
+    state.noiseFieldOctaves = static_cast<float>(noiseFieldOctaves());
+    state.anisotropy = anisotropy();
+    state.transmittanceColor = transmittanceColor();
+    state.singleScatteringAlbedo = singleScatteringAlbedo();
+    state.enableHeterogeneousFog = enableHeterogeneousFog();
+    state.enableFogRemap = enableFogRemap();
+    state.enableFogColorRemap = enableFogColorRemap();
+    state.enableFogMaxDistanceRemap = enableFogMaxDistanceRemap();
+    state.enableTranslucentShadows = enableTranslucentShadows();
+    return state;
+  }
+
+  VolumeArgs RtxGlobalVolumetrics::getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes, const VolumetricWeatherState& weather) const {
     // Calculate the volumetric parameters from options and the fixed function fog state.
 
     // Note: Volumetric transmittance color option is in gamma space, so must be converted to linear for usage in the volumetric system.
-    Vector3 transmittanceColorLinear{ sRGBGammaToLinear(transmittanceColor()) };
+    Vector3 transmittanceColorLinear{ sRGBGammaToLinear(weather.transmittanceColor) };
 
     // Note: Fall back to usual default in cases such as the "none" D3D fog mode, no fog remapping specified, or invalid values in the fog mode derivation
     // (such as dividing by zero).
-    float transmittanceMeasurementDistance = transmittanceMeasurementDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
+    float transmittanceMeasurementDistance = weather.transmittanceMeasurementDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
     Vector3 multiScatteringEstimate = Vector3();
 
     // Check if fog density is below the configurable threshold to determine if physical volumetrics should be used.
@@ -544,14 +591,14 @@ namespace dxvk {
     const bool canUsePhysicalFog = shouldConvertToPhysicalFog(fogState, waterFogDensityThreshold());
 
     if (
-      enableFogRemap() &&
+      weather.enableFogRemap &&
       // Note: Only consider remapping fog if any fixed function fog is actually enabled (not the "none" mode).
       fogState.mode != frontend::FogMode::None &&
       canUsePhysicalFog
     ) {
       // Handle Fog Color remapping
       // Note: This must happen first as max distance remapping will depend on the luminance derived from the color determined here.
-      if (enableFogColorRemap()) {
+      if (weather.enableFogColorRemap) {
         // Note: Legacy fixed function fog color is in gamma space as all the rendering in old games was typically in gamma space, same assumption we make
         // for textures/lights.
         transmittanceColorLinear = sRGBGammaToLinear(fogState.color);
@@ -562,14 +609,14 @@ namespace dxvk {
 
       // Handle Fog Max Distance remapping
 
-      if (enableFogMaxDistanceRemap()) {
+      if (weather.enableFogMaxDistanceRemap) {
         // Switch transmittance measurement distance derivation from D3D9 fog based on which fog mode is in use
 
         if (fogState.mode == frontend::FogMode::Linear) {
-          float fogRemapMaxDistanceMin { fogRemapMaxDistanceMinMeters() * RtxOptions::getMeterToWorldUnitScale() };
-          float fogRemapMaxDistanceMax { fogRemapMaxDistanceMaxMeters() * RtxOptions::getMeterToWorldUnitScale() };
-          float fogRemapTransmittanceMeasurementDistanceMin { fogRemapTransmittanceMeasurementDistanceMinMeters() * RtxOptions::getMeterToWorldUnitScale() };
-          float fogRemapTransmittanceMeasurementDistanceMax { fogRemapTransmittanceMeasurementDistanceMaxMeters() * RtxOptions::getMeterToWorldUnitScale() };
+          float fogRemapMaxDistanceMin { weather.fogRemapMaxDistanceMinMeters * RtxOptions::getMeterToWorldUnitScale() };
+          float fogRemapMaxDistanceMax { weather.fogRemapMaxDistanceMaxMeters * RtxOptions::getMeterToWorldUnitScale() };
+          float fogRemapTransmittanceMeasurementDistanceMin { weather.fogRemapTransmittanceMeasurementDistanceMinMeters * RtxOptions::getMeterToWorldUnitScale() };
+          float fogRemapTransmittanceMeasurementDistanceMax { weather.fogRemapTransmittanceMeasurementDistanceMaxMeters * RtxOptions::getMeterToWorldUnitScale() };
 
           // Note: Ensure the mins and maxes are consistent with each other (swap if inverted).
           if (fogRemapMaxDistanceMin > fogRemapMaxDistanceMax) {
@@ -610,7 +657,7 @@ namespace dxvk {
       }
 
       // Add some "ambient" from the original fog as a constant term applied to fog during preintegration
-      multiScatteringEstimate = fogState.color * fogRemapColorMultiscatteringScale();
+      multiScatteringEstimate = fogState.color * weather.fogRemapColorMultiscatteringScale;
     }
 
     // Calculate scattering and attenuation coefficients for the volume
@@ -620,7 +667,7 @@ namespace dxvk {
       -log(transmittanceColorLinear.y) / transmittanceMeasurementDistance,
       -log(transmittanceColorLinear.z) / transmittanceMeasurementDistance
     };
-    Vector3 const volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * singleScatteringAlbedo() };
+    Vector3 const volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * weather.singleScatteringAlbedo };
 
     const RtCamera& mainCamera = cameraManager.getMainCamera();
 
@@ -643,15 +690,15 @@ namespace dxvk {
 
     volumeArgs.maxAccumulationFrames = static_cast<uint16_t>(maxAccumulationFrames());
     volumeArgs.froxelDepthSliceDistributionExponent = froxelDepthSliceDistributionExponent();
-    volumeArgs.froxelMaxDistance = froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
+    volumeArgs.froxelMaxDistance = weather.froxelMaxDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.froxelFireflyFilteringLuminanceThreshold = froxelFireflyFilteringLuminanceThreshold();
     volumeArgs.attenuationCoefficient = volumetricAttenuationCoefficient;
     volumeArgs.enable = enable() && canUsePhysicalFog;
-    volumeArgs.enableTranslucentShadows = volumeArgs.enable && enableTranslucentShadows();
+    volumeArgs.enableTranslucentShadows = volumeArgs.enable && weather.enableTranslucentShadows;
     // The fog integral (RTXDI's integrateVolumetricNEE) adds multiScatteringEstimate to the cached radiance and scales the sum
     // by scatteringCoefficient, and nothing else reads either term. Scaling one by the fog sun gain and dividing the other by it
     // applies the gain to the cached radiance alone. The floor keeps the division finite.
-    const float fogSunGain = RtxOptions::skyMode() == SkyMode::Numos ? std::max(fogSunVisibilityGain(), 1e-6f) : 1.0f;
+    const float fogSunGain = RtxOptions::skyMode() == SkyMode::Numos ? std::max(weather.fogSunVisibilityGain, 1e-6f) : 1.0f;
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient * fogSunGain;
     volumeArgs.enableVolumeRISInitialVisibility = enableInitialVisibility();
     volumeArgs.enablevisibilityReuse = visibilityReuse();
@@ -669,20 +716,20 @@ namespace dxvk {
     volumeArgs.maxFilteredRadianceU = 1.f - volumeArgs.minFilteredRadianceU;
     volumeArgs.multiScatteringEstimate = multiScatteringEstimate / fogSunGain;
     volumeArgs.enableReferenceMode = enableReferenceMode();
-    volumeArgs.volumetricFogAnisotropy = anisotropy();
-    volumeArgs.volumetricConsumerGain = RtxOptions::skyMode() == SkyMode::Numos ? volumetricConsumerGain() : 1.0f;
+    volumeArgs.volumetricFogAnisotropy = weather.anisotropy;
+    volumeArgs.volumetricConsumerGain = RtxOptions::skyMode() == SkyMode::Numos ? weather.volumetricConsumerGain : 1.0f;
 
-    volumeArgs.enableNoiseFieldDensity = enableHeterogeneousFog();
-    volumeArgs.noiseFieldSubStepSize = noiseFieldSubStepSizeMeters() * RtxOptions::getMeterToWorldUnitScale();
-    volumeArgs.noiseFieldOctaves = noiseFieldOctaves();
-    volumeArgs.noiseFieldTimeScale = noiseFieldTimeScale();
-    volumeArgs.noiseFieldDensityScale = noiseFieldDensityScale();
-    volumeArgs.noiseFieldDensityExponent = noiseFieldDensityExponent();
-    volumeArgs.noiseFieldInitialFrequency = noiseFieldInitialFrequencyPerMeter() / RtxOptions::getMeterToWorldUnitScale();
-    volumeArgs.noiseFieldLacunarity = noiseFieldLacunarity();
-    volumeArgs.noiseFieldGain = noiseFieldGain();
+    volumeArgs.enableNoiseFieldDensity = weather.enableHeterogeneousFog;
+    volumeArgs.noiseFieldSubStepSize = weather.noiseFieldSubStepSizeMeters * RtxOptions::getMeterToWorldUnitScale();
+    volumeArgs.noiseFieldOctaves = static_cast<uint32_t>(weather.noiseFieldOctaves);
+    volumeArgs.noiseFieldTimeScale = weather.noiseFieldTimeScale;
+    volumeArgs.noiseFieldDensityScale = weather.noiseFieldDensityScale;
+    volumeArgs.noiseFieldDensityExponent = weather.noiseFieldDensityExponent;
+    volumeArgs.noiseFieldInitialFrequency = weather.noiseFieldInitialFrequencyPerMeter / RtxOptions::getMeterToWorldUnitScale();
+    volumeArgs.noiseFieldLacunarity = weather.noiseFieldLacunarity;
+    volumeArgs.noiseFieldGain = weather.noiseFieldGain;
 
-    volumeArgs.depthOffset = depthOffset();
+    volumeArgs.depthOffset = weather.depthOffset;
 
     const float invertedWorld = atmosphereInverted() ? -1.f : 1.f;
     const Vector3 sceneUpDirection = RtxOptions::zUp() ? Vector3(0, 0, invertedWorld) : Vector3(0, invertedWorld, 0);
@@ -830,11 +877,17 @@ namespace dxvk {
     {
       ScopedGpuProfileZone(ctx, "Volume Integrate Raytracing");
       ctx->setFramePassStage(RtxFramePassStage::VolumeIntegrateRaytracing);
-      VkExtent3D workgroups = util::computeBlockCount(numRaysExtent, VkExtent3D { 16, 8, 1 });
+      const VkExtent3D groupSize = integrateWorkgroup8x4() ? VkExtent3D { 8, 4, 1 }
+        : integrateWorkgroup8x8() ? VkExtent3D { 8, 8, 1 } : VkExtent3D { 16, 8, 1 };
+      const VkExtent3D workgroups = util::computeBlockCount(numRaysExtent, groupSize);
 
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getPreviousVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, integrateWorkgroup8x4()
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x4)
+        : integrateWorkgroup8x8()
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x8)
+          : VolumeIntegrateShader::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 

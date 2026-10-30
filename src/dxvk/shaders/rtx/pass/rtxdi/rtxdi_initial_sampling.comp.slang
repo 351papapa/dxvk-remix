@@ -27,7 +27,17 @@
 //!variant rtxdi_initial_sampling_no_portals.comp
 //!>       RTXDI_NO_PORTALS=1
 
+//!variant rtxdi_initial_sampling_local_spheres.comp
+//!>       RTXDI_NO_PORTALS=0 ENABLE_LOCAL_SPHERES=1
+
+//!variant rtxdi_initial_sampling_no_portals_local_spheres.comp
+//!>       RTXDI_NO_PORTALS=1 ENABLE_LOCAL_SPHERES=1
+
 //!end-variants
+
+#ifndef ENABLE_LOCAL_SPHERES
+#define ENABLE_LOCAL_SPHERES 0
+#endif
 
 #define USE_32BIT_RAY_DIRECTION 1
 #define RAB_HAS_CURRENT_GBUFFER 1
@@ -50,6 +60,66 @@
 #include "rtx/algorithm/resolve.slangh"
 #include "rtx/algorithm/rtxdi/rtxdi.slangh"
 #include "rtx/pass/sparse_rendering/compact_active_pixels.slangh"
+
+#if ENABLE_LOCAL_SPHERES
+layout(binding = RTXDI_REUSE_BINDING_LOCAL_LIGHTS_INPUT)
+StructuredBuffer<uint2> LocalSphereCandidates;
+
+// Streams the nearest sphere candidates while preserving the temporal RNG sequence.
+void RAB_SampleLocalLights(inout RTXDI_Reservoir state, inout RAB_RandomSamplerState rng, RAB_Surface surface)
+{
+  const uint total = min(LocalSphereCandidates[0].x, 64u);
+  if (total == 0u)
+  {
+    return;
+  }
+
+  RTXDI_Reservoir localState = RTXDI_EmptyReservoir();
+  bool overlapsGlobalSample = false;
+  for (uint i = 0; i < total; ++i)
+  {
+    const uint32_t entry = LocalSphereCandidates[i + 1].y;
+    const uint16_t lightIndex = uint16_t(entry >> 3u);
+    const uint lightType = entry & 0x7u;
+
+    // Note: always consume the 3 randoms (uv.xy, risRnd) so the RNG stream stays aligned
+    // with the skip in rtxdi_temporal_reuse.comp.slang regardless of candidate validity.
+    float2 lightUV = float2(RAB_GetNextRandom(rng), RAB_GetNextRandom(rng));
+    const float risRnd = RAB_GetNextRandom(rng);
+
+    if (lightIndex == RTXDI_INVALID_LIGHT_INDEX)
+    {
+      continue;
+    }
+
+    overlapsGlobalSample = overlapsGlobalSample ||
+      (state.lightIdx == lightIndex && state.portalIdx == RTXDI_INVALID_PORTAL_INDEX);
+    RAB_LightSample candidateSample = RAB_GetLightSampleWithTypeHint(lightIndex, lightUV, lightType, surface);
+    const float targetPdf = RAB_GetLightSampleTargetPdfForSurface(candidateSample, surface);
+
+    RTXDI_StreamSample(localState, lightIndex, RTXDI_INVALID_PORTAL_INDEX, lightUV, risRnd, targetPdf, 1.0f);
+  }
+
+  // Note: always consume the combine random even when no candidate survived, for RNG alignment.
+  const float random = RAB_GetNextRandom(rng);
+  if (localState.M == 0u)
+  {
+    return;
+  }
+
+  // One sample per light estimates the sum over distinct direct-light strata.
+  RTXDI_FinalizeResampling(localState, 1.0, 1.0);
+  localState.M = 1;
+
+  // Both estimators cover these direct lights. Their partition weights sum to one.
+  // Portal images are covered only by the global estimator and keep full weight.
+  if (overlapsGlobalSample) { state.weightSum *= 0.5f; }
+  localState.weightSum *= 0.5f;
+
+  RTXDI_CombineReservoirs(state, localState, random, localState.targetPdf);
+}
+
+#endif
 
 // The pass can be launched over the active-pixel list, which counts groups of the consumer group size.
 #if COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_X != 16 || COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_Y != 8
@@ -110,6 +180,9 @@ void main(int2 threadIndex : SV_DispatchThreadID)
       cb.enableRtxdiInitialVisibility && !RTXDI_DEFER_INITIAL_VISIBILITY);
     float random = RAB_GetNextRandom(rng);
     RTXDI_CombineReservoirs(state, bestLightReservoir, random, bestLightReservoir.targetPdf);
+#if ENABLE_LOCAL_SPHERES
+    RAB_SampleLocalLights(state, rng, surface);
+#endif
 
 #if RTXDI_DEFER_INITIAL_VISIBILITY
     if (cb.enableRtxdiInitialVisibility)

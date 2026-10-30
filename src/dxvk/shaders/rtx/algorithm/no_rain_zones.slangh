@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MIT
+// Local runtime feature source. See CREDITS.md.
+#pragma once
+
+struct WetnessZoneNode {
+  float4 lower;
+  float4 upper;
+};
+
+// Includes both endpoints, so a stationary particle inside a zone is sheltered.
+bool noRainZoneIntersectsSegment(float3 start, float3 end, float3 lower, float3 upper) {
+  float enter = 0.0f;
+  float leave = 1.0f;
+  float3 delta = end - start;
+  [unroll] for (uint axis = 0; axis < 3; ++axis) {
+    if (delta[axis] == 0.0f) {
+      if (start[axis] < lower[axis] || start[axis] > upper[axis]) {
+        return false;
+      }
+    } else {
+      float first = (lower[axis] - start[axis]) / delta[axis];
+      float second = (upper[axis] - start[axis]) / delta[axis];
+      enter = max(enter, min(first, second));
+      leave = min(leave, max(first, second));
+      if (enter > leave) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Preorder skip links reuse the wetness BVH without a per-particle traversal stack.
+bool noRainZonesIntersectSegment(StructuredBuffer<WetnessZoneNode> zones, uint count, float3 start, float3 end) {
+  uint index = 0;
+  while (index < count) {
+    WetnessZoneNode node = zones[index];
+    if (noRainZoneIntersectsSegment(start, end, node.lower.xyz, node.upper.xyz)) {
+      if (node.upper.w > 0.5f) {
+        return true;
+      }
+      ++index;
+    } else {
+      index = uint(node.lower.w);
+    }
+  }
+  return false;
+}

@@ -145,6 +145,13 @@ namespace dxvk {
       args.minValue = 0.f;
       args.onChangeCallback = onFadeStartRadiusChanged);
 
+    RTX_OPTION("rtx.pointInstancer", bool, frustumCull, false,
+      "Cull instances outside camera side planes on the GPU, subject to the radius and host-instancer controls. Off-screen shadows and reflections can change; disabled by default.");
+    RTX_OPTION_ARGS("rtx.pointInstancer", float, frustumSpherePad, 0.f,
+      "World-space margin around the four camera side planes.", args.minValue = 0.f);
+    RTX_OPTION_ARGS("rtx.pointInstancer", float, frustumNearSkip, 600.f,
+      "Instances within this world-space distance skip frustum culling to retain nearby off-screen shadows and reflections.", args.minValue = 0.f);
+
     RTX_OPTION("rtx.pointInstancer", bool, cullHostInstancers, false,
       "Applies the distance culling above to instancing from the host through the Remix API (GPU-instanced draws) too, "
       "not only to USD PointInstancer replacements. Culled instances disappear from the primary view, reflections and "

@@ -19,6 +19,9 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <iomanip>
+#include <locale>
+
 #include "dxvk_hud_renderer.h"
 
 #include <hud_line_frag.h>
@@ -50,6 +53,7 @@ namespace dxvk::hud {
   
   
   void HudRenderer::beginFrame(const Rc<DxvkContext>& context, VkExtent2D surfaceSize, float scale) {
+    beginExportFrame();
     if (!m_initialized)
       this->initFontTexture(context);
 
@@ -65,11 +69,74 @@ namespace dxvk::hud {
   }
   
   
+  void HudRenderer::beginExportFrame() {
+    ++m_exportFrameId;
+    m_exportFrame = false;
+    const auto& path = hudExport();
+    if (path != m_exportPath) {
+      if (m_exportFile.is_open()) {
+        m_exportFile.close();
+      }
+      m_exportFile.clear();
+      m_exportPath = path;
+      if (!path.empty()) {
+        m_exportFile.imbue(std::locale::classic());
+        m_exportFile.open(path, std::ios::out | std::ios::trunc);
+        if (!m_exportFile) {
+          Logger::err(str::format("Failed to open HUD export file: ", path));
+          return;
+        }
+        m_exportFile << "frame,time_ms,kind,x,y,value\n";
+        m_exportStart = m_exportNext = std::chrono::steady_clock::now();
+      }
+    }
+    if (!m_exportFile.is_open() || !m_exportFile.good()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    m_exportFrame = now >= m_exportNext;
+    if (m_exportFrame) {
+      m_exportTimeMs = std::chrono::duration<double, std::milli>(now - m_exportStart).count();
+      m_exportNext = now + std::chrono::milliseconds(std::clamp(hudExportIntervalMs(), 16, 10000));
+    }
+  }
+
+
+  void HudRenderer::exportValue(const std::string& kind, float x, float y, const std::string& value) {
+    if (!m_exportFrame) {
+      return;
+    }
+    m_exportFile << m_exportFrameId << ',' << std::fixed << std::setprecision(3)
+                 << m_exportTimeMs << ',' << kind << ',' << x << ',' << y << ",\"";
+    for (char c : value) {
+      if (c == '"') {
+        m_exportFile << "\"\"";
+      } else {
+        m_exportFile << c;
+      }
+    }
+    m_exportFile << "\"\n";
+  }
+
+
+  void HudRenderer::finishExportFrame() {
+    if (m_exportFrame) {
+      m_exportFile.flush();
+      if (!m_exportFile.good()) {
+        Logger::err(str::format("Failed to write HUD export file: ", m_exportPath));
+        m_exportFile.close();
+      }
+    }
+    m_exportFrame = false;
+  }
+
+
   void HudRenderer::drawText(
           float             size,
           HudPos            pos,
           HudColor          color,
     const std::string&      text) {
+    exportValue("text", pos.x, pos.y, text);
     beginTextRendering();
 
     const float xscale = m_scale / std::max(float(m_surfaceSize.width),  1.0f);

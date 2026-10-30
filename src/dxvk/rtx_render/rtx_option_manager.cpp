@@ -158,15 +158,11 @@ namespace dxvk {
   }
 
   void RtxOptionManager::applyPendingValues(DxvkDevice* device, bool forceOnChange) {
-    // First, process all pending layer changes (blend strength requests, enable/disable)
-    {
-      std::unique_lock<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
+    std::unique_lock<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
 
-      // Resolve pending requests and apply changes for each layer
-      for (auto& [layerKey, optionLayerPtr] : getLayerRegistry()) {
-        optionLayerPtr->resolvePendingRequests();
-        optionLayerPtr->applyPendingChanges();
-      }
+    for (auto& [layerKey, optionLayerPtr] : getLayerRegistry()) {
+      optionLayerPtr->resolvePendingRequests();
+      optionLayerPtr->applyPendingChanges();
     }
 
     // Then resolve dirty options and invoke callbacks
@@ -175,8 +171,6 @@ namespace dxvk {
 
     // Iteratively resolve dirty options, invoke callbacks, repeat until none left
     while (numResolves < maxResolves) {
-      std::unique_lock<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
-
       auto& dirtyOptions = getDirtyOptionMap();
 
       // Need a second array to invoke onChange callbacks after updating values
@@ -218,6 +212,8 @@ namespace dxvk {
         rtxOption->invokeOnChangeCallback(device);
       }
 
+      // Setters can queue changes while callbacks run without the update mutex.
+      lock.lock();
       numResolves++;
 
       // If callbacks didn't generate any dirtied options, bail
@@ -241,7 +237,13 @@ namespace dxvk {
     getDirtyOptionMap().clear();
   }
 
+  uint32_t RtxOptionManager::valueChangeGeneration() {
+    std::lock_guard<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
+    return s_valueChangeGeneration;
+  }
+
   std::string RtxOptionManager::takeChangedOptionNames() {
+    std::lock_guard<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
     std::string names;
     for (const std::string& name : s_changedOptionNames) {
       names += names.empty() ? name : ", " + name;

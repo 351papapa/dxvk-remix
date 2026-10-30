@@ -27,3 +27,4 @@ EXPORTS
   remixapi_GetColorGrade @ 44
   remixapi_SaveColorGradePreset @ 45
   BridgeClient_SetOuterDevice @ 46
+  remixapi_GetRetainedInterface

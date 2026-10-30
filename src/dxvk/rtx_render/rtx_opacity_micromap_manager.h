@@ -21,6 +21,7 @@
 */
 #pragma once
 
+#include <chrono>
 #include <optional>
 
 #include "../util/rc/util_rc_ptr.h"
@@ -84,6 +85,15 @@ namespace dxvk {
       RTX_OPTION("rtx.opacityMicromap.cache", int, minUsageFrameAgeBeforeEviction, 60 * 15, 
                  "Min Opacity Micromap usage frame age before eviction.\n"
                  "Opacity Micromaps unused longer than this can be evicted when freeing up memory for new Opacity Micromaps.");
+      RTX_OPTION("rtx.opacityMicromap.cache", uint32_t, idleTimeoutSeconds, 0,
+                 "Reclaims ready opacity micromaps unused for this many seconds, even when the memory budget has room. "
+                 "0 disables proactive reclaim. Recent traced-frame use and in-flight GPU resources are protected.");
+      RTX_OPTION("rtx.opacityMicromap.cache", uint32_t, idleMaxEntriesPerSweep, 32,
+                 "Maximum ready opacity micromaps reclaimed per one-second idle sweep. 0 disables idle reclaim.");
+      RTX_OPTION("rtx.opacityMicromap.cache", uint32_t, idleMaxMiBPerSweep, 32,
+                 "Soft memory limit in MiB per idle sweep. One oversized micromap may exceed this limit. 0 disables idle reclaim.");
+      RTX_OPTION("rtx.opacityMicromap.cache", bool, idleDiagnostics, false,
+                 "Logs cumulative idle-reclaim counts and memory at most once every five seconds.");
       RTX_OPTION("rtx.opacityMicromap.cache", bool, hashInstanceIndexOnly, false,
                  "Uses instance index as an Opacity Micromap hash.");
       RTX_OPTION("rtx.opacityMicromap.cache", bool, keepMergedBlasMicromapsInUse, true,
@@ -287,6 +297,7 @@ namespace dxvk {
     bool useVertexAndTextureOperations = false;
     // The manager's traced-frame index (OpacityMicromapManager::m_tracedFrameIndex) of the last use.
     uint32_t lastUseFrameIndex = kInvalidFrameIndex;
+    std::chrono::steady_clock::time_point lastIdleUse = std::chrono::steady_clock::now();
     uint16_t subdivisionLevel = UINT16_MAX;
     uint32_t numTriangles = UINT32_MAX;
     VkOpacityMicromapFormatEXT ommFormat = VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT;
@@ -351,6 +362,8 @@ namespace dxvk {
     , blasOmmBuffers(src.blasOmmBuffers)
     , ommArrayBuffer(src.ommArrayBuffer)
     , useVertexAndTextureOperations(src.useVertexAndTextureOperations)
+    , lastUseFrameIndex(src.lastUseFrameIndex)
+    , lastIdleUse(src.lastIdleUse)
     , subdivisionLevel(src.subdivisionLevel)
     , ommFormat(src.ommFormat)
     , leastRecentlyUsedListIter(src.leastRecentlyUsedListIter)
@@ -739,6 +752,7 @@ namespace dxvk {
     bool areInstanceTexturesResident(const RtInstance& instance, const std::vector<TextureRef>& textures) const;
 
     void updateSourceHash(RtInstance& instance, XXH64_hash_t ommSrcHash);
+    void reclaimIdle();
 
     void calculateMicromapBuildInfo(VkMicromapUsageEXT& ommUsageGroup, VkMicromapBuildInfoEXT& ommBuildInfo, VkMicromapBuildSizesInfoEXT& sizeInfo);
 
@@ -811,6 +825,12 @@ namespace dxvk {
 
     VkDeviceSize m_amountOfMemoryMissing = 0;    // Records how much memory was missing in a frame
     uint32_t m_trimMinAgeFrames = 0;             // Pending requestTrim. 0 = none.
+    std::chrono::steady_clock::time_point m_idleFrameTime {};
+    std::chrono::steady_clock::time_point m_lastIdleSweep {};
+    std::chrono::steady_clock::time_point m_lastIdleLog {};
+    XXH64_hash_t m_idleCursor = kEmptyHash;
+    uint64_t m_idleEvicted = 0;
+    VkDeviceSize m_idleReleasedBytes = 0;
     // Frames that traced the scene: advanced by onFrameStart once per device frame that builds the
     // acceleration structures. Micromap use and eviction ages count these, so frames the host rasterises
     // without ray tracing age nothing, and the micromaps the scene's BLASes hold are still young when

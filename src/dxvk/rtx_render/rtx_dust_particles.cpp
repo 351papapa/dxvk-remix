@@ -28,6 +28,7 @@
 #include "dxvk_context.h"
 #include "rtx_context.h"
 #include "rtx_imgui.h"
+#include "rtx_numos_weather.h"
 
 #include <rtx_shaders/dust_particles_vertex.h>
 #include <rtx_shaders/dust_particles_fragment.h>
@@ -214,7 +215,7 @@ namespace dxvk {
     pushArgs.maxParticleSize = maxParticleSize() * resolutionScale;
     pushArgs.opacity = opacity();
     pushArgs.anisotropy = anisotropy();
-    pushArgs.cullDistanceFromCamera = RtxGlobalVolumetrics::froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale();
+    pushArgs.cullDistanceFromCamera = ctx->getCommonObjects()->metaNumosWeather().volumetricState(RtxGlobalVolumetrics::baseWeatherState()).froxelMaxDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
     pushArgs.gravityForce = gravityForce();
     pushArgs.maxSpeed = maxSpeed();
     pushArgs.useTurbulence = useTurbulence();

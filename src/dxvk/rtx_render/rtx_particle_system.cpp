@@ -27,6 +27,7 @@
 #include "dxvk_scoped_annotation.h"
 #include "dxvk_context.h"
 #include "rtx_context.h"
+#include "rtx_precipitation.h"
 #include "rtx_fork_hooks.h"
 #include "rtx_imgui.h"
 
@@ -36,6 +37,10 @@
 #include <rtx_shaders/particle_system_spawn_contact.h>
 #include <rtx_shaders/particle_system_evolve.h>
 #include <rtx_shaders/particle_system_generate_geometry.h>
+#include <rtx_shaders/particle_system_spawn_zones.h>
+#include <rtx_shaders/particle_system_spawn_zones_wetness.h>
+#include <rtx_shaders/particle_system_evolve_zones.h>
+#include <rtx_shaders/particle_system_evolve_zones_wetness.h>
 #include "math.h"
 #include <array>
 #include <sstream>
@@ -48,6 +53,8 @@
 #define RTX_WETNESS_SHADER_particle_system_evolve particle_system_evolve_wetness
 #define RTX_WETNESS_SHADER_particle_system_generate_geometry particle_system_generate_geometry_wetness
 #define RTX_WETNESS_SHADER_particle_system_spawn particle_system_spawn_wetness
+#define RTX_WETNESS_SHADER_particle_system_spawn_zones particle_system_spawn_zones_wetness
+#define RTX_WETNESS_SHADER_particle_system_evolve_zones particle_system_evolve_zones_wetness
 
 namespace dxvk {
 
@@ -55,6 +62,10 @@ namespace dxvk {
   namespace {
     class ParticleSystemSpawn : public ManagedShader {
       WETNESS_SHADER_SOURCE(ParticleSystemSpawn, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_spawn)
+
+      static Rc<DxvkShader> getZoneShader() {
+        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, ParticleSystemSpawn, particle_system_spawn_zones);
+      }
 
         BINDLESS_ENABLED()
 
@@ -98,6 +109,10 @@ namespace dxvk {
     class ParticleSystemEvolve : public ManagedShader {
       WETNESS_SHADER_SOURCE(ParticleSystemEvolve, VK_SHADER_STAGE_COMPUTE_BIT, particle_system_evolve)
 
+      static Rc<DxvkShader> getZoneShader() {
+        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, ParticleSystemEvolve, particle_system_evolve_zones);
+      }
+
         BINDLESS_ENABLED()
 
         BEGIN_PARAMETER()
@@ -111,6 +126,7 @@ namespace dxvk {
 
         RW_STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_PARTICLES_BUFFER_INPUT_OUTPUT)
         RW_STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_COUNTER_OUTPUT)
+        RW_STRUCTURED_BUFFER(PARTICLE_SYSTEM_BINDING_SPAWN_TRACE_STATS_OUTPUT)
         END_PARAMETER()
     };
 
@@ -267,6 +283,7 @@ namespace dxvk {
       ImGui::Dummy({ 0,2 });
       ImGui::Indent();
 
+      RemixGui::Checkbox("Sky Ambient for API Opaque Materials", &forceSkyLitParticleObject());
       RemixGui::Checkbox("Enable", &enableObject());
       ImGui::BeginDisabled(!enable());
       RemixGui::Checkbox("Enable Spawning", &enableSpawningObject());
@@ -460,6 +477,8 @@ namespace dxvk {
     constants.resolveTransparencyThreshold = RtxOptions::resolveTransparencyThreshold();
     constants.minParticleSize = 2.f; // NOTE: In pixels
     constants.sceneScale = RtxOptions::sceneScale();
+    constants.noRainZoneCount = PrecipitationSystem::occludeWithNoRainZones() ? ctx->getNoRainZoneNodeCount() : 0u;
+    std::fill(std::begin(constants.padding), std::end(constants.padding), 0u);
 
     // Whether the spawn kernel has a TLAS to trace. Simulation runs before AccelManager::prepareSceneData builds
     // this frame's TLAS, so this is last frame's fully built one, which is good enough for the spawn occlusion
@@ -765,7 +784,9 @@ namespace dxvk {
         if (contactDiagnostics() && statsFrameIdx % 30 == 0) {
           Logger::info(str::format("[Particles GPU] frame=", statsFrameIdx, " systems=", m_particleSystems.size(),
             " rays=", stats[0], " sheltered=", stats[1], " landing=", stats[2], " relocated=", stats[3],
-            " contactCandidates=", stats[4], " water=", stats[5], " wetGround=", stats[6], " rejected=", stats[7]));
+            " contactCandidates=", stats[4], " water=", stats[5], " wetGround=", stats[6], " rejected=", stats[7],
+            " zoneNodes=", constants.noRainZoneCount, " zoneCandidates=", stats[8], " zoneBirthKills=", stats[9],
+            " zoneMotionKills=", stats[10], " sceneRays=", stats[11]));
         }
       }
 
@@ -841,6 +862,8 @@ namespace dxvk {
 
         ctx->setBarrierControl(barrierControl);
 
+        const bool useNoRainZones = particleSystem.desc.useNoRainZones && constants.noRainZoneCount;
+
         // Handle spawning
         if (particleSystem.spawnParticleCount > 0) {
           const VkExtent3D workgroups = util::computeBlockCount(VkExtent3D { particleSystem.spawnParticleCount, 1, 1 }, VkExtent3D { 128, 1, 1 });
@@ -852,7 +875,8 @@ namespace dxvk {
           const bool contact = particleSystem.desc.spawnOnPuddlesOnly
             || particleSystem.desc.spawnOnWaterOrPuddles || particleSystem.desc.spawnOnWetRoads;
           ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT,
-            contact ? ParticleSystemSpawnContact::getShader() : ParticleSystemSpawn::getShader());
+            contact ? ParticleSystemSpawnContact::getShader()
+              : useNoRainZones ? ParticleSystemSpawn::getZoneShader() : ParticleSystemSpawn::getShader());
 
           ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
         }
@@ -864,7 +888,8 @@ namespace dxvk {
           ctx->bindResourceBuffer(PARTICLE_SYSTEM_BINDING_PARTICLES_BUFFER_INPUT_OUTPUT, DxvkBufferSlice(system.second->getParticlesBuffer()));
           ctx->bindResourceBuffer(PARTICLE_SYSTEM_BINDING_COUNTER_OUTPUT, DxvkBufferSlice(system.second->getCounter()->getGpuCountBuffer()));
 
-          ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, ParticleSystemEvolve::getShader());
+          ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT,
+            useNoRainZones ? ParticleSystemEvolve::getZoneShader() : ParticleSystemEvolve::getShader());
 
           ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
         }

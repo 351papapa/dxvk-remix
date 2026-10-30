@@ -1,5 +1,6 @@
 #include "rtx_numos_weather.h"
 #include "rtx_precipitation.h"
+#include "rtx_global_volumetrics.h"
 
 #include <algorithm>
 #include <cctype>
@@ -298,6 +299,50 @@ namespace dxvk {
       return false;
     }
 
+    bool parseVolumetricPreset(VolumetricWeatherPreset& preset, const std::string& key, const std::string& text) {
+      std::string name = key;
+      const std::string prefix = "rtx.volumetrics.";
+      if (name.compare(0, prefix.size(), prefix) == 0) { name.erase(0, prefix.size()); }
+      if (name == "volumetricAnisotropy") { name = "anisotropy"; }
+      const bool relative = !text.empty() && (text[0] == 'x' || text[0] == 'X' || text[0] == '*');
+      const std::string body = relative ? text.substr(1) : text;
+      for (size_t i = 0; i < std::size(kVolumetricWeatherParameters); ++i) {
+        if (name != kVolumetricWeatherParameters[i].name) { continue; }
+        try {
+          size_t end = 0;
+          const float value = std::stof(body, &end);
+          if (end != body.size() || !std::isfinite(value)) { throw std::invalid_argument("value"); }
+          preset.values[i] = value;
+          preset.relative[i] = relative;
+        } catch (...) { Logger::warn("[NUMOS weather] Invalid volumetric value for " + key); }
+        return true;
+      }
+      for (size_t i = 0; i < std::size(kVolumetricWeatherColors); ++i) {
+        if (name != kVolumetricWeatherColors[i].name) { continue; }
+        std::string numbers = body;
+        std::replace(numbers.begin(), numbers.end(), ',', ' ');
+        std::istringstream input(numbers);
+        Vector3 color;
+        std::string trailing;
+        if (input >> color.x >> color.y >> color.z && !(input >> trailing)
+            && std::isfinite(color.x) && std::isfinite(color.y) && std::isfinite(color.z)) {
+          preset.colors[i] = color;
+          preset.colorRelative[i] = relative;
+        } else { Logger::warn("[NUMOS weather] Invalid volumetric color for " + key); }
+        return true;
+      }
+      for (size_t i = 0; i < std::size(kVolumetricWeatherSwitches); ++i) {
+        if (name != kVolumetricWeatherSwitches[i].name) { continue; }
+        std::string value = text;
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (value == "true" || value == "1") { preset.switches[i] = true; }
+        else if (value == "false" || value == "0") { preset.switches[i] = false; }
+        else { Logger::warn("[NUMOS weather] Invalid volumetric switch for " + key); }
+        return true;
+      }
+      return false;
+    }
+
     bool readPresetFile(const fs::path& path, NumosWeather::Preset& p) {
       std::ifstream f(path, std::ios::binary);
       if (!f) {
@@ -333,7 +378,7 @@ namespace dxvk {
             continue;
           }
           const bool precipitationKey = parsePrecipitationPreset(p.precipitation, key, value);
-          if (parseWetnessPreset(p.wetness, key, value) || precipitationKey) {
+          if (parseWetnessPreset(p.wetness, key, value) || precipitationKey || parseVolumetricPreset(p.volumetric, key, value)) {
             continue;
           }
           if (key == "weather.bindings") {
@@ -498,7 +543,7 @@ namespace dxvk {
 
       for (const auto& [key, text] : section.keys) {
         const bool precipitationKey = parsePrecipitationPreset(p.precipitation, key, text);
-        if (parseWetnessPreset(p.wetness, key, text) || precipitationKey) {
+        if (parseWetnessPreset(p.wetness, key, text) || precipitationKey || parseVolumetricPreset(p.volumetric, key, text)) {
           continue;
         }
         LegacyValue v;
@@ -582,7 +627,7 @@ namespace dxvk {
       relative(numos::settingInfos().size(), false) { }
   NumosWeather::Preset::Preset(const Preset& o)
     : name(o.name), bindings(o.bindings), transitionSeconds(o.transitionSeconds), enabled(o.enabled),
-      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), precipitation(o.precipitation), water(o.water), dirty(o.dirty),
+      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), precipitation(o.precipitation), volumetric(o.volumetric), water(o.water), dirty(o.dirty),
       numosBuiltIn(o.numosBuiltIn) { }
   NumosWeather::Preset& NumosWeather::Preset::operator=(const Preset& o) {
     if (this != &o) {
@@ -595,6 +640,7 @@ namespace dxvk {
       relative = o.relative;
       wetness = o.wetness;
       precipitation = o.precipitation;
+      volumetric = o.volumetric;
       water = o.water;
       dirty = o.dirty;
       numosBuiltIn = o.numosBuiltIn;
@@ -608,6 +654,7 @@ namespace dxvk {
     numos::WeatherSnapshot snapshot;
     WetnessArgs wetnessFrom, wetnessCurrent;
     PrecipitationState precipitationFrom, precipitationCurrent;
+    VolumetricWeatherState volumetricFrom, volumetricCurrent;
     WaterWeatherState waterFrom, waterCurrent;
     float elapsed = 0.0f;
     float duration = 0.0f;
@@ -742,6 +789,25 @@ namespace dxvk {
       text << "rtx.weather.precipitation.color = " << (p.precipitation.colorRelative ? "x" : "")
            << color.x << ", " << color.y << ", " << color.z << "\n";
     }
+    for (size_t i = 0; i < p.volumetric.values.size(); ++i) {
+      if (p.volumetric.values[i]) {
+        text << "rtx.volumetrics." << kVolumetricWeatherParameters[i].name << " = "
+             << (p.volumetric.relative[i] ? "x" : "") << *p.volumetric.values[i] << "\n";
+      }
+    }
+    for (size_t i = 0; i < p.volumetric.colors.size(); ++i) {
+      if (p.volumetric.colors[i]) {
+        const auto color = *p.volumetric.colors[i];
+        text << "rtx.volumetrics." << kVolumetricWeatherColors[i].name << " = "
+             << (p.volumetric.colorRelative[i] ? "x" : "") << color.x << ", " << color.y << ", " << color.z << "\n";
+      }
+    }
+    for (size_t i = 0; i < p.volumetric.switches.size(); ++i) {
+      if (p.volumetric.switches[i]) {
+        text << "rtx.volumetrics." << kVolumetricWeatherSwitches[i].name << " = "
+             << (*p.volumetric.switches[i] ? "true" : "false") << "\n";
+      }
+    }
     for (size_t i = 0; i < p.wetness.values.size(); ++i) {
       if (p.wetness.values[i].has_value()) {
         text << "rtx.wetness." << kWetnessParameters[i].name << " = "
@@ -780,6 +846,7 @@ namespace dxvk {
       *p.values = m_state->current;
       p.water = m_state->waterCurrent;
       p.precipitation.store(m_state->precipitationCurrent);
+      p.volumetric.store(m_state->volumetricCurrent);
       p.set = weatherKeys();
     }
     p.name = name;
@@ -798,6 +865,7 @@ namespace dxvk {
     const auto& infos = numos::settingInfos();
     *p.values = look;
     p.precipitation.store(m_state->precipitationCurrent);
+    p.volumetric.store(m_state->volumetricCurrent);
     for (size_t i = 0; i < infos.size(); ++i) {
       p.set[i] = weatherKeys()[i] || (i < keys.size() && keys[i]);
     }
@@ -986,6 +1054,7 @@ namespace dxvk {
     }
     preset->water = m_state->waterCurrent;
       preset->precipitation.store(m_state->precipitationCurrent);
+      preset->volumetric.store(m_state->volumetricCurrent);
     preset->dirty = true;
     return *preset;
   }
@@ -1035,6 +1104,7 @@ namespace dxvk {
       }
       stored->water = s.waterCurrent;
       stored->precipitation.store(s.precipitationCurrent);
+      stored->volumetric.store(s.volumetricCurrent);
       stored->dirty = true;
     }
     {
@@ -1196,6 +1266,7 @@ namespace dxvk {
     s.heldPreset = Preset();
     s.heldPreset.name = kSeedTarget;
     s.heldPreset.precipitation.store(s.precipitationCurrent);
+    s.heldPreset.volumetric.store(s.volumetricCurrent);
     numos::applyWeather(weather, *s.heldPreset.values);
     s.heldPreset.set = weatherKeys();
     s.held = true;
@@ -1205,6 +1276,12 @@ namespace dxvk {
     ensureLoaded();
     State& s = *m_state;
     s.base = base;
+    const auto volumetricBase = RtxGlobalVolumetrics::baseWeatherState();
+    const auto volumetricFor = [&](const Preset* selected) {
+      auto state = volumetricBase;
+      if (controlVolumetricFog() && selected != nullptr) { selected->volumetric.apply(state); }
+      return state;
+    };
     const auto precipitationBase = PrecipitationSystem::baseState();
     const auto precipitationFor = [&](const Preset* selected) {
       auto state = precipitationBase;
@@ -1232,6 +1309,7 @@ namespace dxvk {
     // While tuning, the sliders are the look: no preset, no blend.
     if (m_tuning) {
       s.wetnessCurrent = wetnessBase;
+      if (!s.hasCurrent || !controlVolumetricFog()) { s.volumetricCurrent = volumetricBase; }
       // Keep ocean weather fixed while tuning the sky look.
       s.current = base;
       s.hasCurrent = true;
@@ -1276,9 +1354,10 @@ namespace dxvk {
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
       blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
-      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend, gamePreset->wetness.values[1].has_value());
       s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), gameBlend);
       s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), gameBlend);
+      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), gameBlend);
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
       s.snap = false;
@@ -1292,10 +1371,12 @@ namespace dxvk {
     const WetnessArgs wetnessGoal = wetnessFor(target);
     const WaterWeatherState waterGoal = waterFor(target);
     const auto precipitationGoal = precipitationFor(target);
+    const auto volumetricGoal = volumetricFor(target);
     if (!s.hasCurrent || targetName != m_targetName) {
       s.wetnessFrom = s.hasCurrent ? s.wetnessCurrent : wetnessGoal;
       s.waterFrom = s.hasCurrent ? s.waterCurrent : waterGoal;
       s.precipitationFrom = s.hasCurrent ? s.precipitationCurrent : precipitationGoal;
+      s.volumetricFrom = s.hasCurrent ? s.volumetricCurrent : volumetricGoal;
       s.from = s.hasCurrent ? s.current : goal;
       s.duration = !s.hasCurrent || s.snap ? 0.0f
                  : (target && target->transitionSeconds >= 0.0f ? target->transitionSeconds : transitionSeconds());
@@ -1306,9 +1387,10 @@ namespace dxvk {
     }
     s.elapsed += std::max(deltaSeconds, 0.0f);
     const float t = s.duration > 0.0f ? s.elapsed / s.duration : 1.0f;
-    s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t));
+    s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t), target && target->wetness.values[1].has_value());
     s.waterCurrent = WaterWeatherState::blend(s.waterFrom, waterGoal, smoothstep01(t));
     s.precipitationCurrent = PrecipitationPreset::blend(s.precipitationFrom, precipitationGoal, smoothstep01(t));
+    s.volumetricCurrent = VolumetricWeatherPreset::blend(s.volumetricFrom, volumetricGoal, smoothstep01(t));
     if (t >= 1.0f) {
       s.current = goal;  // settled: live edits to the preset or the settings show at once
     } else {
@@ -1316,6 +1398,10 @@ namespace dxvk {
     }
     s.snapshot = numos::weatherFromSettings(s.current);
     return s.current;
+  }
+
+  VolumetricWeatherState NumosWeather::volumetricState(const VolumetricWeatherState& base) const {
+    return controlVolumetricFog() && m_state->hasCurrent ? m_state->volumetricCurrent : base;
   }
 
   const PrecipitationState& NumosWeather::precipitationState() const {

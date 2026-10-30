@@ -21,6 +21,7 @@
 */
 
 #include "rtx_geometry_utils.h"
+#include "rtx_skinning_retarget.h"
 #include "dxvk_device.h"
 #include "rtx_render/rtx_shader_manager.h"
 
@@ -369,6 +370,20 @@ namespace dxvk {
     const uint32_t boneTransformCount = std::min(drawCallState.getSkinningState().numBones, kMaxBones);
     memcpy(&params.bones[0], drawCallState.getSkinningState().pBoneMatrices.data(), sizeof(params.bones[0]) * boneTransformCount);
     params.boneTransformCount = boneTransformCount;
+    if (const auto& retarget = drawCallState.getGeometryData().skinningRetarget) {
+      const char* failure = "unknown";
+      uint32_t failureBone = 0;
+      std::array<Matrix4, kMaxBones> retargetedBones;
+      static_assert(sizeof(retargetedBones[0]) == sizeof(params.bones[0]));
+      if (!retargetSkinningPalette(*retarget, drawCallState.getSkinningState().pBoneMatrices.data(),
+          boneTransformCount, retargetedBones.data(), &failure, &failureBone)) {
+        ONCE(Logger::err(str::format("Replacement skeleton retarget rejected: ", failure,
+          " slot=", failureBone, " input=", boneTransformCount, " target=", retarget->parents.size())));
+        return;
+      }
+      memcpy(params.bones, retargetedBones.data(), sizeof(params.bones[0]) * boneTransformCount);
+      ONCE(Logger::info(str::format("Replacement skeleton retarget active: palette bones=", boneTransformCount)));
+    }
 
     params.dstPositionStride = geo.positionBuffer.stride();
     params.dstPositionOffset = geo.positionBuffer.offsetFromSlice();
@@ -391,7 +406,8 @@ namespace dxvk {
     params.useOctahedralNormals = normalVertexFormat == VK_FORMAT_R32_UINT ? 1 : 0;
 
     // If we don't have a mappable vertex buffer then we need to do this on the GPU
-    bool mustUseGPU = drawCallState.getGeometryData().positionBuffer.mapPtr() == nullptr;
+    bool mustUseGPU = drawCallState.getGeometryData().positionBuffer.mapPtr() == nullptr
+      || drawCallState.getGeometryData().skinningRetarget != nullptr;
 
     // At some point, its more efficient to do these calculations on the GPU, this limit is somewhat arbitrary however, and might require better tuning...
     const uint32_t kNumVerticesToProcessOnCPU = 256;

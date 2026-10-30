@@ -62,6 +62,23 @@
 #include "rtx_neural_radiance_cache.h"
 #include "rtx_ray_reconstruction.h"
 
+#include <rtx_shaders/rtxdi_initial_sampling_local_spheres.h>
+#include <rtx_shaders/rtxdi_initial_sampling_local_spheres_wetness.h>
+#define RTX_WETNESS_SHADER_rtxdi_initial_sampling_local_spheres rtxdi_initial_sampling_local_spheres_wetness
+#include <rtx_shaders/rtxdi_initial_sampling_no_portals_local_spheres.h>
+#include <rtx_shaders/rtxdi_initial_sampling_no_portals_local_spheres_wetness.h>
+#define RTX_WETNESS_SHADER_rtxdi_initial_sampling_no_portals_local_spheres rtxdi_initial_sampling_no_portals_local_spheres_wetness
+#include <rtx_shaders/rtxdi_temporal_reuse_local_spheres.h>
+#include <rtx_shaders/rtxdi_temporal_reuse_local_spheres_wetness.h>
+#define RTX_WETNESS_SHADER_rtxdi_temporal_reuse_local_spheres rtxdi_temporal_reuse_local_spheres_wetness
+#include <rtx_shaders/rtxdi_temporal_reuse_no_portals_local_spheres.h>
+#include <rtx_shaders/rtxdi_temporal_reuse_no_portals_local_spheres_wetness.h>
+#define RTX_WETNESS_SHADER_rtxdi_temporal_reuse_no_portals_local_spheres rtxdi_temporal_reuse_no_portals_local_spheres_wetness
+
+#include <rtx_shaders/local_sphere_select.h>
+#include "rtx/pass/rtxdi/local_sphere_select.h"
+#include "rtx_scene_manager.h"
+
 #include <rtx_shaders/rtxdi_initial_sampling.h>
 #include <rtx_shaders/rtxdi_initial_sampling_no_portals.h>
 #include "rtx_fork_light_bvh.h"
@@ -85,6 +102,17 @@ namespace dxvk {
       // variants when portals are merely absent from the current frame.
       return !RtxOptions::rayPortalModelTextureHashes().empty();
     }
+
+    class LocalSphereSelectShader : public ManagedShader {
+      SHADER_SOURCE(LocalSphereSelectShader, VK_SHADER_STAGE_COMPUTE_BIT, local_sphere_select)
+      PUSH_CONSTANTS(LocalSphereSelectArgs)
+      BEGIN_PARAMETER()
+        STRUCTURED_BUFFER(0)
+        STRUCTURED_BUFFER(1)
+        RW_STRUCTURED_BUFFER(2)
+      END_PARAMETER()
+    };
+    PREWARM_SHADER_PIPELINE(LocalSphereSelectShader);
 
     class RTXDIInitialSamplingShader : public ManagedShader {
       WETNESS_SHADER_SOURCE(RTXDIInitialSamplingShader, VK_SHADER_STAGE_COMPUTE_BIT, rtxdi_initial_sampling)
@@ -123,6 +151,7 @@ namespace dxvk {
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_REPROJECTION_CONFIDENCE_OUTPUT)
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_BSDF_FACTOR_OUTPUT)
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_TEMPORAL_POSITION_OUTPUT)
+        STRUCTURED_BUFFER(RTXDI_REUSE_BINDING_LOCAL_LIGHTS_INPUT)
       END_PARAMETER()
     };
 
@@ -167,6 +196,7 @@ namespace dxvk {
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_REPROJECTION_CONFIDENCE_OUTPUT)
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_BSDF_FACTOR_OUTPUT)
         RW_TEXTURE2D(RTXDI_REUSE_BINDING_TEMPORAL_POSITION_OUTPUT)
+        STRUCTURED_BUFFER(RTXDI_REUSE_BINDING_LOCAL_LIGHTS_INPUT)
       END_PARAMETER()
     };
 
@@ -256,6 +286,12 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(RTXDIComputeConfidenceShader);
 
     Rc<DxvkShader> getRtxdiInitialSamplingShader(bool usePortalShaderVariants) {
+      if (DxvkRtxdiRayQuery::localSphereInitialSampleCount()) {
+        return usePortalShaderVariants
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDIInitialSamplingShader, rtxdi_initial_sampling_local_spheres)
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDIInitialSamplingShader, rtxdi_initial_sampling_no_portals_local_spheres);
+      }
+
       if (usePortalShaderVariants) {
         return RTXDIInitialSamplingShader::getShader();
       }
@@ -264,6 +300,12 @@ namespace dxvk {
     }
 
     Rc<DxvkShader> getRtxdiTemporalReuseShader(bool usePortalShaderVariants) {
+      if (DxvkRtxdiRayQuery::localSphereInitialSampleCount()) {
+        return usePortalShaderVariants
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDITemporalReuseShader, rtxdi_temporal_reuse_local_spheres)
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, RTXDITemporalReuseShader, rtxdi_temporal_reuse_no_portals_local_spheres);
+      }
+
       if (usePortalShaderVariants) {
         return RTXDITemporalReuseShader::getShader();
       }
@@ -320,6 +362,7 @@ namespace dxvk {
 
   void DxvkRtxdiRayQuery::showImguiSettings() {
     RemixGui::SliderInt("Initial Sample Count", &initialSampleCountObject(), 1, 64);
+    RemixGui::SliderInt("Nearest Sphere Candidates (GPU)", &localSphereInitialSampleCountObject(), 0, 64);
     RemixGui::Checkbox("Sample Best Lights", &enableBestLightSamplingObject());
     RemixGui::Checkbox("Initial Visibility", &enableInitialVisibilityObject());
     RemixGui::Separator();
@@ -438,6 +481,52 @@ namespace dxvk {
         && enableTemporalReuse() && getEnableDenoiserGradient(ctx) && enableDenoiserConfidence();
   }
 
+  DxvkBufferSlice DxvkRtxdiRayQuery::selectLocalSphereLights(RtxContext* ctx) {
+    ScopedGpuProfileZone(ctx, "Nearest sphere selection");
+    const auto& lights = ctx->getSceneManager().getLightManager();
+    const uint32_t samples = std::min(localSphereInitialSampleCount(), 64u);
+    const uint32_t count = samples ? lights.getActiveCount() : 0u;
+    const uint32_t groups = std::max(1u, (count + 511u) / 512u);
+    const VkDeviceSize bytes = VkDeviceSize(groups * 64u + 1u) * 8u;
+    for (auto& buffer : m_localSphereCandidates) {
+      if (buffer == nullptr || buffer->info().size < bytes) {
+        DxvkBufferCreateInfo info {};
+        info.size = bytes;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        info.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        buffer = ctx->getDevice()->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          DxvkMemoryStats::Category::RTXBuffer, "GPU nearest sphere candidates");
+      }
+    }
+    if (count == 0u) {
+      const uint64_t empty = 0;
+      ctx->updateBuffer(m_localSphereCandidates[0], 0, sizeof(empty), &empty);
+      return DxvkBufferSlice(m_localSphereCandidates[0]);
+    }
+    const Vector3 camera = ctx->getSceneManager().getCameraManager().getMainCamera().getPosition();
+    LocalSphereSelectArgs args {};
+    args.cameraPosition = vec3(camera.x, camera.y, camera.z);
+    args.inputCount = count;
+    args.firstPass = 1;
+    args.sampleCount = samples;
+    uint32_t output = 0;
+    for (;;) {
+      args.groupCount = std::max(1u, (args.inputCount + 511u) / 512u);
+      ctx->bindResourceBuffer(0, DxvkBufferSlice(lights.getLightBuffer()));
+      ctx->bindResourceBuffer(1, DxvkBufferSlice(m_localSphereCandidates[1 - output]));
+      ctx->bindResourceBuffer(2, DxvkBufferSlice(m_localSphereCandidates[output]));
+      ctx->pushConstants(0, sizeof(args), &args);
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LocalSphereSelectShader::getShader());
+      ctx->dispatch(args.groupCount, 1, 1);
+      if (args.groupCount == 1) { break; }
+      args.inputCount = args.groupCount * 64u;
+      args.firstPass = 0;
+      output = 1 - output;
+    }
+    return DxvkBufferSlice(m_localSphereCandidates[output]);
+  }
+
   void DxvkRtxdiRayQuery::dispatch(RtxContext* ctx, const Resources::RaytracingOutput& rtOutput) {
     ScopedGpuProfileZone(ctx, "RTXDI");
 
@@ -455,6 +544,10 @@ namespace dxvk {
     const SparseRendering& sparseRendering = ctx->getCommonObjects()->metaSparseRendering();
     const SparseRenderingArgs& sparseArgs = rtOutput.m_raytraceArgs.sparseRenderingArgs;
 
+    if (localSphereInitialSampleCount()) {
+      const DxvkBufferSlice localSpheres = selectLocalSphereLights(ctx);
+      ctx->bindResourceBuffer(RTXDI_REUSE_BINDING_LOCAL_LIGHTS_INPUT, localSpheres);
+    }
     ctx->bindCommonRayTracingResources(rtOutput);
     
     {

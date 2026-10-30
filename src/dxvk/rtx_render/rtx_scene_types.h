@@ -42,6 +42,8 @@ using remixapi_MeshHandle = struct remixapi_MeshHandle_T*;
 
 namespace dxvk {
 
+struct SkinningRetargetData;
+
 using RasterBuffer = GeometryBuffer<Raster>;
 
 struct SkinningData {
@@ -96,6 +98,13 @@ struct RasterGeometry {
 
   AxisAlignedBoundingBox boundingBox;
 
+  std::shared_ptr<const SkinningRetargetData> skinningRetarget;
+
+  // Original draw identity supplied by a versioned legacy-surface import.
+  uint64_t legacyDrawHash = 0;
+  uint64_t legacyGeometryHash = 0;
+  uint64_t legacyMaterialHash = 0;
+  uint64_t legacyRuleFingerprint = 0;
   remixapi_MaterialHandle externalMaterial = nullptr;
   remixapi_MeshHandle externalMesh = nullptr;
 

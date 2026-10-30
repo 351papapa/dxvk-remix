@@ -26,11 +26,14 @@
 #include "dxvk_scoped_annotation.h"
 #include "dxvk_context.h"
 #include "rtx_context.h"
+#include "rtx_scene_manager.h"
 #include "rtx_imgui.h"
 
 #include <rtx_shaders/point_instancer_culling.h>
+#include <rtx_shaders/point_instancer_culling_frustum.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace dxvk {
@@ -64,6 +67,9 @@ namespace dxvk {
 
       RemixGui::Checkbox("Enable Culling", &enableObject());
       ImGui::BeginDisabled(!enable());
+      RemixGui::Checkbox("Cull Outside Camera Frustum", &frustumCullObject());
+      RemixGui::DragFloat("Frustum Margin", &frustumSpherePadObject(), 1.f, 0.f, 100000.f);
+      RemixGui::DragFloat("Keep Nearby Off-screen Instances", &frustumNearSkipObject(), 1.f, 0.f, 100000.f);
 
       RemixGui::DragFloat("Culling Radius", &cullingRadiusObject(), 10.f, fadeStartRadius(), 100000.f, "%.0f");
       RemixGui::DragFloat("Fade Start Radius", &fadeStartRadiusObject(), 10.f, 0.f, cullingRadius(), "%.0f");
@@ -226,6 +232,26 @@ namespace dxvk {
     constants.cameraPosition  = { cameraPosition.x, cameraPosition.y, cameraPosition.z };
     constants.cullingRadius   = cullingEnabled ? cullingRadius() : FLT_MAX;
     constants.fadeStartRadius = cullingEnabled ? fadeStartRadius() : 0.f;
+    static_assert(sizeof(PointInstancerCullingConstants) == 112);
+    constants.frustumCull = cullingEnabled && frustumCull();
+    constants.frustumSpherePad = std::isfinite(frustumSpherePad()) ? std::max(0.f, frustumSpherePad()) : 0.f;
+    constants.frustumNearSkip = std::isfinite(frustumNearSkip()) ? std::max(0.f, frustumNearSkip()) : 0.f;
+    if (constants.frustumCull) {
+      // Camera metadata only; every instance's transform and visibility are evaluated in the compute shader.
+      const auto& camera = ctx->getCommonObjects()->getSceneManager().getCamera();
+      const Matrix4 worldToClip = camera.getViewToProjectionf() * camera.getWorldToViewf();
+      const Vector4 rowW(worldToClip[0][3], worldToClip[1][3], worldToClip[2][3], worldToClip[3][3]);
+      for (uint32_t axis = 0; axis < 2; ++axis) {
+        const Vector4 row(worldToClip[0][axis], worldToClip[1][axis], worldToClip[2][axis], worldToClip[3][axis]);
+        for (uint32_t side = 0; side < 2; ++side) {
+          Vector4 plane = side == 0 ? rowW + row : rowW - row;
+          const float length = std::sqrt(dot(plane.xyz(), plane.xyz()));
+          if (std::isfinite(length) && length > 1e-6f && std::isfinite(plane.w)) { plane /= length; }
+          else { plane = Vector4(0.f, 0.f, 0.f, 1.f); }
+          constants.viewPlanes[axis * 2 + side] = { plane.x, plane.y, plane.z, plane.w };
+        }
+      }
+    }
 
     ctx->bindResourceBuffer(POINT_INSTANCER_CULLING_BINDING_TRANSFORMS_INPUT,
                             DxvkBufferSlice(m_transformsGpu, 0, std::max<size_t>(transformsSize, sizeof(Matrix4))));
@@ -234,7 +260,9 @@ namespace dxvk {
     ctx->bindResourceBuffer(POINT_INSTANCER_CULLING_BINDING_INSTANCE_BUFFER, DxvkBufferSlice(instanceBuffer));
     ctx->bindResourceBuffer(POINT_INSTANCER_CULLING_BINDING_SURFACE_BUFFER, DxvkBufferSlice(surfaceBuffer));
     ctx->bindResourceBuffer(POINT_INSTANCER_CULLING_BINDING_MATERIAL_BUFFER, DxvkBufferSlice(surfaceMaterialBuffer));
-    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, PointInstancerCullingShader::getShader());
+    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, constants.frustumCull
+      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, PointInstancerCullingShader, point_instancer_culling_frustum)
+      : PointInstancerCullingShader::getShader());
 
     const auto dispatchRange = [&](uint32_t firstThread, uint32_t count) {
       constants.firstThread = firstThread;

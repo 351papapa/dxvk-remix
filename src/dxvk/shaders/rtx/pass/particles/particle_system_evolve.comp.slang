@@ -1,4 +1,8 @@
 //!feature wetness ENABLE_SURFACE_WETNESS
+//!variant particle_system_evolve.comp
+//!variant particle_system_evolve_zones.comp
+//!> ENABLE_NO_RAIN_ZONES
+//!end-variants
 /*
 * Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 *
@@ -44,6 +48,9 @@ RWStructuredBuffer<GpuParticle> Particles;
 
 layout(binding = PARTICLE_SYSTEM_BINDING_COUNTER_OUTPUT)
 RWStructuredBuffer<int> Counter;
+
+layout(binding = PARTICLE_SYSTEM_BINDING_SPAWN_TRACE_STATS_OUTPUT)
+RWStructuredBuffer<uint> SpawnTraceStats;
 
 // small bias to avoid re-penetration
 static const float kCollisionBias = 1e-3f;
@@ -168,7 +175,16 @@ void evolve(inout GpuParticle particle, const GpuParticleSystem particleSystem)
   float16_t3 maxVelocity = particle.maxVelocity(particleSystem, animationDataTex) * float16_t(particleCb.sceneScale);
   particle.velocity = select(maxVelocity > 0.h, clamp(particle.velocity, -maxVelocity, maxVelocity), particle.velocity);
   
-  particle.position += particle.velocity * particleCb.deltaTimeSecs;
+  const float3 nextPosition = particle.position + particle.velocity * particleCb.deltaTimeSecs;
+#ifdef ENABLE_NO_RAIN_ZONES
+  if (particleSystem.desc.useNoRainZones && particleCb.noRainZoneCount
+      && !particle.isSleeping() && !particle.isDead()
+      && noRainZonesIntersectSegment(wetnessZones, particleCb.noRainZoneCount, particle.position, nextPosition)) {
+    particle.timeToLive = 0.0f;
+    InterlockedAdd(SpawnTraceStats[10], 1);
+  }
+#endif
+  particle.position = nextPosition;
   
   if (!particleSystem.desc.enableMotionTrail)
   {

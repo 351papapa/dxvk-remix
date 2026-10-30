@@ -77,6 +77,7 @@ namespace dxvk::hud {
     ScopedGpuProfileZone(ctx, "Render DXVK HUD");
     this->setupRendererState(ctx, surfaceFormat, surfaceSize);    
     this->renderHudElements(ctx);
+    m_renderer.finishExportFrame();
     this->resetRendererState(ctx);
   }
   

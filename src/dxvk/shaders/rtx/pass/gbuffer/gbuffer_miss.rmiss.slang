@@ -1,4 +1,5 @@
 //!feature wetness ENABLE_SURFACE_WETNESS
+//!feature particle_sky ENABLE_PARTICLE_SKY_HEMISPHERE
 /*
 * Copyright (c) 2022-2024, NVIDIA CORPORATION. All rights reserved.
 *

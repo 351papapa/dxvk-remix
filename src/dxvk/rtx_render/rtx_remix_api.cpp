@@ -22,6 +22,10 @@
 
 #define RTX_REMIX_PNEXT_CHECK_STRUCTS
 
+#include <remix/remix_retained_validation.h>
+#include <remix/remix_legacy_surface_validation.h>
+#include <remix/remix_game_surface.h>
+#include "rtx_retained_compat.h"
 #include "rtx_asset_data_manager.h"
 #include "rtx_asset_replacer.h"
 #include "rtx_light_manager.h"
@@ -641,7 +645,7 @@ namespace {
           extOpaque->metallicConstant,
           tovec3(info.emissiveColorConstant),
           info.emissiveIntensity > 0.f,
-          false, // OpaqueMaterial::SkyLitParticle - not exposed via remixapi
+          RtxParticleSystemManager::forceSkyLitParticle(),
           info.spriteSheetRow,
           info.spriteSheetCol,
           info.spriteSheetFps,
@@ -1106,6 +1110,16 @@ namespace {
       if (auto extMaterialOverride = pnext::find<remixapi_InstanceInfoMaterialOverrideEXT>(&info)) {
         desc.materialOverride = reinterpret_cast<frontend::MaterialHandle>(extMaterialOverride->material);
       }
+      struct ExtensionHeader { remixapi_StructType sType; const void* pNext; };
+      const void* next = info.pNext;
+      for (uint32_t depth = 0; next && depth < 64; ++depth) {
+        const auto* header = static_cast<const ExtensionHeader*>(next);
+        if (header->sType == REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GAME_SURFACE_EXT) {
+          desc.wetnessTag = static_cast<const remixapi_InstanceInfoGameSurfaceEXT*>(next)->wetTag;
+          break;
+        }
+        next = header->pNext;
+      }
       return desc;
     }
 
@@ -1180,17 +1194,29 @@ namespace {
     }
 
     // async load
+    const bool gameTexture = info->albedoTexture && std::wstring(info->albedoTexture).rfind(L"game:0x", 0) == 0;
+    auto ready = std::make_shared<bool>(false);
     {
     std::lock_guard lock { s_mutex };
-    remixDevice->EmitCs([cHandle = handle,
+    remixDevice->EmitCs([cHandle = handle, gameTexture, ready,
                          cMaterialData = convert::toRtMaterialWithoutTexturePreload(*info),
                          cPreloadSrc = convert::makePreloadSource(*info)](dxvk::DxvkContext* ctx) {
       auto& assets = ctx->getCommonObjects()->getSceneManager().getAssetReplacer();
-      assets->makeMaterialWithTexturePreload(
-        *ctx,
-        cHandle,
-        convert::toRtMaterialFinalized(*ctx, cMaterialData, cPreloadSrc));
+      auto material = convert::toRtMaterialFinalized(*ctx, cMaterialData, cPreloadSrc);
+      if (gameTexture && (material.getType() != dxvk::MaterialDataType::Opaque ||
+          !material.getOpaqueMaterialData().getAlbedoOpacityTexture().isValid())) {
+        return;
+      }
+      assets->makeMaterialWithTexturePreload(*ctx, cHandle, std::move(material));
+      *ready = assets->accessExternalMaterial(cHandle) != nullptr;
     });
+    }
+    if (gameTexture) {
+      remixDevice->synchronizeCommands();
+      if (!*ready) {
+        *out_handle = nullptr;
+        return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+      }
     }
     emitAssetKey(remixDevice, info->pNext, info->hash, false);
 
@@ -1250,6 +1276,11 @@ namespace {
     }
   }
 
+  uint64_t legacySurfaceRuleFingerprint() {
+    return static_cast<uint64_t>(dxvk::RtxOptions::geometryAssetHashRule().raw()) |
+      (static_cast<uint64_t>(dxvk::RtxOptions::geometryHashGenerationRule().raw()) << 32);
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMesh(
     const remixapi_MeshInfo* info,
     remixapi_MeshHandle* out_handle) {
@@ -1267,13 +1298,28 @@ namespace {
     if (!handle) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-    emitAssetKey(remixDevice, info->pNext, info->hash, true);
 
     // Opt-in in-place geometry refresh: the caller is re-submitting a mesh that
     // is already registered under this hash, with identical topology but moved
     // vertex positions (for example facial morphs). Keeping the hash -- and therefore the
     // handle, the external-draw identity hash, and the spatial-map hash --
     // stable is what preserves the instance's previous-frame correspondence.
+    *out_handle = nullptr;
+    remixapi::legacy_surface::Input legacyInput;
+    if (!remixapi::legacy_surface::readInput(*info, legacyInput)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (legacyInput.hasLegacy()) {
+      for (uint32_t i = 0; i < legacyInput.count(); ++i) {
+        if (!remixapi::legacy_surface::validIdentity(legacyInput.identity(i), legacySurfaceRuleFingerprint()) ||
+            !info->surfaces_values || checkSurface(info->surfaces_values[i]) != dxvk::SceneInput::Count) {
+          return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+        }
+      }
+    }
+
+    emitAssetKey(remixDevice, info->pNext, info->hash, true);
+
     const bool refreshGeometry = pnext::find<remixapi_MeshInfoRefreshGeometryEXT>(info) != nullptr;
 
     // A re-create of a live handle without the refresh extension is dropped by
@@ -1417,6 +1463,16 @@ namespace {
         dst.hashes[dxvk::HashComponents::GeometryDescriptor] = hack_getNextGeomHash();
         dst.hashes[dxvk::HashComponents::VertexLayout] = hack_getNextGeomHash();
         dst.hashes.precombine();
+      }
+      if (legacyInput.hasLegacy()) {
+        const auto& identity = legacyInput.identity(static_cast<uint32_t>(i));
+        dst.legacyDrawHash = identity.legacyDrawHash;
+        dst.legacyGeometryHash = identity.legacyGeometryHash;
+        dst.legacyMaterialHash = identity.legacyMaterialHash;
+        dst.legacyRuleFingerprint = identity.ruleFingerprint;
+        if (legacyInput.normalAbsent(static_cast<uint32_t>(i))) {
+          dst.normalBuffer = {};
+        }
       }
       allocatedSurfaces.push_back(std::move(dst));
     }
@@ -1628,6 +1684,13 @@ namespace {
     if (!out_handle || !info || info->sType != REMIXAPI_STRUCT_TYPE_MESH_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
+    remixapi::legacy_surface::Input legacyInput;
+    if (!remixapi::legacy_surface::readInput(*info, legacyInput)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (legacyInput.hasLegacy()) {
+      return remixapi_CreateMesh(info, out_handle);
+    }
     static_assert(sizeof(remixapi_MeshHandle) == sizeof(info->hash));
     auto handle = reinterpret_cast<remixapi_MeshHandle>(info->hash);
     if (!handle) {
@@ -1741,6 +1804,7 @@ namespace {
     // Retained commands queued before this call (the destroys of the mesh's instances) apply first.
     remixDevice->EmitCs([cHandle = handle, cBound = sceneCommandsIssued(remixDevice)](dxvk::DxvkContext* ctx) {
       static_cast<dxvk::RtxContext*>(ctx)->drainSceneCommands(cBound);
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().destroyMesh(cHandle);
       ctx->getCommonObjects()->getSceneManager()
         .destroyExternalMesh(dxvk::Rc<dxvk::DxvkContext>(ctx), cHandle);
       ctx->getCommonObjects()->getSceneManager().getAssetReplacer()->assetResolver().eraseMeshKey(
@@ -1825,6 +1889,176 @@ namespace {
 
       sceneManager.setExternalStartInMediumMaterial(*material);
     });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !instances)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      if (!remixapi_retained::valid(instances[i])) {
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      }
+    }
+    std::vector<dxvk::frontend::PreparedInstance> states;
+    std::vector<remixapi_RetainedInstance> records;
+    if (count) { records.assign(instances, instances + count); }
+    states.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto& source = instances[i];
+      remixapi_InstanceInfo info = {};
+      info.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+      info.mesh = reinterpret_cast<remixapi_MeshHandle>(source.mesh);
+      info.transform = source.transform;
+      info.categoryFlags = source.categoryFlags;
+      info.doubleSided = source.doubleSided;
+      remixapi_InstanceInfoGameSurfaceEXT surface = {};
+      surface.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GAME_SURFACE_EXT;
+      surface.wetTag = source.wetTag;
+      info.pNext = &surface;
+      remixapi_InstanceInfoObjectPickingEXT picking = {};
+      picking.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_OBJECT_PICKING_EXT;
+      picking.objectPickingValue = source.objectPickingValue;
+      surface.pNext = &picking;
+      remixapi_InstanceInfoBlendEXT blend = {};
+      if (source.useBlend) {
+        blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+        picking.pNext = &blend;
+        blend.alphaTestEnabled = source.blend.alphaTestEnabled;
+        blend.alphaTestReferenceValue = static_cast<uint8_t>(source.blend.alphaTestReferenceValue);
+        blend.alphaTestCompareOp = source.blend.alphaTestCompareOp;
+        blend.alphaBlendEnabled = source.blend.alphaBlendEnabled;
+        blend.srcColorBlendFactor = source.blend.srcColorBlendFactor;
+        blend.dstColorBlendFactor = source.blend.dstColorBlendFactor;
+        blend.colorBlendOp = source.blend.colorBlendOp;
+        blend.textureColorArg1Source = source.blend.textureColorArg1Source;
+        blend.textureColorArg2Source = source.blend.textureColorArg2Source;
+        blend.textureColorOperation = source.blend.textureColorOperation;
+        blend.textureAlphaArg1Source = source.blend.textureAlphaArg1Source;
+        blend.textureAlphaArg2Source = source.blend.textureAlphaArg2Source;
+        blend.textureAlphaOperation = source.blend.textureAlphaOperation;
+        blend.tFactor = source.blend.tFactor;
+        blend.isTextureFactorBlend = source.blend.isTextureFactorBlend;
+        blend.srcAlphaBlendFactor = source.blend.srcAlphaBlendFactor;
+        blend.dstAlphaBlendFactor = source.blend.dstAlphaBlendFactor;
+        blend.alphaBlendOp = source.blend.alphaBlendOp;
+        blend.writeMask = source.blend.writeMask;
+        blend.isVertexColorBakedLighting = source.blend.isVertexColorBakedLighting;
+      }
+      auto state = convert::toPreparedInstance(info);
+      if (!state) { return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS; }
+      states.push_back(std::move(state));
+    }
+    flushPendingMeshes(device);
+    std::lock_guard lock { s_mutex };
+    device->EmitCs([epoch, records = std::move(records), states = std::move(states)](dxvk::DxvkContext* ctx) mutable {
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().upsert(epoch, std::move(records), std::move(states));
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !ids)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      if (!ids[i]) {
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      }
+    }
+    std::vector<uint64_t> copied;
+    if (count) {
+      copied.assign(ids, ids + count);
+    }
+    std::lock_guard lock { s_mutex };
+    device->EmitCs([epoch, ids = std::move(copied)](dxvk::DxvkContext* ctx) {
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().remove(epoch, ids);
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedDrawOrdered(uint64_t epoch, uint32_t count, const uint64_t* ids) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !ids)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      if (!ids[i]) {
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      }
+    }
+    std::vector<uint64_t> copied;
+    if (count) {
+      copied.assign(ids, ids + count);
+    }
+    std::lock_guard lock { s_mutex };
+    device->EmitCs([epoch, ids = std::move(copied)](dxvk::DxvkContext* ctx) {
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().drawOrdered(dxvk::Rc<dxvk::DxvkContext>(ctx), epoch, ids);
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedClear(uint64_t epoch) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!epoch) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    std::lock_guard lock { s_mutex };
+    device->EmitCs([epoch](dxvk::DxvkContext* ctx) {
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().clear(epoch);
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedCommitFrame(uint64_t epoch) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!epoch) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    dxvk::fork_hooks::notifyBeginScene();
+    flushPendingMeshes(device);
+    std::lock_guard lock { s_mutex };
+    device->EmitCs([epoch](dxvk::DxvkContext* ctx) {
+      ctx->getCommonObjects()->getSceneManager().retainedScene().compat().commit(dxvk::Rc<dxvk::DxvkContext>(ctx), epoch);
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedGetStatus(remixapi_RetainedStatus* status) {
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!status) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    auto result = std::make_shared<remixapi_RetainedStatus>();
+    {
+      std::lock_guard lock { s_mutex };
+      device->EmitCs([result](dxvk::DxvkContext* ctx) {
+        *result = ctx->getCommonObjects()->getSceneManager().retainedScene().compat().status();
+      });
+    }
+    device->synchronizeCommands();
+    *status = *result;
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -2720,6 +2954,16 @@ namespace {
 
 extern "C"
 {
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
+    uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
+    if (!outInterface || version != REMIXAPI_RETAINED_VERSION || structSize != sizeof(*outInterface)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    *outInterface = { REMIXAPI_RETAINED_VERSION, sizeof(*outInterface), retainedBatchUpsert,
+      retainedBatchRemove, retainedClear, retainedCommitFrame, retainedGetStatus, retainedDrawOrdered };
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AutoInstancePersistentLights(void) {
     REMIX_FORK_RECORD0(AutoInstancePersistentLights);
     dxvk::RemixApiDevice* remixDevice = tryAsDxvk();
@@ -2957,8 +3201,19 @@ extern "C"
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
 
+    if (remixapi::legacy_surface::getCapabilityValue(key, out_buffer, in_buffer_size, out_actual_size)) {
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     std::string value;
-    if (!dxvk::fork_game_state::GameStateStore::get().tryGet(std::string{ key }, value)) {
+    if (std::strcmp(key, "vc.api.gameSurfaceVersion") == 0 ||
+        std::strcmp(key, "vc.api.gameTextureMaterialVersion") == 0 ||
+        std::strcmp(key, "vc.api.legacySurfaceVersion") == 0 ||
+        std::strcmp(key, "vc.api.zeroLegacyMaterialVersion") == 0 ||
+        std::strcmp(key, "vc.api.retainedOrderedVersion") == 0) {
+      value = "1";
+    } else if (std::strcmp(key, "vc.api.legacySurfaceRule") == 0) {
+      value = dxvk::str::format(std::hex, legacySurfaceRuleFingerprint());
+    } else if (!dxvk::fork_game_state::GameStateStore::get().tryGet(std::string{ key }, value)) {
       *out_actual_size = 0;
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
@@ -3271,6 +3526,14 @@ extern "C"
 
 namespace dxvk {
   namespace remix_api {
+
+    void trackGameTexture(RemixApiDevice& device, Rc<DxvkImageView> view) {
+      device.EmitCs([view = std::move(view)](DxvkContext* ctx) {
+        uint32_t index = 0;
+        ctx->getCommonObjects()->getSceneManager().trackTexture(TextureRef { view }, index, true, false);
+      });
+    }
+
 
     RemixApiDevice* registeredDevice() {
       return tryAsDxvk();

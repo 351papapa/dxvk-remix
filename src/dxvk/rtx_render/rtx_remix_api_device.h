@@ -68,6 +68,8 @@ namespace dxvk {
     const Rc<DxvkDevice>& GetDXVKDevice() const { return m_device; }
 
     virtual RemixApiDeviceLock LockDevice() = 0;
+    // Waits for preceding CPU command-stream work, without waiting for GPU execution.
+    virtual void synchronizeCommands() = 0;
 
     // AllowFlush lets the device consider a GPU flush when the command fills a chunk.
     template<bool AllowFlush = true, typename Cmd>
@@ -171,6 +173,9 @@ namespace dxvk {
     // Imports source under hash, or with replaceOnly re-points the live texture hash at it.
     remixapi_ErrorCode importTexture(const RemixApiImportSource* source, uint64_t hash, uint32_t encoding,
                                      bool replaceOnly, remixapi_TextureHandle* out_handle);
+
+    // Queues game-texture registration for hash-bound materials on the host command stream.
+    void trackGameTexture(RemixApiDevice& device, Rc<DxvkImageView> view);
 
     // Starts and stops the VRAM budget's tracking of an import source. hostTexture is the source's reference on the
     // host's texture, or null.

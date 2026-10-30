@@ -1,6 +1,10 @@
 #pragma once
 
+#include <chrono>
+#include <fstream>
+
 #include "../dxvk_device.h"
+#include "../rtx_render/rtx_option.h"
 
 #include "dxvk_hud_font.h"
 
@@ -85,7 +89,9 @@ namespace dxvk::hud {
       HudLineVertex         lineVertices[MaxLineVertexCount];
     };
   public:
-    
+    RTX_OPTION("dxvk", std::string, hudExport, "", "CSV output path for sampled visible HUD text and base-frame timing history. Empty disables export. Starting an export or changing its path replaces the target file. The parent directory must exist.");
+    RTX_OPTION("dxvk", int32_t, hudExportIntervalMs, 250, "HUD CSV sampling interval in milliseconds, clamped to 16-10000. Shorter intervals increase file I/O. Has no effect while HUD export is disabled.");
+
     HudRenderer(
       const Rc<DxvkDevice>&   device);
     
@@ -106,6 +112,10 @@ namespace dxvk::hud {
             size_t            vertexCount,
       const HudLineVertex*    vertexData);
     
+    void finishExportFrame();
+    void exportValue(const std::string& kind, float x, float y, const std::string& value);
+    bool exporting() const { return m_exportFrame; }
+
     VkExtent2D surfaceSize() const {
       return m_surfaceSize;
     }
@@ -115,7 +125,16 @@ namespace dxvk::hud {
     }
     
   private:
-    
+    std::ofstream m_exportFile;
+    std::string m_exportPath;
+    std::chrono::steady_clock::time_point m_exportStart {};
+    std::chrono::steady_clock::time_point m_exportNext {};
+    uint64_t m_exportFrameId = 0;
+    double m_exportTimeMs = 0;
+    bool m_exportFrame = false;
+
+    void beginExportFrame();
+
     enum class Mode {
       RenderNone,
       RenderText,

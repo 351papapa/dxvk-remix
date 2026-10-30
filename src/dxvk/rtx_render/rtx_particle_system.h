@@ -178,7 +178,7 @@ namespace dxvk {
     // 10-frames-in-flight host ring, as ConservativeCounter does, and the oldest, retired slot is published
     // to the static atomics for the Precipitation dev panel. Rays == 0 means the trace is not running, and
     // rays > 0 with hits == 0 means it has nothing to hit.
-    static constexpr uint32_t kSpawnTraceStatsCount = 8;
+    static constexpr uint32_t kSpawnTraceStatsCount = 12;
     static constexpr uint32_t kSpawnTraceStatsFramesInFlight = 10;
     Rc<DxvkBuffer> m_spawnTraceStatsGpu;
     Rc<DxvkBuffer> m_spawnTraceStatsHost;
@@ -202,6 +202,9 @@ namespace dxvk {
     RTX_OPTION("rtx.particles", fast_unordered_set, waterContactEmitterMeshes, {}, "API mesh hashes projected onto Water Texture surfaces or rendered wetness puddles at spawn. Dry contacts emit nothing.");
     RTX_OPTION("rtx.particles", fast_unordered_set, wetRoadEmitterMeshes, {}, "API mesh hashes whose particles spawn on wet DFF road contacts or open water. Road opacity follows weather wetness without requiring puddle coverage.");
     RTX_OPTION("rtx.particles", fast_unordered_set, puddleEmitterMeshes, {}, "API mesh hashes whose particle spawn is restricted to rendered wetness puddles. Empty disables the additional GPU contact checks.");
+
+    RTX_OPTION("rtx.particles", bool, forceSkyLitParticle, false,
+      "Apply sky ambient lighting to newly created API opaque materials. Enable for host particle materials that need sky illumination; unrelated or indoor API materials can also become brighter. Recreate materials after changing this option.");
 
     RTX_OPTION("rtx.particles", bool, enable, true, "Enables particle simulation and rendering.");
     RTX_OPTION("rtx.particles", bool, enableSpawning, true, "Controls whether or not any particle system can currently spawn new particles.");

@@ -141,9 +141,18 @@ and its saved working tree. The v2 NUMOS/pre-exposure adapter, engine-owned mesh
 registration and camera-medium bridge forwarding are local adaptations. NUMOS
 is consumed through the existing unmodified submodule and host shader boundary.
 
-Weather precipitation, surface-contact emitters, lens rain and active flare-card
-material rules derive from that local runtime and its saved working tree. The
+Weather precipitation, surface-contact emitters and lens rain derive from that local runtime and its saved working tree. The
 weather emitter retains its design credit to xoxor4d's NFS Carbon RTX rain.
-The typed NUMOS adapter, GPU lens droplet state/binning and device-owned flare
-material cache are local adaptations. NVIDIA-derived files keep their MIT notices;
+The typed NUMOS adapter and GPU lens droplet state/binning are local adaptations. NVIDIA-derived files keep their MIT notices;
 the repository's zlib/libpng and MIT licence texts remain distributed unchanged.
+
+## Local captured-surface and retained compatibility
+
+The fixed-width retained protocol, legacy-surface metadata and game-texture binding contracts were adapted from the user's local rebased9-19 runtime and WorldMeshVC sources for this migration. The new adapter targets the current retained scene implementation. Copied NVIDIA-derived bridge/API code remains under the MIT notices in those files; DXVK portions remain under `LICENSE`. No additional third-party dependency is bundled by this adapter.
+
+The nearest-sphere candidate policy, optional point frustum test, volume workgroup
+shapes, HUD export schema, idle OMM sweep and weather/particle consumer semantics
+were adapted from the same local runtime and its saved working tree. GPU top-K
+selection, typed weather ownership and integration with the v2 batched instance
+and cache lifetime paths are local adaptations. Existing NVIDIA MIT and DXVK
+zlib/libpng notices are retained; no additional third-party library is bundled.

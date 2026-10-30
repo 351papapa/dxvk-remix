@@ -60,6 +60,8 @@ util_header = files([
 	'util_once.h',
 	'util_process.h',
 	'util_remixapi.h',
+  'util_remixapi_gpu_instancing.h',
+	'util_remixapi_retained_error.h',
 	'util_scopedlock.h',
 	'util_seh.h',
 	'util_semaphore.h',

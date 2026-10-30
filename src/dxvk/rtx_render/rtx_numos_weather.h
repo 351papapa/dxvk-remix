@@ -46,6 +46,7 @@
 #include "rtx_option.h"
 #include "rtx_wetness_preset.h"
 #include "rtx_precipitation_state.h"
+#include "rtx_volumetric_weather.h"
 
 namespace numos {
   struct Settings;
@@ -80,6 +81,10 @@ namespace dxvk {
       "to convert into preset files in rtx.weather.presetDirectory. Each section is converted once; a preset of the same "
       "name is replaced and backed up as <name>.conf.bak. Usually set by the game integration. Empty: nothing is imported.");
 
+    RTX_OPTION("rtx.weather", bool, controlVolumetricFog, false,
+      "Allow weather presets to change global volumetric fog, its froxel distance, noise and translucent shadows. "
+      "Unset fields inherit the global volumetric settings. The volumetric master switch remains independent.");
+
     struct Preset {
       std::string name;                  // the file name without .conf
       std::vector<std::string> bindings; // game weather ids
@@ -90,6 +95,7 @@ namespace dxvk {
       std::vector<bool> relative;        // indexed like `set`: the value multiplies the user's setting
       WetnessPreset wetness;
       PrecipitationPreset precipitation;
+      VolumetricWeatherPreset volumetric;
       WaterWeatherState water;
       bool dirty = false;                // edited since the last load or save
       bool numosBuiltIn = false;         // the name of one of NUMOS's presets (it can be reset)
@@ -111,6 +117,7 @@ namespace dxvk {
     const numos::WeatherSnapshot* currentSnapshot() const;
     WaterWeatherState waterState() const;
     const PrecipitationState& precipitationState() const;
+    VolumetricWeatherState volumetricState(const VolumetricWeatherState& base) const;
     // Shows a decoded seed's weather until the preset or the game weather changes.
     void holdSnapshot(const numos::WeatherSnapshot& weather);
 

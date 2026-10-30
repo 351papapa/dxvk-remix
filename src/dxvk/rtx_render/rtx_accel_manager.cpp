@@ -2485,19 +2485,30 @@ namespace dxvk {
     relocateDrainingBlases(ctx);
   }
 
-  // Every 8 frames, marks the micromaps held by the merged buckets' BLASes as in use in the OMM cache.
+  // Every eight frames, refreshes micromaps held by cached BLASes in the scene.
   void AccelManager::touchMergedBlasMicromaps(OpacityMicromapManager* opacityMicromapManager) {
     // boundOmms is only filled with rtx.ommHoldBoundMicromaps on.
-    if (opacityMicromapManager == nullptr || !OpacityMicromapOptions::Cache::keepMergedBlasMicromapsInUse() ||
-        !RtxOptions::ommHoldBoundMicromaps() || (m_device->getCurrentFrameId() & 7) != 0) {
+    if (opacityMicromapManager == nullptr || !RtxOptions::ommHoldBoundMicromaps() ||
+        (m_device->getCurrentFrameId() & 7) != 0) {
       return;
     }
-    for (const CachedBucketState& bucket : m_cachedBuckets) {
-      if (bucket.assignedBlas.ptr() == nullptr) {
-        continue;
+    if (OpacityMicromapOptions::Cache::keepMergedBlasMicromapsInUse()) {
+      for (const CachedBucketState& bucket : m_cachedBuckets) {
+        if (bucket.assignedBlas.ptr() == nullptr) {
+          continue;
+        }
+        for (const PooledBlas::BoundOmm& omm : bucket.assignedBlas->boundOmms) {
+          opacityMicromapManager->touchBoundOmm(omm.hash, omm.buffers.ptr());
+        }
       }
-      for (const PooledBlas::BoundOmm& omm : bucket.assignedBlas->boundOmms) {
-        opacityMicromapManager->touchBoundOmm(omm.hash, omm.buffers.ptr());
+    }
+    // The unchanged-scene path skips dynamic BLAS binding too. Keep those micromaps
+    // recent for proactive idle reclaim without walking their individual instances.
+    if (OpacityMicromapOptions::Cache::idleTimeoutSeconds() != 0) {
+      for (const Rc<PooledBlas>& blas : m_activeDynamicBlases) {
+        for (const PooledBlas::BoundOmm& omm : blas->boundOmms) {
+          opacityMicromapManager->touchBoundOmm(omm.hash, omm.buffers.ptr());
+        }
       }
     }
   }

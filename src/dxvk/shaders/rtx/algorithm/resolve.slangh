@@ -164,8 +164,11 @@ bool evaluateOpaqueApproximations(
   {
     const uint froxelVolumeHint = portalSpaceToVolumeHint(portalSpace);
 
-    const vec3 accumulatedOutgoingRadiance = evalVolumetricConsumerNEE(VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg, volumeArgs,
+    vec3 accumulatedOutgoingRadiance = evalVolumetricConsumerNEE(VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg, volumeArgs,
       surfaceInteraction, opaqueSurfaceMaterialInteraction.shadingNormal, froxelVolumeHint);
+    if (skyLitParticle && cb.particleFroxelConsumerScale != 1.0f) {
+      accumulatedOutgoingRadiance *= cb.particleFroxelConsumerScale;
+    }
 
     // Note: Volume radiance cache assumes isotropic scattering (no directionality), but we want something closer to a "diffuse" distribution for
     // the surface of a particle rather than a volumetric contribution, so we multiply it by 4 here (albedo * 4 * radiance / (4 * pi) = albedo / pi).
@@ -177,17 +180,32 @@ bool evaluateOpaqueApproximations(
 #ifdef RESOLVE_SKY_LIT_PARTICLES
     // Skylight for sky-lit particle materials. The froxel radiance cache sampled above holds NEE over the analytic
     // lights only, with no sky term, so particles shaded only by it render dark against a bright overcast sky.
-    // This adds the sky provider's sky light (clouds included) as the average of two taps: the view direction,
-    // lifted slightly above the horizon so looking down does not zero it, and the zenith.
+    // The base variant averages a lifted view direction and the zenith. The hemisphere variant samples
+    // fixed upper directions to make this sky fill independent of the viewing angle.
     // Only materials with OPAQUE_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE opt in, because generic game particles
     // cannot be assumed to see open sky (indoor smoke must not glow sky-blue).
     if (skyLitParticle && skyProviderActive() && cb.particleSkyAmbientScale > 0.0f)
     {
-      vec3 viewDir = normalize(surfaceInteraction.position - cameraGetWorldPosition(camera));
       const vec3 up = cb.isZUp != 0 ? vec3(0.0f, 0.0f, 1.0f) : vec3(0.0f, 1.0f, 0.0f);
-      viewDir = normalize(viewDir + up * max(0.05f - dot(viewDir, up), 0.0f));
-
-      const vec3 skyAmbient = (skyProviderAmbient(viewDir) + skyProviderAmbient(up)) * 0.5f;
+      vec3 skyAmbient;
+#ifdef ENABLE_PARTICLE_SKY_HEMISPHERE
+        // Fixed directions avoid a view-aligned sun disc shining through opaque scene geometry.
+        // This remains sky fill, not a replacement for the cache's sun/local-light visibility.
+        const float ringWeight = 0.70710678f;
+        const vec3 horizontalX = vec3(1.0f, 0.0f, 0.0f);
+        const vec3 horizontalY = cb.isZUp != 0 ? vec3(0.0f, 1.0f, 0.0f) : vec3(0.0f, 0.0f, 1.0f);
+        skyAmbient = skyProviderAmbient(up);
+        const vec3 ringLimit = skyAmbient * 4.0f;
+        skyAmbient += ringWeight * min(skyProviderAmbient((up + horizontalX) * ringWeight), ringLimit);
+        skyAmbient += ringWeight * min(skyProviderAmbient((up - horizontalX) * ringWeight), ringLimit);
+        skyAmbient += ringWeight * min(skyProviderAmbient((up + horizontalY) * ringWeight), ringLimit);
+        skyAmbient += ringWeight * min(skyProviderAmbient((up - horizontalY) * ringWeight), ringLimit);
+        skyAmbient /= 1.0f + 4.0f * ringWeight;
+#else
+        vec3 viewDir = normalize(surfaceInteraction.position - cameraGetWorldPosition(camera));
+        viewDir = normalize(viewDir + up * max(0.05f - dot(viewDir, up), 0.0f));
+        skyAmbient = (skyProviderAmbient(viewDir) + skyProviderAmbient(up)) * 0.5f;
+#endif
 
       // The albedo convention matches the froxel term above, with opacity pre-baked.
       emissiveRadiance += opaqueSurfaceMaterialInteraction.albedo * skyAmbient
@@ -261,6 +279,10 @@ bool evaluateTranslucentApproximations(
       vec3 froxel = evalVolumetricNEE(VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
         cb.volumeArgs, surfaceInteraction, surfaceInteraction.geometryNormal,
         portalSpaceToVolumeHint(portalSpace));
+      // This reads raw evalVolumetricNEE, not the gain-scaled consumer wrapper: never divide by gain here.
+      if (skyLitParticle && cb.particleFroxelRawScale != 1.0f) {
+        froxel *= cb.particleFroxelRawScale;
+      }
       emissiveRadiance += froxel * translucentSurfaceMaterialInteraction.transmittanceColor
         * incomingRadianceAttenuation;
       if (skyLitParticle && skyProviderActive() && cb.particleSkyAmbientScale > 0.0f) {
@@ -609,7 +631,7 @@ void resolveVertex<T: IBasePayloadState>(
     {
       float translucentApproximationOutgoingAttenuation = 1.0f;
       const bool approximationHandled = evaluateTranslucentApproximations(
-        resolveMode,
+        resolveMode | (surface.isParticle ? resolveModeTranslucencyTransmissionApprox : 0),
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
         radianceAttenuation, translucentApproximationOutgoingAttenuation, emissiveRadiance,
         (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,
@@ -1074,7 +1096,7 @@ void resolveVertexUnorderedParticles<
         translucentSurfaceMaterialInteractionCreate(translucentSurfaceMaterial, surface, surfaceInteraction, rayInteraction);
 
       evaluateTranslucentApproximations(
-        resolveMode,
+        resolveMode | (surface.isParticle ? resolveModeTranslucencyTransmissionApprox : 0),
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
         vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance,
         (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,
@@ -1515,7 +1537,7 @@ void resolveVertexUnordered<
       // Note: Return value ignored, should never return false in this path unless there is a bug. Additionally, incoming radiance attenuation
       // set to 1.0 as attenuation will be manually added in later.
       evaluateTranslucentApproximations(
-        resolveMode,
+        resolveMode | (surface.isParticle ? resolveModeTranslucencyTransmissionApprox : 0),
         surface, surfaceInteraction, translucentSurfaceMaterialInteraction,
         vec3(1.0f), currentRadianceAttenuation, currentEmissiveRadiance,
         (translucentSurfaceMaterial.flags & TRANSLUCENT_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE) != 0,

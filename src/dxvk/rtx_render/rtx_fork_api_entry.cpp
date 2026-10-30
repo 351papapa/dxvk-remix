@@ -80,7 +80,10 @@ namespace fork_hooks {
       DxvkContext& ctx,
       const std::filesystem::path& path,
       TextureRef& outRef) {
-    const std::string pathStr = path.string();
+    std::string pathStr = path.string();
+    if (pathStr.rfind("game:", 0) == 0) {
+      pathStr.erase(0, 5);
+    }
     if (pathStr.size() <= 2 || pathStr[0] != '0' || (pathStr[1] != 'x' && pathStr[1] != 'X')) {
       return false;
     }

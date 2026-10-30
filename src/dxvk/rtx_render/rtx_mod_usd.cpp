@@ -28,6 +28,7 @@
 #include <cwctype>
 
 #include "rtx_mod_usd.h"
+#include "rtx_skinning_retarget.h"
 #include <pxr/usd/usdGeom/metrics.h>
 #include "rtx_asset_replacer.h"
 #include "../../lssusd/curve_utils.h"
@@ -2318,6 +2319,60 @@ Categorizer UsdMod::Impl::processCategoryFlags(const pxr::UsdPrim& prim) {
 bool UsdMod::Impl::processMesh(const pxr::UsdPrim& prim, Args& args) {
   MeshReplacement replacement;
   RasterGeometry& geometryData = replacement.data;
+
+  const auto retargetVersion = prim.GetAttribute(pxr::TfToken("remix:retargetVersion"));
+  if (retargetVersion) {
+    int version = 0;
+    pxr::VtArray<int> parents;
+    pxr::VtArray<pxr::GfMatrix4d> original, aligned;
+    if (!retargetVersion.Get(&version) || version != 1
+        || !prim.GetAttribute(pxr::TfToken("remix:retargetParents")).Get(&parents)
+        || !prim.GetAttribute(pxr::TfToken("remix:retargetOriginalBind")).Get(&original)
+        || !prim.GetAttribute(pxr::TfToken("remix:retargetAlignedBind")).Get(&aligned)
+        || parents.empty() || parents.size() > 256
+        || parents.size() != original.size() || parents.size() != aligned.size()) {
+      Logger::err("Invalid replacement skeleton retarget metadata");
+      return false;
+    }
+    auto data = std::make_shared<SkinningRetargetData>();
+    for (size_t i = 0; i < parents.size(); ++i) {
+      if (parents[i] < -1 || parents[i] >= int(i)) {
+        return false;
+      }
+      for (const auto* matrix : { &original[i], &aligned[i] }) {
+        if (!std::isfinite(matrix->GetDeterminant()) || std::abs(matrix->GetDeterminant()) < 1e-10) {
+          return false;
+        }
+        for (size_t r = 0; r < 4; ++r) {
+          for (size_t c = 0; c < 4; ++c) {
+            if (!std::isfinite((*matrix)[r][c])) {
+              return false;
+            }
+          }
+        }
+      }
+      // USD row-vector matrices become column-vector matrices by copying rows
+      // into Matrix4's columns, as with other USD transforms in this importer.
+      const auto convert = [](const pxr::GfMatrix4d& m) {
+        Matrix4 result;
+        for (size_t c = 0; c < 4; ++c) {
+          for (size_t r = 0; r < 4; ++r) {
+            result[c][r] = float(m[c][r]);
+          }
+        }
+        return result;
+      };
+      data->parents.push_back(parents[i]);
+      data->originalBind.push_back(convert(original[i]));
+      data->replacementInverseBind.push_back(inverse(convert(aligned[i])));
+      const Matrix4 oldLocal = parents[i] < 0 ? convert(original[i])
+        : inverse(convert(original[parents[i]])) * convert(original[i]);
+      const Matrix4 newLocal = parents[i] < 0 ? convert(aligned[i])
+        : inverse(convert(aligned[parents[i]])) * convert(aligned[i]);
+      data->localRestCorrection.push_back(newLocal * inverse(oldLocal));
+    }
+    geometryData.skinningRetarget = std::move(data);
+  }
 
   std::unique_ptr<lss::UsdMeshImporter> processedMesh;
 

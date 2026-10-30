@@ -17,6 +17,20 @@ float foamCells(float2 p, float t, float filterWidth) {
   // Filled froth with round, unequal holes. NOT Voronoi F2-F1 filaments (caustics).
   return smoothstep(0.8f - filterWidth, 1.15f + filterWidth, hole);
 }
+// Keep NonUniform on the element pointer consumed by OpLoad. The bundled Slang
+// otherwise decorates only the descriptor pointer for StructuredBuffer arrays.
+T foamGeometryLoad<T>(StructuredBuffer<T> buffer, uint index) {
+  return spirv_asm {
+    OpCapability ShaderNonUniform;
+    OpCapability StorageBufferArrayNonUniformIndexing;
+    %pointerType = OpTypePointer StorageBuffer $$T;
+    %zero = OpConstant $$uint 0;
+    %pointer = OpAccessChain %pointerType $buffer %zero $index;
+    OpDecorate %pointer NonUniform;
+    result:$$T = OpLoad %pointer;
+  };
+}
+
 bool foamTriangleVertices(Surface surface, uint primitiveIndex, out float3 vertices[3]) {
   vertices[0] = vertices[1] = vertices[2] = float3(0);
   uint positionStride = uint(surface.positionStride);
@@ -40,14 +54,14 @@ bool foamTriangleVertices(Surface surface, uint primitiveIndex, out float3 verti
   [unroll] for (uint j = 0; j < 3; ++j) {
     uint index = first + j;
     if (surface.indexBufferIndex != BINDING_INDEX_INVALID) {
-      index = surface.indexStride == 4u ? BUFFER_ARRAY(indices32, surface.indexBufferIndex, index)
-        : BUFFER_ARRAY(indices, surface.indexBufferIndex, index);
+      index = surface.indexStride == 4u ? foamGeometryLoad(indices32[NonUniformResourceIndex(uint(surface.indexBufferIndex))], index)
+        : foamGeometryLoad(indices[NonUniformResourceIndex(uint(surface.indexBufferIndex))], index);
     }
     if (index > maxVertexIndex) { return false; }
     uint offset = positionBase + index * positionStep;
-    float3 local = float3(BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset),
-      BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset + 1u),
-      BUFFER_ARRAY(geometries, surface.positionBufferIndex, offset + 2u));
+    float3 local = float3(foamGeometryLoad(geometries[NonUniformResourceIndex(uint(surface.positionBufferIndex))], offset),
+      foamGeometryLoad(geometries[NonUniformResourceIndex(uint(surface.positionBufferIndex))], offset + 1u),
+      foamGeometryLoad(geometries[NonUniformResourceIndex(uint(surface.positionBufferIndex))], offset + 2u));
     vertices[j] = mul(surface.objectToWorld, float4(local, 1));
     if (!all(isfinite(vertices[j]))) { return false; }
   }

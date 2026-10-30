@@ -1155,8 +1155,6 @@ namespace dxvk {
     const bool legacyMaterialIdentityHashMatch =
         replacementInstance->legacyMaterialIdentityHash == legacyMaterialIdentityHash;
 
-    auto& lensFlareMaterials = m_device->getCommon()->metaLensFlareMaterials();
-    const uint64_t flareGeneration = lensFlareMaterials.refresh(m_device->getCurrentFrameId());
     const bool usePreservePath =
         RtxOptions::enablePreservePath() &&
         !replacementInstance->prims.empty() &&
@@ -1169,7 +1167,6 @@ namespace dxvk {
         !overrideMaterialHasParticles&&
         activeReplacementsMatch &&
         legacyMaterialIdentityHashMatch &&
-        replacementInstance->lensFlareMaterialGeneration == flareGeneration &&
         !terrainCascadesJustChanged &&
         cachedTexturesValidForPreserve;
 
@@ -1181,7 +1178,6 @@ namespace dxvk {
       // Any RtxOption read inside the dynamic update should force a full update when changed.
       RTX_OPTION_INVALIDATION_SCOPE(RtxOptionFlags::InvalidatesDrawcallTranslation);
       MaterialData renderMaterialData = determineMaterialData(overrideMaterialData, input.getMaterialData());
-      lensFlareMaterials.apply(*ctx, renderMaterialData);
       if (!activeReplacementsMatch) {
         replacementInstance->clear();
       }
@@ -1209,7 +1205,6 @@ namespace dxvk {
         }
       }
       replacementInstance->legacyMaterialIdentityHash = legacyMaterialIdentityHash;
-      replacementInstance->lensFlareMaterialGeneration = flareGeneration;
     }
 
     const SceneDraw& liveInput = *pLiveInput;
@@ -4415,6 +4410,27 @@ namespace dxvk {
     // geometry sharing.
     auto pReplacements = state.frontendResolved ? nullptr : fork_hooks::externalDrawMeshReplacement(*m_pReplacer, meshHash);
 
+    // As on the D3D9 path, an asynchronously loaded/reloaded bucket changes the
+    // hierarchy owned by this draw. Its old primitive slots cannot be reused
+    // for a different bucket (including original -> replacement and removal).
+    if (replacementInstance->activeReplacements != pReplacements) {
+      replacementInstance->clear();
+    }
+    const bool skinnedDraw = state.drawCall.getSkinningState().numBones > 0;
+    replacementInstance->isSkinned = skinnedDraw;
+    replacementInstance->categoryFlags = state.drawCall.getCategoryFlags().raw();
+
+    // Explicit diagnostic only; no per-frame logging in normal play.
+    static const bool traceSkin = env::getEnvVar("RTX_SKIN_REPLACEMENT_TRACE") == "1";
+    if (traceSkin && skinnedDraw && m_device->getCurrentFrameId() % 120 == 0) {
+      Logger::info(str::format("[SkinReplacement] mesh=0x", std::hex, meshHash, std::dec,
+        " bones=", state.drawCall.getSkinningState().numBones,
+        " sourceInfluences=", submeshes[0].numBonesPerVertex,
+        " replacements=", pReplacements ? pReplacements->replacements.size() : 0,
+        " found=", pReplacements != nullptr,
+        " prims=", replacementInstance->prims.size()));
+    }
+
     // An external draw that has not drifted since its last full submission reuses the instances it produced
     // instead of re-deriving their draw state, as submitDrawState does for D3D9 draws.
     // The conditions mirror submitDrawState's, minus those that cannot arise here (no legacy material to hash,
@@ -4501,7 +4517,14 @@ namespace dxvk {
       // (two retained instances fighting over one, both invisible), and the unseen-instance GC recreates it every
       // few frames. Marked seen here for retained draws (in their own spatial map, see above). For per-frame draws,
       // the instance is not marked: marking a GPU-instanced one seen piles up point-instancer batches.
-      if (retainedOwnMap) {
+      const bool replacementInstanced = pReplacements && std::any_of(
+        pReplacements->replacements.begin(), pReplacements->replacements.end(),
+        [](const AssetReplacement& replacement) {
+          return replacement.instancesToObject && !replacement.instancesToObject->empty();
+        });
+      const bool perFrameSkeleton = skinnedDraw
+        && !state.drawCall.getTransformData().instancesToObject && !replacementInstanced;
+      if (retainedOwnMap || perFrameSkeleton) {
         replacementInstance->frameLastSeen = m_device->getCurrentFrameId();
       }
       return;

@@ -44,6 +44,7 @@
 #include "rtx_fault_notice.h"
 #include "rtx_render/rtx_imgui.h"
 #include "dxvk_device.h"
+#include "../hud/dxvk_hud_renderer.h"
 #include "rtx_render/graph/rtx_graph_gui.h"
 #include "rtx_render/rtx_utils.h"
 #include "../../util/util_env.h"
@@ -822,95 +823,6 @@ namespace dxvk {
   void ImGUI::showMaterialOptions() {
     if (RemixGui::CollapsingHeader("Material Options (optional)", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
-
-      if (RemixGui::CollapsingHeader("Water", collapsingHeaderClosedFlags)) {
-        WaterSystem::showImguiSettings();
-      }
-      if (RemixGui::CollapsingHeader("Procedural Grass", collapsingHeaderClosedFlags)) {
-        ImGui::Indent();
-        RemixGui::Checkbox("Enable grass", &GrassSystem::enabledObject());
-        RemixGui::InputText("Grass USD path", &GrassSystem::assetPathObject());
-        RemixGui::InputText("Replacement texture names", &GrassSystem::diffuseTexturesObject());
-        RemixGui::InputText("Original texture names", &GrassSystem::originalTexturesObject());
-        RemixGui::DragFloat("Radius", &GrassSystem::radiusObject(), 0.1f, 1.0f, 200.0f);
-        RemixGui::Checkbox("Front/rear range", &GrassSystem::frontRearRangeObject());
-        RemixGui::Checkbox("Cull distant offscreen grass", &GrassSystem::frustumCullObject());
-        RemixGui::DragFloat("Clumps per square unit", &GrassSystem::densityObject(), 0.01f, 0.01f, 10.0f);
-        RemixGui::DragFloat("Height", &GrassSystem::heightObject(), 0.01f, 0.01f, 10.0f);
-        RemixGui::DragFloat("Width", &GrassSystem::widthObject(), 0.01f, 0.01f, 10.0f);
-        RemixGui::DragFloat("Maximum slope degrees", &GrassSystem::maxSlopeDegreesObject(), 0.1f, 0.0f, 80.0f);
-        RemixGui::DragFloat("Boundary fade distance", &GrassSystem::fadeDistanceObject(), 0.1f, 0.01f, 200.0f);
-        RemixGui::DragFloat("Root offset", &GrassSystem::groundOffsetObject(), 0.001f, -1.0f, 1.0f);
-        RemixGui::Checkbox("Keep inside surface", &GrassSystem::keepInsideSurfaceObject());
-        RemixGui::SliderInt("Instance budget", &GrassSystem::maxInstancesObject(), 1, 512);
-        RemixGui::InputInt("Reload version", &GrassSystem::reloadVersionObject());
-        const auto& grass = m_device->getCommon()->getSceneManager().getGrass();
-        ImGui::TextWrapped("%s", grass.m_status.c_str());
-        ImGui::Text("Ground surfaces: %zu | Candidates: %zu | GPU slots: %zu", grass.m_matchedSurfaces, grass.m_candidateCount, grass.m_visibleClumps);
-        ImGui::Unindent();
-      }
-
-      if (RemixGui::CollapsingHeader("Flare Materials", collapsingHeaderClosedFlags)) {
-        ImGui::Indent();
-        RemixGui::Checkbox("Enable emissive flare cards", &LensFlareMaterialSystem::enabledObject());
-        RemixGui::InputText("Reference DDS", &LensFlareMaterialSystem::identityDdsObject());
-        RemixGui::InputText("Albedo mask", &LensFlareMaterialSystem::albedoPathObject());
-        RemixGui::InputText("Emission mask", &LensFlareMaterialSystem::emissivePathObject());
-        RemixGui::DragFloat("Emission level", &LensFlareMaterialSystem::emissiveLevelObject(), 1.0f, 0.0f, 65504.0f);
-        ImGui::Unindent();
-      }
-
-      if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
-        ImGui::Indent();
-        RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());
-        RemixGui::InputText("Window texture names", &WindowLightOptions::textureNamesObject());
-        RemixGui::SliderFloat("Lit share at night start", &WindowLightOptions::litRatioObject(), 0.0f, 1.0f);
-        RemixGui::SliderFloat("Night start hour", &WindowLightOptions::startHourObject(), 0.0f, 24.0f);
-        RemixGui::SliderFloat("Night end hour", &WindowLightOptions::endHourObject(), 0.0f, 24.0f);
-        RemixGui::InputInt("Night seed", &WindowLightOptions::nightSeedObject());
-        RemixGui::Checkbox("Enable street lamps", &WindowLightOptions::streetLampsEnabledObject());
-        RemixGui::InputText("Street lamp texture names", &WindowLightOptions::streetLampTextureNamesObject());
-        ImGui::Unindent();
-      }
-
-      if (RemixGui::CollapsingHeader("Wetness / Rain", collapsingHeaderClosedFlags)) {
-        ImGui::Indent();
-        RemixGui::Checkbox("Enabled", &WetnessOptions::enabledObject());
-        RemixGui::Checkbox("Respect no rain zones", &WetnessOptions::respectNoRainZonesObject());
-        RemixGui::Checkbox("Non road roughness only", &WetnessOptions::nonRoadRoughnessOnlyObject());
-        RemixGui::Checkbox("Road only", &WetnessOptions::roadOnlyObject());
-        RemixGui::InputText("Force enable dff", &WetnessOptions::forceEnableDffObject());
-        RemixGui::InputText("Force disable dff", &WetnessOptions::forceDisableDffObject());
-        RemixGui::Checkbox("Rain end roughness enabled", &WetnessOptions::rainEndRoughnessEnabledObject());
-        RemixGui::DragFloat("Rain end roughness", &WetnessOptions::rainEndRoughnessObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Rain end transition seconds", &WetnessOptions::rainEndTransitionSecondsObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle noise scale", &WetnessOptions::puddleNoiseScaleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle threshold base", &WetnessOptions::puddleThresholdBaseObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle threshold span", &WetnessOptions::puddleThresholdSpanObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle albedo darken", &WetnessOptions::puddleAlbedoDarkenObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle wave strength", &WetnessOptions::puddleWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Puddle wave scale", &WetnessOptions::puddleWaveScaleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple grid scale", &WetnessOptions::rippleGridScaleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple spawn period", &WetnessOptions::rippleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple radius", &WetnessOptions::rippleRadiusObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple vehicle grid scale", &WetnessOptions::rippleVehicleGridScaleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple vehicle spawn period", &WetnessOptions::rippleVehicleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Ripple vehicle radius", &WetnessOptions::rippleVehicleRadiusObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Drop density", &WetnessOptions::dropDensityObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Drop size", &WetnessOptions::dropSizeObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Drop strength", &WetnessOptions::dropStrengthObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Drop roughness", &WetnessOptions::dropRoughnessObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Streak grid scale", &WetnessOptions::streakGridScaleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Streak cycle", &WetnessOptions::streakCycleObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Streak length", &WetnessOptions::streakLengthObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Streak size", &WetnessOptions::streakSizeObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Water wave strength", &WetnessOptions::waterWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
-        RemixGui::DragFloat("Water wave scale", &WetnessOptions::waterWaveScaleObject(), 0.01f, 0.0f, 100.0f);
-        auto& rules = m_device->getCommon()->getSceneManager().m_wetnessDffRules;
-        if (ImGui::Button("Reload captured asset mappings")) { rules.requestReload(); }
-        ImGui::Text("Captured meshes: %zu | Ambiguous: %zu | Invalid files: %zu", rules.mappedHashes(), rules.ambiguousHashes(), rules.skippedFiles());
-        ImGui::Unindent();
-      }
 
       if (RemixGui::CollapsingHeader("Legacy Material Defaults", collapsingHeaderFlags)) {
         ImGui::Indent();
@@ -3436,6 +3348,85 @@ namespace dxvk {
         ImGui::Unindent();
       }
 
+      if (RemixGui::CollapsingHeader("Water", collapsingHeaderClosedFlags)) {
+        WaterSystem::showImguiSettings();
+      }
+      if (RemixGui::CollapsingHeader("Procedural Grass", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enable grass", &GrassSystem::enabledObject());
+        RemixGui::InputText("Grass USD path", &GrassSystem::assetPathObject());
+        RemixGui::InputText("Replacement texture names", &GrassSystem::diffuseTexturesObject());
+        RemixGui::InputText("Original texture names", &GrassSystem::originalTexturesObject());
+        RemixGui::DragFloat("Radius", &GrassSystem::radiusObject(), 0.1f, 1.0f, 200.0f);
+        RemixGui::Checkbox("Front/rear range", &GrassSystem::frontRearRangeObject());
+        RemixGui::Checkbox("Cull distant offscreen grass", &GrassSystem::frustumCullObject());
+        RemixGui::DragFloat("Clumps per square unit", &GrassSystem::densityObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Height", &GrassSystem::heightObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Width", &GrassSystem::widthObject(), 0.01f, 0.01f, 10.0f);
+        RemixGui::DragFloat("Maximum slope degrees", &GrassSystem::maxSlopeDegreesObject(), 0.1f, 0.0f, 80.0f);
+        RemixGui::DragFloat("Boundary fade distance", &GrassSystem::fadeDistanceObject(), 0.1f, 0.01f, 200.0f);
+        RemixGui::DragFloat("Root offset", &GrassSystem::groundOffsetObject(), 0.001f, -1.0f, 1.0f);
+        RemixGui::Checkbox("Keep inside surface", &GrassSystem::keepInsideSurfaceObject());
+        RemixGui::SliderInt("Instance budget", &GrassSystem::maxInstancesObject(), 1, 512);
+        RemixGui::InputInt("Reload version", &GrassSystem::reloadVersionObject());
+        const auto& grass = m_device->getCommon()->getSceneManager().getGrass();
+        ImGui::TextWrapped("%s", grass.m_status.c_str());
+        ImGui::Text("Ground surfaces: %zu | Candidates: %zu | GPU slots: %zu", grass.m_matchedSurfaces, grass.m_candidateCount, grass.m_visibleClumps);
+        ImGui::Unindent();
+      }
+
+      if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());
+        RemixGui::InputText("Window texture names", &WindowLightOptions::textureNamesObject());
+        RemixGui::SliderFloat("Lit share at night start", &WindowLightOptions::litRatioObject(), 0.0f, 1.0f);
+        RemixGui::SliderFloat("Night start hour", &WindowLightOptions::startHourObject(), 0.0f, 24.0f);
+        RemixGui::SliderFloat("Night end hour", &WindowLightOptions::endHourObject(), 0.0f, 24.0f);
+        RemixGui::InputInt("Night seed", &WindowLightOptions::nightSeedObject());
+        RemixGui::Checkbox("Enable street lamps", &WindowLightOptions::streetLampsEnabledObject());
+        RemixGui::InputText("Street lamp texture names", &WindowLightOptions::streetLampTextureNamesObject());
+        ImGui::Unindent();
+      }
+
+      if (RemixGui::CollapsingHeader("Wetness / Rain", collapsingHeaderClosedFlags)) {
+        ImGui::Indent();
+        RemixGui::Checkbox("Enabled", &WetnessOptions::enabledObject());
+        RemixGui::Checkbox("Respect no rain zones", &WetnessOptions::respectNoRainZonesObject());
+        RemixGui::Checkbox("Non road roughness only", &WetnessOptions::nonRoadRoughnessOnlyObject());
+        RemixGui::Checkbox("Road only", &WetnessOptions::roadOnlyObject());
+        RemixGui::InputText("Force enable dff", &WetnessOptions::forceEnableDffObject());
+        RemixGui::InputText("Force disable dff", &WetnessOptions::forceDisableDffObject());
+        RemixGui::Checkbox("Rain end roughness enabled", &WetnessOptions::rainEndRoughnessEnabledObject());
+        RemixGui::DragFloat("Rain end roughness", &WetnessOptions::rainEndRoughnessObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Rain end transition seconds", &WetnessOptions::rainEndTransitionSecondsObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle noise scale", &WetnessOptions::puddleNoiseScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle threshold base", &WetnessOptions::puddleThresholdBaseObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle threshold span", &WetnessOptions::puddleThresholdSpanObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle albedo darken", &WetnessOptions::puddleAlbedoDarkenObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle wave strength", &WetnessOptions::puddleWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Puddle wave scale", &WetnessOptions::puddleWaveScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple grid scale", &WetnessOptions::rippleGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple spawn period", &WetnessOptions::rippleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple radius", &WetnessOptions::rippleRadiusObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle grid scale", &WetnessOptions::rippleVehicleGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle spawn period", &WetnessOptions::rippleVehicleSpawnPeriodObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Ripple vehicle radius", &WetnessOptions::rippleVehicleRadiusObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop density", &WetnessOptions::dropDensityObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop size", &WetnessOptions::dropSizeObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop strength", &WetnessOptions::dropStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Drop roughness", &WetnessOptions::dropRoughnessObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak grid scale", &WetnessOptions::streakGridScaleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak cycle", &WetnessOptions::streakCycleObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak length", &WetnessOptions::streakLengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Streak size", &WetnessOptions::streakSizeObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Water wave strength", &WetnessOptions::waterWaveStrengthObject(), 0.01f, 0.0f, 100.0f);
+        RemixGui::DragFloat("Water wave scale", &WetnessOptions::waterWaveScaleObject(), 0.01f, 0.0f, 100.0f);
+        auto& rules = m_device->getCommon()->getSceneManager().m_wetnessDffRules;
+        if (ImGui::Button("Reload captured asset mappings")) { rules.requestReload(); }
+        ImGui::Text("Captured meshes: %zu | Ambiguous: %zu | Invalid files: %zu", rules.mappedHashes(), rules.ambiguousHashes(), rules.skippedFiles());
+        ImGui::Unindent();
+      }
+
       // NV-DXVK start: Sky appearance and game setup UI
       if (RemixGui::CollapsingHeader("Sky###Sky Tuning", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
@@ -4567,6 +4558,9 @@ namespace dxvk {
 
       RemixGui::Checkbox("Allow Full Screen Exclusive?", &RtxOptions::allowFSEObject());
       RemixGui::Checkbox("Show DXVK HUD (Alt+H)", &RtxOptions::showDxvkHudObject());
+      RemixGui::InputText("HUD CSV output path", &hud::HudRenderer::hudExportObject(), ImGuiInputTextFlags_EnterReturnsTrue);
+      RemixGui::DragInt("HUD CSV sample interval (ms)", &hud::HudRenderer::hudExportIntervalMsObject(), 1.f, 16, 10000);
+      ImGui::TextDisabled("CSV export requires a visible HUD. Clear the path to disable.");
 
       // Deliberately not gated on a support query. The driver-core capability parameters are
       // exactly what is missing on the machines the snippet backend exists to serve, so hiding
@@ -5491,8 +5485,10 @@ namespace dxvk {
 
     unsigned char* pixels;
     int width, height;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-    size_t row_pitch = (size_t)width * 4 * sizeof(char);
+    // Embedded fonts contain coverage only. The view supplies white RGB on the GPU.
+    assert(!io.Fonts->TexPixelsUseColors);
+    io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
+    size_t row_pitch = (size_t)width;
     size_t upload_size = height * row_pitch;
 
     VkResult err;
@@ -5501,7 +5497,7 @@ namespace dxvk {
     {
       DxvkImageCreateInfo info = {};
       info.type = VK_IMAGE_TYPE_2D;
-      info.format = VK_FORMAT_R8G8B8A8_UNORM;
+      info.format = VK_FORMAT_R8_UNORM;
       info.extent.width = width;
       info.extent.height = height;
       info.extent.depth = 1;
@@ -5520,11 +5516,12 @@ namespace dxvk {
     {
       DxvkImageViewCreateInfo info = {};
       info.type = VK_IMAGE_VIEW_TYPE_2D;
-      info.format = VK_FORMAT_R8G8B8A8_UNORM;
+      info.format = VK_FORMAT_R8_UNORM;
       info.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
       info.numLevels = 1;
       info.numLayers = 1;
       info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      info.swizzle = { VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R };
       m_fontTextureView = m_device->createImageView(m_fontTexture, info);
       bd->FontView = m_fontTextureView->handle();
     }

@@ -423,7 +423,9 @@ namespace dxvk {
     desc.randomFlipAxis = ParticleRandomFlipAxis::None;
     desc.initialRotationDeviationDegrees = 0.0f;
 
-    desc.traceSpawnOcclusion = occludeUnderCover() ? 1 : 0;
+    desc.traceSpawnOcclusion = occludeUnderCover();
+    // The frame's zone count applies the live option to every weather emitter, including fading ones.
+    desc.useNoRainZones = true;
 
     desc.enableCollisionDetection = enableCollision() ? 1 : 0;
     desc.collisionMode = ParticleCollisionMode::Kill;
@@ -708,6 +710,9 @@ namespace dxvk {
     RemixGui::SetTooltipToLastWidgetOnHover(turbulenceFrequencyObject().getDescription());
 
     ImGui::Separator();
+
+    RemixGui::Checkbox("Stop In No-Rain Zones", &occludeWithNoRainZonesObject());
+    RemixGui::SetTooltipToLastWidgetOnHover(occludeWithNoRainZonesObject().getDescription());
 
     RemixGui::Checkbox("Stop Under Cover (ray traced)", &occludeUnderCoverObject());
     RemixGui::SetTooltipToLastWidgetOnHover(occludeUnderCoverObject().getDescription());

@@ -1,0 +1,17 @@
+# Typed weather state for volumetrics and wet surfaces
+
+`NumosWeather::Preset` owns a `VolumetricWeatherPreset` with 19 optional scalars, two optional colours and five optional switches. `RtxGlobalVolumetrics::baseWeatherState` reads authored settings. The weather subsystem applies the selected preset and blends from its current typed snapshot on a target change. No per-frame option or config-layer writes are used.
+
+`RtxContext` passes the effective state into `getVolumeArgs`. NUMOS's near/far lighting handoff and dust culling use the same effective froxel distance, so the cache range cannot disagree between producers and consumers. The existing GPU froxel generation, lighting, integration, visibility, heterogeneous noise and instancing pipelines are unchanged. CPU work is limited to a small set of per-frame scalar constants.
+
+The volumetric master switch remains independent. Weather control defaults off. When weather control is off or there is no initialized weather state, consumers receive the authored base state directly. Missing preset fields inherit the base. Presets support read, save, copy, current-look capture, held snapshots and UI edits. Sky tuning holds the current volumetric look fixed, like the ocean and precipitation state. Invalid non-finite inputs are rejected or normalized before use.
+
+Transmittance measurement distance blends in extinction space (1/distance); other numeric fields blend linearly in the supplied transition fraction. Structural booleans switch to the incoming value immediately, including at fraction zero. Noise octave count remains a float while blending, then converts to the shader's integer at the CPU/GPU boundary. The preset transition clock uses NUMOS's existing eased fraction; game-supplied fractions are used directly.
+
+Wetness presets keep incoming structural frequencies, radii, sizes and periods fixed. An explicitly authored puddle threshold ramps from the dry threshold 0.95 into the target. Amount and colour-like fields blend from the outgoing state. Retargeting captures the current amount state while selecting the new pattern immediately. A missing threshold override does not introduce a dry-ramp change to the global base look. Invalid fractions, non-finite data and oversized active weights are bounded.
+
+Surface wetness is independent of particle precipitation intensity. When converting the older named presets, drizzle/rainstorm/thunderstorm/snow/blizzard use wetness 1 and other weather uses 0, matching the old weather blender. Rain particle opacity/count intensity is preserved separately. Old optional fields that were equal across all twelve old presets were not weather-owned and must remain unset in converted files; global settings supply them.
+
+The older artistic cloud aerial-fade/haze, night-sky colour/brightness, star density/brightness and separate Milky Way controls have no exact NUMOS equivalents. Converted presets omit these legacy overrides and inherit the new runtime base/default values. Historical authored values remain in the migration manifest as reference. Game weather still selects the bound editable Remix preset. A disabled plugin WeatherFullConfig section must stay disabled.
+
+CPU validation uses the production typed headers and extracts the production legacy parser and plugin publication functions into a standalone harness. GPU visual/performance acceptance and full runtime/bridge builds remain separate integration checks.

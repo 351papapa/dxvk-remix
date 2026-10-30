@@ -22,6 +22,13 @@
 */
 
 //!variant volume_integrate_rayquery.comp
+//!>       VOLUME_GROUP_X=16 VOLUME_GROUP_Y=8
+
+//!variant volume_integrate_rayquery_8x8.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=8
+
+//!variant volume_integrate_rayquery_8x4.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=4
 
 
 
@@ -50,7 +57,7 @@ void main()
 }
 #else
 [shader("compute")]
-[numthreads(16, 8, 1)]
+[numthreads(VOLUME_GROUP_X, VOLUME_GROUP_Y, 1)]
 void main(uint3 ipos : SV_DispatchThreadID)
 { 
   volume_integrate_pass(ipos);

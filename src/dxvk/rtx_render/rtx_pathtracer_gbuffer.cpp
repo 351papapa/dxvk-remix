@@ -22,494 +22,776 @@
 #include "rtx_pathtracer_gbuffer.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
-// Surface wetness is selected independently of the pass feature matrix.
 #include "rtx_wetness_shaders.h"
-#include <rtx_shaders/gbuffer_debug_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wetness.h>
+#include "rtx_global_volumetrics.h"
+#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_debug_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_debug_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_debug_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_debug_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_debug_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_debug_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_debug_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_decal_prepare_wetness.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_debug_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_debug_particle_sky.h>
 #include <rtx_shaders/gbuffer_decal_prepare_debug_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_debug_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_particles_wboit_slimpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slim_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_slimpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_decal_prepare_wetness.h>
+#include <rtx_shaders/gbuffer_decal_prepare_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_no_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_lean_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_material_opaque_translucent_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_rayportal_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_rayportal_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_material_rayportal_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_miss_wetness.h>
+#include <rtx_shaders/gbuffer_material_rayportal_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_material_rayportal_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_miss_particle_sky.h>
+#include <rtx_shaders/gbuffer_miss_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_miss_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_miss_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_miss_wetness.h>
+#include <rtx_shaders/gbuffer_miss_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_material_opaque_translucent_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_nrc_miss_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_material_rayportal_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_miss_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_miss_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_nrc_miss_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_miss_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_nrc_miss_wetness.h>
+#include <rtx_shaders/gbuffer_nrc_miss_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_material_opaque_translucent_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_miss_wetness.h>
+#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_material_rayportal_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_miss_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_miss_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_miss_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_miss_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_miss_wetness.h>
+#include <rtx_shaders/gbuffer_psr_miss_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_opaque_translucent_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_nrc_miss_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_material_rayportal_closestHit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_miss_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_miss_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_nrc_miss_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_miss_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_nrc_miss_wetness.h>
+#include <rtx_shaders/gbuffer_psr_nrc_miss_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_prepare_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slim_wetness.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_psr_prepare_slimpom_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_prepare_wetness.h>
-#include <rtx_shaders/gbuffer_psr_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_prepare_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_psr_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_psr_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_psr_rayquery_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_psr_rayquery_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_raygen_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_raygen_ser_wetness.h>
-#include <rtx_shaders/gbuffer_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_raygen_ser_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_ser_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_ser_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_raygen_ser_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_ser_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_ser_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_ser_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_raygen_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_debug_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_debug_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_raygen_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_debug_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_debug_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_debug_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_debug_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_debug_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_raytraced_render_target_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_stochastic_alpha_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_no_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_no_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_slimpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_validate_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_validate_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_validate_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_slimpom_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_raytraced_render_target_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_stochastic_alpha_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_inline_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_inline_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slimpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_validate_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_validate_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_validate_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_stochastic_alpha_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_lean_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_lean_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_lean_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_leanpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_leanpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_leanpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slim_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slim_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slim_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slimpom_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slimpom_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_slimpom_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_validate_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_validate_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_validate_wetness_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_raygen_wetness.h>
-#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_psr_prepare_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wboit_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_nrc_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_wboit_particle_sky.h>
 #include <rtx_shaders/gbuffer_rayquery_raygen_wboit_wetness.h>
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen gbuffer_debug_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_nrc gbuffer_debug_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_nrc_wboit gbuffer_debug_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_ser gbuffer_debug_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_ser_nrc gbuffer_debug_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_ser_nrc_wboit gbuffer_debug_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_ser_wboit gbuffer_debug_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_raygen_wboit gbuffer_debug_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_rayquery_raygen gbuffer_debug_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_rayquery_raygen_nrc gbuffer_debug_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_rayquery_raygen_nrc_wboit gbuffer_debug_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_psr_rayquery_raygen_wboit gbuffer_debug_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen gbuffer_debug_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_nrc gbuffer_debug_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_nrc_wboit gbuffer_debug_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_ser gbuffer_debug_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_ser_nrc gbuffer_debug_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_ser_nrc_wboit gbuffer_debug_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_ser_wboit gbuffer_debug_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_raygen_wboit gbuffer_debug_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_rayquery_raygen gbuffer_debug_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_rayquery_raygen_nrc gbuffer_debug_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_rayquery_raygen_nrc_wboit gbuffer_debug_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_debug_rayquery_raygen_wboit gbuffer_debug_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare gbuffer_decal_prepare_wetness
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_debug gbuffer_decal_prepare_debug_wetness
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_particles_wboit_slim gbuffer_decal_prepare_particles_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_particles_wboit_slimpom gbuffer_decal_prepare_particles_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_slim gbuffer_decal_prepare_slim
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_slimpom gbuffer_decal_prepare_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_decal_prepare_variants gbuffer_decal_prepare_variants
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen gbuffer_lean_no_psr_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_nrc gbuffer_lean_no_psr_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_nrc_wboit gbuffer_lean_no_psr_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_ser gbuffer_lean_no_psr_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_ser_nrc gbuffer_lean_no_psr_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_ser_nrc_wboit gbuffer_lean_no_psr_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_ser_wboit gbuffer_lean_no_psr_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_raygen_wboit gbuffer_lean_no_psr_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_rayquery_raygen gbuffer_lean_no_psr_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_rayquery_raygen_nrc gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wboit gbuffer_lean_no_psr_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_psr_rayquery_raygen_wboit gbuffer_lean_no_psr_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen gbuffer_lean_no_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_nrc gbuffer_lean_no_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_nrc_wboit gbuffer_lean_no_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_ser gbuffer_lean_no_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_ser_nrc gbuffer_lean_no_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_ser_nrc_wboit gbuffer_lean_no_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_ser_wboit gbuffer_lean_no_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_raygen_wboit gbuffer_lean_no_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_rayquery_raygen gbuffer_lean_no_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_rayquery_raygen_nrc gbuffer_lean_no_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_rayquery_raygen_nrc_wboit gbuffer_lean_no_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_no_psr_rayquery_raygen_wboit gbuffer_lean_no_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen gbuffer_lean_psr_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_nrc gbuffer_lean_psr_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_nrc_wboit gbuffer_lean_psr_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_ser gbuffer_lean_psr_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_ser_nrc gbuffer_lean_psr_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_ser_nrc_wboit gbuffer_lean_psr_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_ser_wboit gbuffer_lean_psr_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_raygen_wboit gbuffer_lean_psr_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_rayquery_raygen gbuffer_lean_psr_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_rayquery_raygen_nrc gbuffer_lean_psr_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_rayquery_raygen_nrc_wboit gbuffer_lean_psr_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_psr_rayquery_raygen_wboit gbuffer_lean_psr_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen gbuffer_lean_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_nrc gbuffer_lean_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_nrc_wboit gbuffer_lean_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_ser gbuffer_lean_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_ser_nrc gbuffer_lean_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_ser_nrc_wboit gbuffer_lean_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_ser_wboit gbuffer_lean_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_raygen_wboit gbuffer_lean_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_rayquery_raygen gbuffer_lean_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_rayquery_raygen_nrc gbuffer_lean_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_rayquery_raygen_nrc_wboit gbuffer_lean_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_lean_psr_rayquery_raygen_wboit gbuffer_lean_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_material_opaque_translucent_closestHit gbuffer_material_opaque_translucent_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_material_opaque_translucent_closestHit_wboit gbuffer_material_opaque_translucent_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_material_opaque_translucent_closesthit gbuffer_material_opaque_translucent_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_material_opaque_translucent_closesthit_wboit gbuffer_material_opaque_translucent_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_material_rayPortal_closesthit gbuffer_material_rayPortal_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_material_rayPortal_closesthit_wboit gbuffer_material_rayPortal_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_material_rayportal_closestHit gbuffer_material_rayportal_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_material_rayportal_closestHit_wboit gbuffer_material_rayportal_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_miss gbuffer_miss_wetness
-#define RTX_WETNESS_SHADER_gbuffer_miss_wboit gbuffer_miss_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_opaque_translucent_closestHit gbuffer_nrc_material_opaque_translucent_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_opaque_translucent_closestHit_wboit gbuffer_nrc_material_opaque_translucent_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_opaque_translucent_closesthit gbuffer_nrc_material_opaque_translucent_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_opaque_translucent_closesthit_wboit gbuffer_nrc_material_opaque_translucent_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_rayPortal_closesthit gbuffer_nrc_material_rayPortal_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_rayPortal_closesthit_wboit gbuffer_nrc_material_rayPortal_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_rayportal_closestHit gbuffer_nrc_material_rayportal_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_material_rayportal_closestHit_wboit gbuffer_nrc_material_rayportal_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_miss gbuffer_nrc_miss_wetness
-#define RTX_WETNESS_SHADER_gbuffer_nrc_miss_wboit gbuffer_nrc_miss_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_opaque_translucent_closestHit gbuffer_psr_material_opaque_translucent_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_opaque_translucent_closestHit_wboit gbuffer_psr_material_opaque_translucent_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_opaque_translucent_closesthit gbuffer_psr_material_opaque_translucent_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_opaque_translucent_closesthit_wboit gbuffer_psr_material_opaque_translucent_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_rayPortal_closesthit gbuffer_psr_material_rayPortal_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_rayPortal_closesthit_wboit gbuffer_psr_material_rayPortal_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_rayportal_closestHit gbuffer_psr_material_rayportal_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_material_rayportal_closestHit_wboit gbuffer_psr_material_rayportal_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_miss gbuffer_psr_miss_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_miss_wboit gbuffer_psr_miss_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_opaque_translucent_closestHit gbuffer_psr_nrc_material_opaque_translucent_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_opaque_translucent_closesthit gbuffer_psr_nrc_material_opaque_translucent_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_opaque_translucent_closesthit_wboit gbuffer_psr_nrc_material_opaque_translucent_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_rayPortal_closesthit gbuffer_psr_nrc_material_rayPortal_closesthit
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_rayPortal_closesthit_wboit gbuffer_psr_nrc_material_rayPortal_closesthit_wboit
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_rayportal_closestHit gbuffer_psr_nrc_material_rayportal_closestHit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_material_rayportal_closestHit_wboit gbuffer_psr_nrc_material_rayportal_closestHit_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_miss gbuffer_psr_nrc_miss_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_nrc_miss_wboit gbuffer_psr_nrc_miss_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_prepare gbuffer_psr_prepare_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_prepare_slim gbuffer_psr_prepare_slim
-#define RTX_WETNESS_SHADER_gbuffer_psr_prepare_slimpom gbuffer_psr_prepare_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen gbuffer_psr_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_nrc gbuffer_psr_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_nrc_wboit gbuffer_psr_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_ser gbuffer_psr_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_ser_nrc gbuffer_psr_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_ser_nrc_wboit gbuffer_psr_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_ser_wboit gbuffer_psr_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_raygen_wboit gbuffer_psr_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_rayquery_raygen gbuffer_psr_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_rayquery_raygen_nrc gbuffer_psr_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_rayquery_raygen_nrc_wboit gbuffer_psr_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_psr_rayquery_raygen_wboit gbuffer_psr_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen gbuffer_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_nrc gbuffer_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_nrc_wboit gbuffer_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_ser gbuffer_raygen_ser_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_ser_nrc gbuffer_raygen_ser_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_ser_nrc_wboit gbuffer_raygen_ser_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_ser_wboit gbuffer_raygen_ser_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_raygen_wboit gbuffer_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug gbuffer_rayquery_debug_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_nrc gbuffer_rayquery_debug_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_nrc_wboit gbuffer_rayquery_debug_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_psr gbuffer_rayquery_debug_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_psr_nrc gbuffer_rayquery_debug_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_psr_nrc_wboit gbuffer_rayquery_debug_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_psr_wboit gbuffer_rayquery_debug_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_debug_wboit gbuffer_rayquery_debug_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr gbuffer_rayquery_no_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_nrc gbuffer_rayquery_no_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_nrc_wboit gbuffer_rayquery_no_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_psr gbuffer_rayquery_no_psr_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_psr_nrc gbuffer_rayquery_no_psr_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_psr_nrc_wboit gbuffer_rayquery_no_psr_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_psr_wboit gbuffer_rayquery_no_psr_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target gbuffer_rayquery_no_psr_raytraced_render_target_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_nrc gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wboit gbuffer_rayquery_no_psr_raytraced_render_target_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_psr gbuffer_rayquery_no_psr_raytraced_render_target_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wboit gbuffer_rayquery_no_psr_raytraced_render_target_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_psr_wboit gbuffer_rayquery_no_psr_raytraced_render_target_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wboit gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wboit gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wboit gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wboit gbuffer_rayquery_no_psr_raytraced_render_target_stochastic_alpha_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_raytraced_render_target_wboit gbuffer_rayquery_no_psr_raytraced_render_target_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha gbuffer_rayquery_no_psr_stochastic_alpha_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_nrc gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wboit gbuffer_rayquery_no_psr_stochastic_alpha_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_psr gbuffer_rayquery_no_psr_stochastic_alpha_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wboit gbuffer_rayquery_no_psr_stochastic_alpha_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_psr_wboit gbuffer_rayquery_no_psr_stochastic_alpha_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_stochastic_alpha_wboit gbuffer_rayquery_no_psr_stochastic_alpha_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_no_psr_wboit gbuffer_rayquery_no_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline gbuffer_rayquery_psr_inline_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc gbuffer_rayquery_psr_inline_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit gbuffer_rayquery_psr_inline_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit_lean gbuffer_rayquery_psr_inline_nrc_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit_leanpom gbuffer_rayquery_psr_inline_nrc_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit_slim gbuffer_rayquery_psr_inline_nrc_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit_slimpom gbuffer_rayquery_psr_inline_nrc_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_nrc_wboit_validate gbuffer_rayquery_psr_inline_nrc_wboit_validate
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr gbuffer_rayquery_psr_inline_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc gbuffer_rayquery_psr_inline_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc_wboit gbuffer_rayquery_psr_inline_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc_wboit_lean gbuffer_rayquery_psr_inline_psr_nrc_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc_wboit_leanpom gbuffer_rayquery_psr_inline_psr_nrc_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc_wboit_slim gbuffer_rayquery_psr_inline_psr_nrc_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_nrc_wboit_slimpom gbuffer_rayquery_psr_inline_psr_nrc_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_psr_wboit gbuffer_rayquery_psr_inline_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target gbuffer_rayquery_psr_inline_raytraced_render_target_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_nrc gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_psr gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_stochastic_alpha_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_raytraced_render_target_wboit gbuffer_rayquery_psr_inline_raytraced_render_target_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha gbuffer_rayquery_psr_inline_stochastic_alpha_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_nrc gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wboit gbuffer_rayquery_psr_inline_stochastic_alpha_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_psr gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wboit gbuffer_rayquery_psr_inline_stochastic_alpha_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wboit gbuffer_rayquery_psr_inline_stochastic_alpha_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_stochastic_alpha_wboit gbuffer_rayquery_psr_inline_stochastic_alpha_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_inline_wboit gbuffer_rayquery_psr_inline_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare gbuffer_rayquery_psr_prepare_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_nrc gbuffer_rayquery_psr_prepare_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_nrc_wboit gbuffer_rayquery_psr_prepare_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr gbuffer_rayquery_psr_prepare_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_compact gbuffer_rayquery_psr_prepare_psr_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_nrc gbuffer_rayquery_psr_prepare_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_nrc_wboit gbuffer_rayquery_psr_prepare_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit gbuffer_rayquery_psr_prepare_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_compact gbuffer_rayquery_psr_prepare_psr_wboit_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_lean gbuffer_rayquery_psr_prepare_psr_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_leanpom gbuffer_rayquery_psr_prepare_psr_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_slim gbuffer_rayquery_psr_prepare_psr_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_slimpom gbuffer_rayquery_psr_prepare_psr_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha gbuffer_rayquery_psr_prepare_stochastic_alpha_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wboit gbuffer_rayquery_psr_prepare_stochastic_alpha_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wboit gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_lean gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_leanpom gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slim gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slimpom gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_validate gbuffer_rayquery_psr_prepare_stochastic_alpha_wboit_validate
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit gbuffer_rayquery_psr_prepare_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit_lean gbuffer_rayquery_psr_prepare_wboit_lean
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit_leanpom gbuffer_rayquery_psr_prepare_wboit_leanpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit_slim gbuffer_rayquery_psr_prepare_wboit_slim
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit_slimpom gbuffer_rayquery_psr_prepare_wboit_slimpom
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_psr_prepare_wboit_validate gbuffer_rayquery_psr_prepare_wboit_validate
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_raygen gbuffer_rayquery_raygen_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_raygen_nrc gbuffer_rayquery_raygen_nrc_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_raygen_nrc_wboit gbuffer_rayquery_raygen_nrc_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_raygen_wboit gbuffer_rayquery_raygen_wboit_wetness
-#define RTX_WETNESS_SHADER_gbuffer_rayquery_variants gbuffer_rayquery_variants
-#define RTX_WETNESS_SHADER_gbuffer_variants gbuffer_variants
+#include <rtx_shaders/gbuffer_rayquery_raygen_wboit_wetness_particle_sky.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_wetness.h>
+#include <rtx_shaders/gbuffer_rayquery_raygen_wetness_particle_sky.h>
 
 #include "rtx_options.h"
 #include "rtx_neural_radiance_cache.h"
@@ -611,6 +893,19 @@
 #include "rtx_context.h"
 #include "rtx_opacity_micromap_manager.h"
 #include "rtx_sparse_rendering.h"
+
+// Material features are independent of the G-buffer traversal feature matrix.
+#define GBUFFER_FEATURE_CODE_INNER(code, suffix) code##suffix
+#define GBUFFER_FEATURE_CODE(code, suffix) GBUFFER_FEATURE_CODE_INNER(code, suffix)
+#define GET_GBUFFER_EXPANDED_SHADER(stage, className, code) GET_SHADER_VARIANT(stage, className, code)
+#define GET_GBUFFER_SKY_SHADER(stage, className, code) \
+  (RtxGlobalVolumetrics::skyAmbientHemisphere() \
+    ? GET_GBUFFER_EXPANDED_SHADER(stage, className, GBUFFER_FEATURE_CODE(code, _particle_sky)) \
+    : GET_GBUFFER_EXPANDED_SHADER(stage, className, code))
+#define GET_GBUFFER_SHADER_VARIANT(stage, className, code) \
+  ((WetnessOptions::enabled() || WaterSystem::needsWetnessShader()) \
+    ? GET_GBUFFER_SKY_SHADER(stage, className, GBUFFER_FEATURE_CODE(code, _wetness)) \
+    : GET_GBUFFER_SKY_SHADER(stage, className, code))
 
 namespace dxvk {
 
@@ -910,7 +1205,7 @@ namespace dxvk {
       switch (key) {
 #define GBUFFER_RAYQUERY_RAYGEN_CASE(features, psr, pipeline, nrc, wboit, code) \
         case getGbufferMatrixVariantKey(features, psr, nrc, wboit): \
-          return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, GbufferRayGenShader, code);
+          return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, GbufferRayGenShader, code);
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_PIPELINE_RAYQUERY_RAYGEN_RGEN(GBUFFER_RAYQUERY_RAYGEN_CASE)
 #undef GBUFFER_RAYQUERY_RAYGEN_CASE
         default:
@@ -923,7 +1218,7 @@ namespace dxvk {
       switch (key) {
 #define GBUFFER_TRACE_RAYGEN_CASE(features, psr, pipeline, nrc, wboit, code) \
         case getGbufferTraceRayGenVariantKey(features, psr, pipeline, nrc, wboit): \
-          return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, GbufferRayGenShader, code);
+          return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, GbufferRayGenShader, code);
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_PIPELINE_RAYGEN_RGEN(GBUFFER_TRACE_RAYGEN_CASE)
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_PIPELINE_RAYGEN_SER_RGEN(GBUFFER_TRACE_RAYGEN_CASE)
 #undef GBUFFER_TRACE_RAYGEN_CASE
@@ -937,7 +1232,7 @@ namespace dxvk {
       switch (key) {
 #define GBUFFER_RAYQUERY_COMPUTE_CASE(features, pass, nrc, wboit, code) \
         case getGbufferRayQueryMatrixVariantKey(features, pass, nrc, wboit): \
-          return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code);
+          return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code);
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_RAYQUERY_PASS_NONE_COMP(GBUFFER_RAYQUERY_COMPUTE_CASE)
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_RAYQUERY_PASS_PSR_COMP(GBUFFER_RAYQUERY_COMPUTE_CASE)
 #undef GBUFFER_RAYQUERY_COMPUTE_CASE
@@ -948,14 +1243,14 @@ namespace dxvk {
     }
 
     Rc<DxvkShader> getGbufferPSRPrepareComputeShader() {
-      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, gbuffer_psr_prepare);
+      return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, gbuffer_psr_prepare);
     }
 
     Rc<DxvkShader> getGbufferDecalPrepareComputeShader(const uint32_t key) {
       switch (key) {
 #define GBUFFER_DECAL_PREPARE_CASE(debug, code) \
         case getGbufferDecalPrepareMatrixVariantKey(debug): \
-          return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code);
+          return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code);
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_DECAL_PREPARE_DEBUG_NONE_COMP(GBUFFER_DECAL_PREPARE_CASE)
         RTX_SHADER_VARIANT_MATRIX_GBUFFER_DECAL_PREPARE_DEBUG_DEBUG_COMP(GBUFFER_DECAL_PREPARE_CASE)
 #undef GBUFFER_DECAL_PREPARE_CASE
@@ -975,7 +1270,7 @@ namespace dxvk {
     static_assert(kGbufferRayQueryFeaturesPsrPrepareStochasticAlpha ==
                   RTX_SHADER_VARIANT_MATRIX_GBUFFER_RAYQUERY_FEATURES_PSR_PREPARE +
                   getGbufferRayQueryPSRPrepareFeatureMask(kGbufferRayQueryFeatureStochasticAlpha));
-#define GBUFFER_SLIM_COMPUTE(code) GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code)
+#define GBUFFER_SLIM_COMPUTE(code) GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, GbufferRayGenShader, code)
     // The validation variant of the Full primary-ray kernel for this frame's feature set, or null (the
     // plain Full kernel runs and the G-buffer is not validated this frame). Same feature sets as the slim variants.
     Rc<DxvkShader> getGbufferRayQueryValidateComputeShader(const uint32_t featureVariant, const bool nrcEnabled, const bool wboitEnabled) {
@@ -1193,21 +1488,21 @@ namespace dxvk {
     Rc<DxvkShader> getGbufferMissShader(const uint32_t key) {
       switch (key) {
       case 0:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_miss);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_miss);
       case kGbufferVariantPSR:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_miss);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_miss);
       case kGbufferVariantNRC:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_nrc_miss);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_nrc_miss);
       case kGbufferVariantPSR | kGbufferVariantNRC:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_nrc_miss);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_nrc_miss);
       case kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_miss_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_miss_wboit);
       case kGbufferVariantPSR | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_miss_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_miss_wboit);
       case kGbufferVariantNRC | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_nrc_miss_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_nrc_miss_wboit);
       case kGbufferVariantPSR | kGbufferVariantNRC | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_nrc_miss_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, GbufferMissShader, gbuffer_psr_nrc_miss_wboit);
       default:
         assert(false && "Invalid GBuffer miss shader variant");
         return nullptr;
@@ -1217,37 +1512,37 @@ namespace dxvk {
     Rc<DxvkShader> getGbufferClosestHitShader(const uint32_t key) {
       switch (key) {
       case 0:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_opaque_translucent_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_opaque_translucent_closestHit);
       case kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_rayportal_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_rayportal_closestHit);
       case kGbufferVariantNRC:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_opaque_translucent_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_opaque_translucent_closestHit);
       case kGbufferVariantNRC | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_rayportal_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_rayportal_closestHit);
       case kGbufferVariantPSR:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_opaque_translucent_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_opaque_translucent_closestHit);
       case kGbufferVariantPSR | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_rayportal_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_rayportal_closestHit);
       case kGbufferVariantPSR | kGbufferVariantNRC:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_opaque_translucent_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_opaque_translucent_closestHit);
       case kGbufferVariantPSR | kGbufferVariantNRC | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_rayportal_closestHit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_rayportal_closestHit);
       case kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_opaque_translucent_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_opaque_translucent_closestHit_wboit);
       case kGbufferVariantWBOIT | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_rayportal_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_material_rayportal_closestHit_wboit);
       case kGbufferVariantNRC | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_opaque_translucent_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_opaque_translucent_closestHit_wboit);
       case kGbufferVariantNRC | kGbufferVariantWBOIT | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_rayportal_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_nrc_material_rayportal_closestHit_wboit);
       case kGbufferVariantPSR | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_opaque_translucent_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_opaque_translucent_closestHit_wboit);
       case kGbufferVariantPSR | kGbufferVariantWBOIT | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_rayportal_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_material_rayportal_closestHit_wboit);
       case kGbufferVariantPSR | kGbufferVariantNRC | kGbufferVariantWBOIT:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_opaque_translucent_closestHit_wboit);
       case kGbufferVariantPSR | kGbufferVariantNRC | kGbufferVariantWBOIT | kGbufferVariantPortals:
-        return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_rayportal_closestHit_wboit);
+        return GET_GBUFFER_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, GbufferClosestHitShader, gbuffer_psr_nrc_material_rayportal_closestHit_wboit);
       default:
         assert(false && "Invalid GBuffer closest hit shader variant");
         return nullptr;

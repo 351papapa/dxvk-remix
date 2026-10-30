@@ -716,7 +716,7 @@ namespace dxvk {
         m_device->getCommon()->pipelineManager().remixShaderCompilationCount());
       m_device->getCommon()->getRtxInitializer().onRaytracedFrame();
 
-      if (WetnessOptions::enabled() || WaterSystem::enabled() || PrecipitationSystem::enable() || DxvkPostFx::lensRainEnable() || getCommonObjects()->metaNumos().active()) {
+      if (WetnessOptions::enabled() || WaterSystem::enabled() || PrecipitationSystem::enable() || DxvkPostFx::lensRainEnable() || NumosWeather::controlVolumetricFog() || getCommonObjects()->metaNumos().active()) {
         getCommonObjects()->metaNumosWeather().update(NumosSettings::resolved(), GlobalTime::get().deltaTime());
       }
       if (PrecipitationSystem::enable()) { getCommonObjects()->metaPrecipitation().submit(*this); }
@@ -1927,7 +1927,8 @@ namespace dxvk {
     constants.roughnessDemodulationOffset = m_common->metaDemodulate().demodulateRoughnessOffset();
     
     RtxGlobalVolumetrics& globalVolumetrics = getCommonObjects()->metaGlobalVolumetrics();
-    constants.volumeArgs = globalVolumetrics.getVolumeArgs(cameraManager, getSceneManager().getFogState(), enablePortalVolumes);
+    constants.volumeArgs = globalVolumetrics.getVolumeArgs(cameraManager, getSceneManager().getFogState(), enablePortalVolumes,
+      getCommonObjects()->metaNumosWeather().volumetricState(RtxGlobalVolumetrics::baseWeatherState()));
     constants.startInMediumMaterialIndex = getSceneManager().getStartInMediumMaterialIndex();
     updateWetnessZones();
     auto& weather = getCommonObjects()->metaNumosWeather();
@@ -2010,6 +2011,10 @@ namespace dxvk {
     // Sky light on particle materials flagged OPAQUE_SURFACE_MATERIAL_FLAG_SKY_LIT_PARTICLE, at full
     // strength. Nothing creates such materials at present.
     constants.particleSkyAmbientScale = getCommonObjects()->metaNumosWeather().precipitationState().precipitationSkyLight;
+    const bool rescaleParticleCache = RtxGlobalVolumetrics::rescaleSkyLitFroxelGain();
+    const float particleCacheGain = RtxGlobalVolumetrics::particleSkyLitFroxelGain();
+    constants.particleFroxelConsumerScale = particleFroxelScale(constants.volumeArgs.volumetricConsumerGain, particleCacheGain, rescaleParticleCache);
+    constants.particleFroxelRawScale = particleFroxelScale(constants.volumeArgs.volumetricConsumerGain, particleCacheGain, rescaleParticleCache, true);
 
     const SkyMode currentSkyMode = RtxOptions::skyMode();
     if (currentSkyMode != m_lastSkyMode) {
@@ -2279,7 +2284,7 @@ namespace dxvk {
       if (m_device->getCurrentFrameId() - frame.frameId < kGpuStageReadDelayFrames) {
         continue;
       }
-      std::array<DxvkQueryData, 64> data;
+      std::array<DxvkQueryData, std::tuple_size_v<decltype(frame.queries)>> data;
       bool ready = true;
       for (uint32_t i = 0; i < frame.count; ++i) {
         const auto status = frame.queries[i]->getData(data[i]);
@@ -2320,7 +2325,7 @@ namespace dxvk {
         }
       }
       if ((perfLogOn || liveTraceOn || sweepOn) && frame.count > 1) {
-        std::array<double, 80> stageMs;
+        std::array<double, std::tuple_size_v<decltype(frame.queries)>> stageMs;
         for (uint32_t i = 1; i < frame.count; ++i) {
           stageMs[i] = double(data[i].timestamp.time - data[i - 1].timestamp.time) * scale;
         }

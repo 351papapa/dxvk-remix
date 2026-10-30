@@ -563,6 +563,10 @@ struct RaytraceArgs {
   uint surfaceSoftOmmTable;
   uint softOmmFlags;
 
+  // Optional local particle compatibility. Appended so existing constant offsets stay unchanged.
+  float particleFroxelConsumerScale;
+  float particleFroxelRawScale;
+
   // NOTE: Add structs to the top section of RaytraceArgs, not the bottom.
   // NOTE: bool does not work in debug builds, use uint instead.
 };
@@ -573,4 +577,7 @@ struct RaytraceArgs {
 // would shift every later field in the C++ view only.
 static_assert(offsetof(RaytraceArgs, renderTargetCamera) % 16 == 0,
               "A struct above renderTargetCamera in RaytraceArgs is not a multiple of 16 bytes.");
+static_assert(offsetof(RaytraceArgs, particleFroxelConsumerScale) == offsetof(RaytraceArgs, softOmmFlags) + 4);
+static_assert(offsetof(RaytraceArgs, particleFroxelRawScale) == offsetof(RaytraceArgs, softOmmFlags) + 8);
+static_assert(sizeof(RaytraceArgs) % 16 == 0, "RaytraceArgs must cover complete constant-buffer rows.");
 #endif

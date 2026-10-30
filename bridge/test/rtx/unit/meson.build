@@ -57,5 +57,24 @@ test('remix_api__' + variant,
              '--executablesDir', meson.current_build_dir(),
              '--artifactDir', remix_api_test_artifacts_dir ])
 endif
+gpu_payload_exe = executable('test_gpu_instancing_payload_' + name_suff, files('test_gpu_instancing_payload.cpp'),
+    include_directories : [util_include_path, public_include_path],
+    win_subsystem : 'console')
+test('gpu_instancing_payload', gpu_payload_exe)
+tests += gpu_payload_exe
+
+retained_error_exe = executable('test_retained_error_' + name_suff, files('test_retained_error.cpp'),
+    include_directories : [util_include_path, public_include_path],
+    win_subsystem : 'console')
+test('retained_error', retained_error_exe)
+tests += retained_error_exe
+
+skinning_payload_exe = executable('test_mesh_skinning_payload_' + name_suff, files('test_mesh_skinning_payload.cpp'),
+    include_directories : [util_include_path, public_include_path],
+    dependencies : util_dep,
+    win_subsystem : 'console')
+test('mesh_skinning_payload', skinning_payload_exe)
+tests += skinning_payload_exe
+
 alias_target('unit_tests', tests)
 

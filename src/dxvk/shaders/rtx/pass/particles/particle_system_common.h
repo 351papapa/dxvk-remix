@@ -112,6 +112,7 @@ struct GpuParticleSystemDesc {
   uint8_t spawnOnPuddlesOnly : 1;
   uint8_t spawnOnWaterOrPuddles : 1;
   uint8_t spawnOnWetRoads : 1;
+  uint8_t useNoRainZones : 1;
 
 // Note: Spatial fields (collisionThickness, attractorRadius, gravityForce,
   // initialVelocityFromNormal, attractorForce, turbulenceForce, turbulenceFrequency)
@@ -175,6 +176,7 @@ struct RtxParticleSystemDesc : GpuParticleSystemDesc {
     spawnOnPuddlesOnly = 0;
     spawnOnWaterOrPuddles = 0;
     spawnOnWetRoads = 0;
+    useNoRainZones = 0;
   }
 
   XXH64_hash_t calcHash() const {
@@ -253,4 +255,6 @@ struct ParticleSystemConstants {
   // Non-zero when topLevelAS holds last frame's acceleration structure, since simulation runs before
   // this frame's build. It is missing on a scene's first frames, and traceSpawnOcclusion is skipped then.
   uint sceneTlasValid;
+  uint noRainZoneCount;
+  uint padding[3];
 };

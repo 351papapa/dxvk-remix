@@ -81,6 +81,11 @@ namespace {
       return RemixApiDeviceLock { m_device->LockDevice() };
     }
 
+    void synchronizeCommands() override {
+      const D3D9DeviceLock lock = m_device->LockDevice();
+      m_device->SynchronizeCsThread();
+    }
+
     bool presentsThroughApi() const override {
       return true;
     }
@@ -314,19 +319,28 @@ namespace {
     if (!texture || !out_hash) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-
+    *out_hash = 0;
+    auto* registered = registeredD3D9();
+    if (!registered) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    auto* device = registered->device();
+    const D3D9DeviceLock lock = device->LockDevice();
+    // Finish CPU command processing before reading the hash authored by the texture upload.
+    // This does not wait for the GPU or read texture pixels back to the CPU.
+    device->SynchronizeCsThread();
     D3D9CommonTexture* commonTexture = GetCommonTexture(texture);
     if (!commonTexture) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-
     const Rc<DxvkImage>& image = commonTexture->GetImage();
-    if (image == nullptr) {
-      // The texture may live in system memory.
+    const Rc<DxvkImageView> view = commonTexture->GetSampleView(false);
+    if (image == nullptr || view == nullptr || !image->getHash() || image->getHash() == kEmptyHash) {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
-
     *out_hash = image->getHash();
+    // A game:0x material must resolve even when its original game draw was intercepted.
+    remix_api::trackGameTexture(*registered, view);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 

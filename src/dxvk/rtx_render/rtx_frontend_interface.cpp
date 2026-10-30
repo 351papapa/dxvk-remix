@@ -35,8 +35,8 @@
 #include "rtx_frontend_interface.h"
 #include "rtx_game_lights.h"
 #include "rtx_options.h"
-#include "rtx_lens_flare_material.h"
 #include "rtx_retained_scene.h"
+#include "rtx_retained_compat.h"
 #include "rtx_scene_manager.h"
 #include "rtx_terrain_baker.h"
 #include "translator/rtx_translator_lifetime.h"
@@ -314,16 +314,16 @@ namespace dxvk {
     }
 
     uint32_t SceneInterface::takeSceneEvents() {
-      uint32_t events = m_ctx.getSceneManager().retainedScene().takeSceneEvents();
-      // Reference DDS edits also invalidate scene-owned materials, even without an option change.
-      if (m_ctx.getCommonObjects()->metaLensFlareMaterials().takeTranslationInvalidation(frameIndex())) {
-        events |= kSceneEventTranslationInvalid;
-      }
-      return events;
+      return m_ctx.getSceneManager().retainedScene().takeSceneEvents();
     }
 
     void SceneInterface::drawInstance(PreparedInstance&& instance) {
       if (!take(m_ctx.getSceneManager(), instance)) {
+        return;
+      }
+      auto& compat = m_ctx.getSceneManager().retainedScene().compat();
+      if (compat.hasLegacy(*instance.m_state)) {
+        compat.drawImmediate(&m_ctx, std::move(instance.m_state));
         return;
       }
       m_ctx.commitExternalGeometryToRT(std::move(instance.m_state));
@@ -535,11 +535,7 @@ namespace dxvk {
     }
 
     MaterialData SceneInterface::resolveMaterial(const LegacyMaterialData& material) const {
-      MaterialData resolved = m_ctx.getSceneManager().resolveDrawMaterial(material);
-      auto& flare = m_ctx.getCommonObjects()->metaLensFlareMaterials();
-      flare.refresh(frameIndex());
-      flare.apply(m_ctx, resolved);
-      return resolved;
+      return m_ctx.getSceneManager().resolveDrawMaterial(material);
     }
 
     bool SceneInterface::createMesh(RasterGeometry& geometry, const DxvkBuffer* adopt) {

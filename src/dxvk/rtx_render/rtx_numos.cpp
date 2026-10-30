@@ -297,7 +297,7 @@ namespace dxvk {
     in.hostSkyOverride = scene.getLightManager().getDomeLightArgs().active;
     m_hostSkyOverride = in.hostSkyOverride;
     in.volumetricsHandoffWorldUnits = RtxGlobalVolumetrics::enable()
-      ? RtxGlobalVolumetrics::froxelMaxDistanceMeters() * RtxOptions::getMeterToWorldUnitScale() : 0.0f;
+      ? ctx.getCommonObjects()->metaNumosWeather().volumetricState(RtxGlobalVolumetrics::baseWeatherState()).froxelMaxDistanceMeters * RtxOptions::getMeterToWorldUnitScale() : 0.0f;
     in.hostLocalLightInjection = false;
     in.debugViewActive = ctx.getCommonObjects()->metaDebugView().getDebugViewIndex() != DEBUG_VIEW_DISABLED;
     in.weather = nullptr;

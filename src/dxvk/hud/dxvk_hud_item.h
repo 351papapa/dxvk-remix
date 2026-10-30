@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -244,6 +245,7 @@ namespace dxvk::hud {
 
     std::string m_frameRate;
     std::string m_frameTime;
+    std::mutex m_fpsMutex;
 
     // NV-DXVK begin: DLFG integration
     uint32_t m_presentCount = 0;
@@ -275,6 +277,8 @@ namespace dxvk::hud {
 
     std::array<float, NumDataPoints>  m_dataPoints  = {};
     uint32_t                          m_dataPointId = 0;
+    std::mutex m_historyMutex;
+    uint64_t m_sourceFrameId = 0;
 
   };
 

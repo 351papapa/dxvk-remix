@@ -42,6 +42,12 @@ int main() {
   check(closeEnough(restored.precipitationColor.x,1) && closeEnough(restored.precipitationColor.y,0) && closeEnough(restored.precipitationColor.z,.9f), "color bounds");
   RtxParticleSystemDesc desc;
   check(!desc.spawnOnPuddlesOnly && !desc.spawnOnWaterOrPuddles && !desc.spawnOnWetRoads, "contact defaults disabled");
+  check(!desc.useNoRainZones, "ordinary emitters do not inherit weather shelter");
+  const auto ordinary = desc.calcHash();
+  desc.useNoRainZones = true;
+  check(ordinary != desc.calcHash(), "weather shelter scope participates in system identity");
+  desc.useNoRainZones = false;
+  check(ordinary == desc.calcHash(), "restoring shelter scope restores system identity");
   const auto original = desc.calcHash();
   desc.spawnOnWetRoads = true;
   check(original != desc.calcHash(), "contact mode participates in system identity");

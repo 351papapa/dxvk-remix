@@ -1,11 +1,35 @@
 ## Remix API Changelog
 
+## 2026-10-30
+
+### Fixed
+
+The x86 bridge now serializes `remixapi_MeshInfoSkinning` arrays using their total element counts. This prevents out-of-bounds reads for valid skinned meshes. Public structs and API versions are unchanged; deploy the matching bridge client and server together.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- 2026-10-30 (local fork): the x86 bridge exports the private
+  `remixapi_GetRetainedInterface` entry by its documented undecorated name,
+  allowing retained-catalog hosts to negotiate the implemented interface.
+
 ### Added
+- 2026-10-29 (local fork): typed per-weather global volumetric fog fields and
+  structural wetness transitions, controlled by `rtx.weather.controlVolumetricFog`.
+  Host weather inputs remain the existing NoSave current/outgoing/blend options.
+  See [weather volumetrics](WeatherVolumetrics.md).
+- 2026-10-29 (local fork): ordered `AutoInstancePersistentLights` forwarding in
+  the matching bridge, advertised by the client-local
+  `vc.bridge.autoInstancePersistentLightsVersion` capability (value `1`).
+  Public function signatures and interface version are unchanged. See
+  [bridge capability negotiation](RemixBridgeCapabilities.md).
+- 2026-10-29 (local fork): restored the negotiated fixed-width retained v2 and
+  legacy-surface V1/V2 host protocols on the native runtime and matching bridge;
+  added real game-texture hash/material binding and GPU-instancing batch forwarding.
+  The public table/version are unchanged. See [compatibility contracts](../docs/RemixRetainedCompatibility.md).
 - 2026-10-29 (local fork): matching x86/x64 bridge forwarding for
   `SetCameraMediumMaterial`, and the private pointer-free GPU water protocol.
   NUMOS presets also accept ocean rain/storm weights. See `RemixWater.md`.
@@ -234,3 +258,7 @@ between them. Rebuild plugins/hosts against this header.
 ### Fixed
 
 ### Removed
+
+### Fixed — retained empty replacements (2026-10-30)
+
+A valid empty USD mesh replacement suppresses the original retained mesh without failing the catalog. Updating the record or reloading a mod can restore its geometry. Unanchored lights stay absent, matching the D3D9 replacement path. No API layout or option changes.

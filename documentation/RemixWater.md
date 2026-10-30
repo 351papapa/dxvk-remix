@@ -114,3 +114,35 @@ optimization difference. Diagnostics are excluded from performance measurements.
 Shore wetness reserves common bindings 235/236. The SHARC deferred buffers keep
 230 through 233. The water weather unit test checks the combined descriptor slot
 set for duplicates, including configurations whose shaders do not use wetness.
+
+
+## Divergent geometry loads
+
+Each foam-field invocation can hit a different scene mesh. Both the descriptor and the element pointer consumed by `OpLoad` therefore need non-uniform resource access semantics. `foamGeometryLoad` emits that element access explicitly with `StorageBufferArrayNonUniformIndexing`. The scope is limited to the foam triangle helper; all index lookup, transforms, ray queries and field updates remain on the GPU.
+
+The bundled Slang version is `2025.10.4-39-g496fab196`. Its ordinary StructuredBuffer-array expression decorates only the descriptor pointer. The affected generated `water_foam_update` and culled shaders contained 15 undecorated divergent load operands. Both optimized outputs now contain 15 correctly decorated operands. The issue matches the compiler's [NonUniform operand report](https://github.com/shader-slang/slang/issues/10525); no external toolchain or dependency was modified.
+
+An actual game fault on 2026-10-30 reported misaligned accesses at GPU PCs `0x45c0` and `0x7e60`. The exact remapped shader hash `4698fd83c52ba07f` maps those PCs to 32-bit triangle-index loads. The fault happened after an F5 vegetation toggle, but a later same-build off/on session did not reproduce it. This repair addresses a confirmed shader-contract defect at those loads; it is not yet proof that every cause of the intermittent game crash is removed.
+
+A standalone RTX 5070 test extracts the production helper and checks 2,097,152 uint32, uint16 and float reads across 524,288 divergent invocations and 32 descriptor permutations, including output canaries. It passes. The unfixed test also passes on this driver, so it verifies result preservation rather than serving as a deterministic crash reproducer. Full-game stress and final FPS acceptance remain required.
+
+## World-axis foam regression
+
+The supplied 2026-10-27 video was inspected at one-second intervals and in full
+frames around the material-path switch. The scene-material foam becomes a thin,
+elongated bright strip across the channel. This is consistent with geometry
+aliasing, but the exact recorded game location has not yet been replayed.
+
+The old signed remainder expression was tested directly on an RTX 5070 against
+an independent 64-bit Euclidean remainder oracle. Across 1,200 grids and 30,894,400
+cells (sides 60, 90 and 256), it produced 3,010,630 wrong mappings and 193,462
+duplicate slots. Ordinary negative origins such as (-1024,-1024) reproduce the
+problem; it is not limited to integer extremes. The migrated unsigned-magnitude
+`waterFoamWorldCellSlot` returned zero mismatches, duplicate slots or out-of-range
+slots on the same cases, including grids crossing either world axis.
+
+Current full runtime 3C15A768 was also checked through native and x86 bridge hosts.
+At frame 600 each compared all 1,181,616 foam vertices (10,634,544 words), with zero
+non-finite words, repeated-dispatch mismatches or paired-variant mismatches. Both
+output images were finite. These tests establish the addressing correction and
+current GPU output consistency, not exact visual acceptance at the video's scene.

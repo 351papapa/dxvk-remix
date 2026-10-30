@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
-#include "remix/remix_c.h"
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -101,63 +100,28 @@ int wmain(int argc, wchar_t** argv) {
     {-25,-25,0,0,0,1,0xffaaaaaau,0,1}, {-25,25,0,0,0,1,0xffaaaaaau,0,0}, {25,-25,0,0,0,1,0xffaaaaaau,1,1},
     {25,-25,0,0,0,1,0xffaaaaaau,1,1}, {-25,25,0,0,0,1,0xffaaaaaau,0,0}, {25,25,0,0,0,1,0xffaaaaaau,1,0}
   };
-  auto apiCheck=[](remixapi_ErrorCode result,const char* operation){
-    if(result!=REMIXAPI_ERROR_CODE_SUCCESS){std::cerr<<operation<<" failed "<<int(result)<<'\n';ExitProcess(20);}
-  };
-  remixapi_Interface remix{};
-  auto initialize=reinterpret_cast<PFN_remixapi_InitializeLibrary>(GetProcAddress(dll,"remixapi_InitializeLibrary"));
-  remixapi_InitializeLibraryInfo init{};init.sType=REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
-  init.version=REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR,REMIXAPI_VERSION_MINOR,REMIXAPI_VERSION_PATCH);
-  if(!initialize)return 6;
-  apiCheck(initialize(&init,&remix),"Initialize Remix");
-#if defined(_WIN64)
-  apiCheck(remix.dxvk_RegisterD3D9Device(static_cast<IDirect3DDevice9Ex*>(device)),"Register native device");
-#endif
-  auto config=[&](const char* key,const char* value){apiCheck(remix.SetConfigVariable(key,value),key);};
-  auto game=[&](const char* key,const char* value){apiCheck(remix.SetGameValue(key,value),key);};
-  auto replaceReference=[](const char* source){
-    if(!CopyFileA(source,"identity-hot.dds",FALSE))return false;
-    HANDLE file=CreateFileA("identity-hot.dds",FILE_WRITE_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
-    if(file==INVALID_HANDLE_VALUE)return false;
-    FILETIME now;GetSystemTimeAsFileTime(&now);
-    const bool result=SetFileTime(file,nullptr,nullptr,&now)!=FALSE;CloseHandle(file);return result;
-  };
-  const std::string assets="G:/Codex/2026-10-29/ban/work/rpv2-source-migration/flare-assets/";
-  config("rtx.fork.lensFlare.enabled",phase==0?"False":"True");
-  if(phase==2)config("rtx.fork.lensFlare.identityDds",(assets+"missing.dds").c_str());
-  if(phase==3){config("rtx.fork.lensFlare.albedoPath",(assets+"missing.dds").c_str());config("rtx.fork.lensFlare.emissivePath",(assets+"missing.dds").c_str());}
-  if(phase==4)for(auto& v:ground)v.color=0xff40ff80u;
-  if(phase==9)config("rtx.fork.lensFlare.identityDds",(assets+"wrong.dds").c_str());
-  if(phase==10)config("rtx.fork.lensFlare.identityDds",(assets+"malformed.dds").c_str());
-  if(phase==11)config("rtx.fork.lensFlare.albedoPath",(assets+"green.dds").c_str());
-  if(phase==12)config("rtx.fork.lensFlare.emissivePath",(assets+"green.dds").c_str());
-  if(phase==13||phase==14){
-    if(!replaceReference((assets+"identity.dds").c_str()))return 21;
-    config("rtx.fork.lensFlare.identityDds","identity-hot.dds");
+  if (phase == 4) for (auto& v : ground) v.color = 0xff40ff80u;
+  if (phase == 19) for (auto& v : ground) v.color = 0xff555555u;
+  if (phase == 20) for (auto& v : ground) v.color = 0xff000000u;
+  for (auto& v : ground) {
+    const unsigned r=(v.color>>16)&255, g=(v.color>>8)&255, b=v.color&255;
+    const unsigned peak=(r>g?r:g)>b?(r>g?r:g):b;
+    v.color = peak ? (peak<<24) | ((r*255/peak)<<16) | ((g*255/peak)<<8) | (b*255/peak) : 0;
   }
-  if(phase==15){
-    for(auto& v:ground)v.color=0x80aaaaaau;
-    check(device->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_MODULATE),"Alpha modulation");
-    check(device->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE),"Alpha vertex input");
-  }
-  if(phase==19)for(auto& v:ground)v.color=0xff555555u;
-  if(phase==20)for(auto& v:ground)v.color=0xff000000u;
-  if(phase==16)config("rtx.vertexColorIsBakedLighting","False");
-  if(phase==17)config("rtx.enablePreservePath","False");
-  if(phase==18)config("rtx.fork.lensFlare.emissiveLevel","0");
+  check(device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE), "Additive alpha");
+  check(device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA), "Source alpha");
+  check(device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE), "Additive destination");
+  check(device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE), "Color modulation");
+  check(device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE), "Texture color");
+  check(device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE), "Vertex tint");
+  check(device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1), "Vertex fade");
+  check(device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE), "Vertex alpha");
   IDirect3DVertexBuffer9* groundBuffer=nullptr;
   check(device->CreateVertexBuffer(UINT(ground.size()*sizeof(Vertex)),0,0,D3DPOOL_MANAGED,&groundBuffer,nullptr),"Create ground");
   void* mapped=nullptr;check(groundBuffer->Lock(0,0,&mapped,0),"Lock ground");memcpy(mapped,ground.data(),ground.size()*sizeof(Vertex));check(groundBuffer->Unlock(),"Unlock ground");
   auto pumpMessages=[](){MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}};
   for(uint32_t frame=0;frame<240;++frame){
     pumpMessages();
-    if(frame==60&&(phase==5||phase==6))config("rtx.fork.lensFlare.enabled","False");
-    if(frame==120&&phase==6)config("rtx.fork.lensFlare.enabled","True");
-    if(frame==60&&phase==7)config("rtx.fork.lensFlare.emissiveLevel","2");
-    if(frame==60&&phase==8)config("rtx.fork.lensFlare.identityDds",(assets+"wrong.dds").c_str());
-    if(frame==120&&phase==8)config("rtx.fork.lensFlare.identityDds",(assets+"identity.dds").c_str());
-    if(frame==60&&(phase==13||phase==14)&&!replaceReference((assets+"wrong.dds").c_str()))return 22;
-    if(frame==120&&phase==13&&!replaceReference((assets+"identity.dds").c_str()))return 23;
     check(device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,0xff101010u,1,0),"Clear");
     check(device->BeginScene(),"BeginScene");
     world._41=world._42=world._43=0;
@@ -166,7 +130,9 @@ int wmain(int argc, wchar_t** argv) {
     check(device->DrawPrimitive(D3DPT_TRIANGLELIST,0,2),"Draw ground");
     check(device->EndScene(),"EndScene");check(device->Present(nullptr,nullptr,nullptr,nullptr),"Present");Sleep(5);
   }
+  trace("Release D3D resources");
   groundBuffer->Release();texture->Release();device->Release();api->Release();
+  trace("Released D3D resources");
   // Bridge releases are asynchronous. Keep the surface alive while the server drains its tail frame.
   for(int wait=0;wait<200;++wait){pumpMessages();Sleep(5);}
   DestroyWindow(window);

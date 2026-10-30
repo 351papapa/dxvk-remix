@@ -91,6 +91,10 @@ namespace dxvk {
 
     float getGpuIdleTimeSinceLastCall();
 
+    uint32_t getNoRainZoneNodeCount() const {
+      return m_wetnessZoneBuffer != nullptr ? static_cast<uint32_t>(m_wetnessZones.nodes().size()) : 0u;
+    }
+
     bool isInsideNoRainZone(const Vector3& position) const {
       return m_wetnessZones.contains(position.x, position.y, position.z);
     }

@@ -253,8 +253,11 @@ namespace dxvk::hud {
       int64_t fps = (10'000'000ll * m_frameCount) / elapsed.count();
       int64_t frameTime = elapsed.count() / 100 / m_frameCount;
 
-      m_frameRate = str::format(fps / 10, ".", fps % 10);
-      m_frameTime = str::format(frameTime / 10, ".", frameTime % 10);
+      {
+        std::lock_guard<std::mutex> lock(m_fpsMutex);
+        m_frameRate = str::format(fps / 10, ".", fps % 10);
+        m_frameTime = str::format(frameTime / 10, ".", frameTime % 10);
+      }
       m_frameCount = 0;
       m_lastUpdate = time;
     }
@@ -264,6 +267,13 @@ namespace dxvk::hud {
   HudPos HudFpsItem::render(
           HudRenderer&      renderer,
           HudPos            position) {
+    std::string frameRate;
+    std::string frameTime;
+    {
+      std::lock_guard<std::mutex> lock(m_fpsMutex);
+      frameRate = m_frameRate;
+      frameTime = m_frameTime;
+    }
     position.y += 16.0f;
 
     renderer.drawText(16.0f,
@@ -274,7 +284,7 @@ namespace dxvk::hud {
     renderer.drawText(16.0f,
       { position.x + 60.0f, position.y },
       { 1.0f, 1.0f, 1.0f, 1.0f },
-      m_frameRate);
+      frameRate);
 
     renderer.drawText(16.0f,
       { position.x + 140.0f, position.y },
@@ -284,7 +294,7 @@ namespace dxvk::hud {
     renderer.drawText(16.0f,
       { position.x + 285.0f, position.y },
       { 1.0f, 1.0f, 1.0f, 1.0f },
-      m_frameTime);
+      frameTime);
 
     position.y += 8.0f;
     return position;
@@ -296,6 +306,8 @@ namespace dxvk::hud {
 
 
   void HudFrameTimeItem::update(dxvk::high_resolution_clock::time_point time) {
+    std::lock_guard<std::mutex> lock(m_historyMutex);
+    ++m_sourceFrameId;
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate);
 
     m_dataPoints[m_dataPointId] = float(elapsed.count());
@@ -308,6 +320,19 @@ namespace dxvk::hud {
   HudPos HudFrameTimeItem::render(
           HudRenderer&      renderer,
           HudPos            position) {
+    std::array<float, NumDataPoints> dataPoints;
+    uint32_t dataPointId;
+    uint64_t sourceFrameId;
+    // Update and rendering can run on different threads. File I/O and drawing stay outside the snapshot lock.
+    {
+      std::lock_guard<std::mutex> lock(m_historyMutex);
+      dataPoints = m_dataPoints;
+      dataPointId = m_dataPointId;
+      sourceFrameId = m_sourceFrameId;
+    }
+    if (renderer.exporting()) {
+      renderer.exportValue("frametime_source_id", 0.f, 0.f, std::to_string(sourceFrameId));
+    }
     std::array<HudLineVertex, NumDataPoints * 2> vData;
     position.y += 40.0f;
 
@@ -323,7 +348,10 @@ namespace dxvk::hud {
     
     // Paint the time points
     for (uint32_t i = 0; i < NumDataPoints; i++) {
-      float us = m_dataPoints[(m_dataPointId + i) % NumDataPoints];
+      float us = dataPoints[(dataPointId + i) % NumDataPoints];
+      if (renderer.exporting()) {
+        renderer.exportValue("frametime_us", float(i), 0.f, std::to_string(us));
+      }
       
       minMs = std::min(minMs, uint32_t(us / 100.0f));
       maxMs = std::max(maxMs, uint32_t(us / 100.0f));

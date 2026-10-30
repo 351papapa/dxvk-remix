@@ -362,6 +362,7 @@ class InstanceManager : public CommonDeviceObject {
   friend class RetainedScene;
   friend class TransientLane;
 public:
+  uint8_t nextDecalSortOrder() { return static_cast<uint8_t>(m_decalSortOrderCounter++); }
   InstanceManager(InstanceManager const&) = delete;
   InstanceManager& operator=(InstanceManager const&) = delete;
 

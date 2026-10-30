@@ -1,3 +1,12 @@
+//!variant point_instancer_culling.comp
+//!variant point_instancer_culling_frustum.comp
+//!>       ENABLE_FRUSTUM_CULLING=1
+//!end-variants
+
+#ifndef ENABLE_FRUSTUM_CULLING
+#define ENABLE_FRUSTUM_CULLING 0
+#endif
+
 /*
 * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 *
@@ -69,6 +78,20 @@ void main(uint3 threadId : SV_DispatchThreadID) {
   // Host (Remix API) instancing is not culled unless rtx.pointInstancer.cullHostInstancers is on.
   const bool cullable = batch.cullable != 0;
   bool visible = !cullable || (distSq <= radiusSq);
+
+#if ENABLE_FRUSTUM_CULLING
+  // Nearby instances keep their off-screen contribution. Rejected instances still
+  // write a complete mask-zero TLAS entry below.
+  if (cullable && visible && cb.frustumCull && distSq > cb.frustumNearSkip * cb.frustumNearSkip) {
+    for (uint plane = 0; plane < 4; ++plane) {
+      if (dot(cb.viewPlanes[plane].xyz, worldPos) + cb.viewPlanes[plane].w < -cb.frustumSpherePad) {
+        visible = false;
+        break;
+      }
+    }
+  }
+
+#endif
 
   // Optional density fade: stochastically reject instances in the fade region.
   if (cullable && visible && cb.fadeStartRadius > 0.0 && distSq > cb.fadeStartRadius * cb.fadeStartRadius && cb.cullingRadius > cb.fadeStartRadius) {

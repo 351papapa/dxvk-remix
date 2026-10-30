@@ -48,6 +48,8 @@ namespace dxvk {
     // (NRD primary denoiser or ReSTIR GI lighting validation).
     bool getEnableDenoiserGradient(RtxContext& ctx) const;
     
+    RTX_OPTION("rtx.di", uint32_t, localSphereInitialSampleCount, 0, "Additional nearest sphere-light candidates selected entirely on the GPU. Zero disables; at most 64. Used only in RTXDI sampling mode.");
+
     RTX_OPTION("rtx.di", bool, enableCrossPortalLight, true, "");
     RTX_OPTION("rtx.di", bool, enableInitialVisibility, true, "Whether to trace a visibility ray for the light sample selected in the initial sampling pass.");
     RTX_OPTION_ARGS("rtx.di", bool, enableBestLightSampling, true, "Whether to include a single best light from the previous frame's pixel neighborhood into initial sampling.",
@@ -83,5 +85,10 @@ namespace dxvk {
     RTX_OPTION("rtx.di", float, confidenceGradientScale, 6.f, "");
     RTX_OPTION("rtx.di", float, minimumConfidence, 0.1f, "");
     RTX_OPTION("rtx.di", float, confidenceHitDistanceSensitivity, 300.0f, "");
+
+  private:
+    DxvkBufferSlice selectLocalSphereLights(RtxContext* ctx);
+    Rc<DxvkBuffer> m_localSphereCandidates[2];
+
   };
 }

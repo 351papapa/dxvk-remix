@@ -20,6 +20,8 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #pragma once
+#include "rtx_volumetric_weather.h"
+#include "rtx_particle_lighting.h"
 
 #include "rtx_types.h"
 #include "rtx/pass/volume_args.h"
@@ -93,6 +95,11 @@ enum class FroxelConsumerCacheQuality : int {
     // this into a thread count by mulitplying by how many threads per warp there are (typically 32).
     // Example for a RTX 3090: 82 SMs * 64 warps per SM * 32 threads per warp = 167,936 froxels to saturate the GPU. It is fine to be a bit below this though as most gpus will have fewer SMs than this, and higher resolutions
     // will also use more froxels due to how the grid is allocated with respect to the (downscaled when DLSS is in use) resolution, and we don't want the froxel passes to be too expensive (unless higher quality results are desired).
+    RTX_OPTION("rtx.volumetrics", bool, integrateWorkgroup8x8, false,
+      "Use 8x8 compute workgroups for froxel integration. Changes GPU scheduling without reducing samples, resolution or history.");
+    RTX_OPTION("rtx.volumetrics", bool, integrateWorkgroup8x4, false,
+      "Use 8x4 compute workgroups for froxel integration, taking priority over the 8x8 option. Changes GPU scheduling without reducing quality.");
+
     RTX_OPTION_ARGS("rtx.volumetrics", float, restirGridGuardBandFactor, 1.1f, "The scale factor for the restir grid guard band, which is an extended part of the viewing frustum for which we should calculate lighting information for, even though they are technically offscreen.  This helps reduce noise in cases where the camera is moving around.",
                     args.minValue = 1.0f);
     RTX_OPTION_ARGS("rtx.volumetrics", uint32_t, restirGridScale, 4,
@@ -183,6 +190,13 @@ enum class FroxelConsumerCacheQuality : int {
                     "and dust. The cache is lit by sun visibility from points in the air, so large values can make "
                     "alpha-blended surfaces that are in shadow glow. Set it to 0 if a game shows such false glow.",
                     args.minValue = 0.0f, args.maxValue = 1.0f);
+    RTX_OPTION("rtx.particles", bool, rescaleSkyLitFroxelGain, false,
+               "Give sky-lit particle materials their own analytic-light cache gain. Does not change fog or non-sky-lit particles. Off preserves the current lighting.");
+    RTX_OPTION("rtx.particles", bool, skyAmbientHemisphere, false,
+               "Use fixed upper-hemisphere sky samples for opaque sky-lit particles, limiting bright sun-disc samples. Removes camera-direction dependence without changing the sky provider.");
+    RTX_OPTION_ARGS("rtx.volumetrics", float, particleSkyLitFroxelGain, 1.0f,
+                    "Analytic-light cache gain for the optional sky-lit particle and stochastic alpha blend rescaling. Zero removes that cache contribution; sky fill is separate.",
+                    args.minValue = 0.0f, args.maxValue = 32.0f);
     RTX_OPTION("rtx.volumetrics", bool, enableInPortals, false,
                "Enables using extra frustum-aligned volumes for lighting in portals.\n"
                "Note that enabling this option will require 3x the memory of the typical froxel grid as well as degrade performance in some cases.\n"
@@ -280,7 +294,8 @@ enum class FroxelConsumerCacheQuality : int {
     RtxGlobalVolumetrics(DxvkDevice* device);
     ~RtxGlobalVolumetrics() = default;
 
-    VolumeArgs getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes) const;
+    static VolumetricWeatherState baseWeatherState();
+    VolumeArgs getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes, const VolumetricWeatherState& weather) const;
 
     void dispatch(class RtxContext* ctx, const Resources::RaytracingOutput& rtOutput, uint32_t numActiveFroxelVolumes);
 

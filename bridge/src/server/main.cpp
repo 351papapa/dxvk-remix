@@ -19,6 +19,11 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include <remix/remix_retained.h>
+#include "util_remixapi_gpu_instancing.h"
+#include "util_remixapi_retained_error.h"
+#include <remix/remix_game_surface.h>
+#include <remix/remix_legacy_surface_validation.h>
 #include <windows.h>
 
 #include "version.h"
@@ -386,6 +391,10 @@ static bool dumpLeakedObjects() {
 }
 
 void ProcessDeviceCommandQueue() {
+  remixapi_RetainedInterface retainedInterface = {};
+  HMODULE retainedModule = nullptr;
+  uint64_t retainedBridgeEpoch = 0;
+  remixapi_ErrorCode retainedBridgeError = REMIXAPI_ERROR_CODE_SUCCESS;
   // Loop until the client sends terminate instruction
   bool done = false;
   while (!done && DeviceBridge::waitForCommand() == Result::Success) {
@@ -2953,6 +2962,134 @@ void ProcessDeviceCommandQueue() {
       /*
        * BridgeApi commands
        */
+      case RemixApi_RetainedGetInterface:
+      case RemixApi_RetainedUpsert:
+      case RemixApi_RetainedRemove:
+      case RemixApi_RetainedClear:
+      case RemixApi_RetainedCommit:
+      case RemixApi_RetainedStatus:
+      case RemixApi_RetainedDrawOrdered:
+      {
+        remixapi_RetainedInterface retained = {};
+        auto result = REMIXAPI_ERROR_CODE_SUCCESS;
+        if (retainedModule != ghModule || !retainedInterface.BatchUpsert) {
+          retainedInterface = {};
+          retainedModule = ghModule;
+          const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedInterface>(
+            GetProcAddress(ghModule, REMIXAPI_GET_RETAINED_INTERFACE_NAME));
+          result = getter ? getter(REMIXAPI_RETAINED_VERSION, sizeof(retainedInterface), &retainedInterface)
+                          : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+        }
+        retained = retainedInterface;
+        const auto command = rpcHeader.command;
+        uint64_t epoch = 0;
+        if (command != RemixApi_RetainedGetInterface && command != RemixApi_RetainedStatus) {
+          void* data = nullptr;
+          const uint32_t size = DeviceBridge::get_data(&data);
+          if (size == sizeof(epoch)) {
+            std::memcpy(&epoch, data, size);
+          } else {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          }
+        }
+        if (command != RemixApi_RetainedGetInterface && command != RemixApi_RetainedStatus &&
+            command != RemixApi_RetainedClear && (!epoch || epoch != retainedBridgeEpoch)) {
+          result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+        }
+        if (command == RemixApi_RetainedUpsert || command == RemixApi_RetainedRemove || command == RemixApi_RetainedDrawOrdered) {
+          void* data = nullptr;
+          const uint32_t size = DeviceBridge::get_data(&data);
+          const uint32_t stride = command == RemixApi_RetainedUpsert ? sizeof(remixapi_RetainedInstance) : sizeof(uint64_t);
+          if (size == 0 || size % stride || size / stride > REMIXAPI_RETAINED_MAX_BATCH) {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          }
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && epoch == retainedBridgeEpoch) {
+            if (command == RemixApi_RetainedUpsert) {
+              std::vector<remixapi_RetainedInstance> instances(size / stride);
+              std::memcpy(instances.data(), data, size);
+              for (auto& instance : instances) {
+                const auto handle = instance.mesh <= UINT32_MAX ? MeshHandle::s_handleMap.find(static_cast<uint32_t>(instance.mesh)) : MeshHandle::s_handleMap.end();
+                if (handle == MeshHandle::s_handleMap.end()) {
+                  result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+                  break;
+                }
+                instance.mesh = reinterpret_cast<uint64_t>(handle->second);
+              }
+              if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+                result = retained.BatchUpsert(epoch, static_cast<uint32_t>(instances.size()), instances.data());
+              }
+            } else {
+              std::vector<uint64_t> ids(size / stride);
+              std::memcpy(ids.data(), data, size);
+              if (command == RemixApi_RetainedDrawOrdered) {
+                if (retainedBridgeError == REMIXAPI_ERROR_CODE_SUCCESS) {
+                  result = retained.DrawOrdered(epoch, static_cast<uint32_t>(ids.size()), ids.data());
+                }
+              } else {
+                result = retained.BatchRemove(epoch, static_cast<uint32_t>(ids.size()), ids.data());
+              }
+            }
+          }
+        } else if (result == REMIXAPI_ERROR_CODE_SUCCESS && command == RemixApi_RetainedClear) {
+          if (epoch != 0 && epoch > retainedBridgeEpoch) {
+            result = retained.Clear(epoch);
+            if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+              retainedBridgeEpoch = epoch;
+              retainedBridgeError = REMIXAPI_ERROR_CODE_SUCCESS;
+            }
+          } else {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          }
+        } else if (result == REMIXAPI_ERROR_CODE_SUCCESS && command == RemixApi_RetainedCommit) {
+          if (epoch == retainedBridgeEpoch && retainedBridgeError == REMIXAPI_ERROR_CODE_SUCCESS) {
+            result = retained.CommitFrame(epoch);
+          }
+        }
+        if (command == RemixApi_RetainedGetInterface) {
+          ServerMessage message(Commands::Bridge_Response, currentUID);
+          message.send_data(static_cast<uint32_t>(result));
+        } else if (command == RemixApi_RetainedStatus) {
+          remixapi_RetainedStatus status = {};
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+            result = retained.GetStatus(&status);
+          }
+          if (status.epoch == retainedBridgeEpoch && retainedBridgeError != REMIXAPI_ERROR_CODE_SUCCESS) {
+            status.lastError = static_cast<uint32_t>(retainedBridgeError);
+          }
+          ServerMessage message(Commands::Bridge_Response, currentUID);
+          message.send_data(static_cast<uint32_t>(result));
+          message.send_data(sizeof(status), &status);
+        } else if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
+          remixapi::retained::latchError(retained, retainedBridgeEpoch, result, retainedBridgeError);
+          Logger::err("Retained instance command failed; replay suspended until Clear");
+        }
+        break;
+      }
+
+      case RemixApi_GetTextureHash:
+      {
+        const uint32_t textureId = DeviceBridge::get_data();
+        uint64_t hash = 0;
+        remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+        char version[2] = {};
+        uint32_t versionSize = 0;
+        const bool gameTextureApi = remixapi::g_remix.GetGameValue &&
+          remixapi::g_remix.GetGameValue("vc.api.gameTextureMaterialVersion", version, sizeof(version), &versionSize) == REMIXAPI_ERROR_CODE_SUCCESS &&
+          versionSize == 2 && version[0] == '1' && version[1] == '\0';
+        const auto found = gpD3DResources.find(textureId);
+        if (gameTextureApi && found != gpD3DResources.end() && found->second && remixapi::g_remix.dxvk_GetTextureHash) {
+          IDirect3DTexture9* texture = nullptr;
+          if (SUCCEEDED(found->second->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&texture)))) {
+            result = remixapi::g_remix.dxvk_GetTextureHash(texture, &hash);
+            texture->Release();
+          }
+        }
+        ServerMessage c(Commands::Bridge_Response, currentUID);
+        c.send_data(static_cast<uint32_t>(result));
+        c.send_data(static_cast<uint32_t>(hash));
+        c.send_data(static_cast<uint32_t>(hash >> 32));
+        break;
+      }
       case RemixApi_CreateMaterial:
       {
         // Rather than allocate deserialized struct extensions on the heap,
@@ -3021,12 +3158,25 @@ void ProcessDeviceCommandQueue() {
 
         auto bridgeHandle = DeviceBridge::get_data();
         remixapi_MaterialHandle remixApiHandle = nullptr;
-        if(remixapi::g_remix.CreateMaterial(&matInfo, &remixApiHandle) == REMIXAPI_ERROR_CODE_SUCCESS) {
+        const auto materialResult = remixapi::g_remix.CreateMaterial(&matInfo, &remixApiHandle);
+        if(materialResult == REMIXAPI_ERROR_CODE_SUCCESS) {
           MaterialHandle(bridgeHandle, remixApiHandle);
         } else {
           Logger::err("[RemixApi_CreateMaterial] Remix API call failed!");
         }
+        if (matInfo.albedoTexture && wcsncmp(matInfo.albedoTexture, L"game:0x", 7) == 0) {
+          ServerMessage response(Commands::Bridge_Response, currentUID);
+          response.send_data(static_cast<uint32_t>(materialResult));
+        }
         
+        break;
+      }
+
+      case RemixApi_AutoInstancePersistentLights:
+      {
+        if (remixapi::g_remix.AutoInstancePersistentLights) {
+          remixapi::g_remix.AutoInstancePersistentLights();
+        }
         break;
       }
 
@@ -3111,31 +3261,79 @@ void ProcessDeviceCommandQueue() {
       }
 
       case RemixApi_CreateMesh:
+      case RemixApi_CreateMeshLegacy:
       {
         const auto meshInfoSType = remixapi::pullSType();
         assert(meshInfoSType == REMIXAPI_STRUCT_TYPE_MESH_INFO);
         serialize::MeshInfo meshInfo;
         deserializeFromQueue(meshInfo);
         meshInfo.pNext = nullptr;
-        
-        for(size_t iSurf = 0; iSurf < meshInfo.surfaces_count; ++iSurf) {
-          // If we don't const_cast, we'd have to copy the entire
-          // remixapi_MeshInfo::surfaces_values array in order to get around
-          // the remixapi_MeshInfo's member const qualifier and reassign
-          // remixapi_MeshInfoSurfaceTriangles::material.
-          auto& surf = const_cast<remixapi_MeshInfoSurfaceTriangles&>(meshInfo.surfaces_values[iSurf]);
-          MaterialHandle matHandle(surf.material);
-          surf.material = matHandle;
+        const bool hasLegacy = rpcHeader.command == RemixApi_CreateMeshLegacy;
+        remixapi::legacy_surface::Decoded identities;
+        remixapi_MeshInfoLegacySurfaceEXT legacy = {};
+        remixapi_MeshInfoLegacySurfaceV2EXT legacyV2 = {};
+        auto result = REMIXAPI_ERROR_CODE_SUCCESS;
+        if (hasLegacy) {
+          void* data = nullptr;
+          const uint32_t size = DeviceBridge::get_data(&data);
+          if (!remixapi::legacy_surface::decode(data, size, meshInfo.surfaces_count, identities)) {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          } else if (!identities.v2.empty()) {
+            legacyV2.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO_LEGACY_SURFACE_V2_EXT;
+            legacyV2.surfaces_count = static_cast<uint32_t>(identities.v2.size());
+            legacyV2.surfaces_values = identities.v2.data();
+            meshInfo.pNext = &legacyV2;
+          } else {
+            legacy.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO_LEGACY_SURFACE_EXT;
+            legacy.surfaces_count = static_cast<uint32_t>(identities.v1.size());
+            legacy.surfaces_values = identities.v1.data();
+            meshInfo.pNext = &legacy;
+          }
+          char version[2] = {};
+          uint32_t versionSize = 0;
+          if (!remixapi::g_remix.GetGameValue ||
+              remixapi::g_remix.GetGameValue("vc.api.legacySurfaceVersion", version, sizeof(version), &versionSize) != REMIXAPI_ERROR_CODE_SUCCESS ||
+              versionSize != 2 || version[0] != '1' || version[1] != '\0') {
+            if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+              result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+            }
+          }
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && !identities.v2.empty()) {
+            versionSize = 0;
+            version[0] = version[1] = '\0';
+            const auto capability = remixapi::g_remix.GetGameValue(
+              remixapi::legacy_surface::kRuntimeKey, version, sizeof(version), &versionSize);
+            if (!remixapi::legacy_surface::supportsV2(capability, version, versionSize)) {
+              result = REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+            }
+          }
         }
-
-        auto bridgeHandle = DeviceBridge::get_data();
+        for (size_t i = 0; i < meshInfo.surfaces_count; ++i) {
+          auto& surface = const_cast<remixapi_MeshInfoSurfaceTriangles&>(meshInfo.surfaces_values[i]);
+          if (surface.material == nullptr) {
+            continue;
+          }
+          const auto handle = MaterialHandle::s_handleMap.find(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(surface.material)));
+          if (handle == MaterialHandle::s_handleMap.end()) {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+            break;
+          }
+          surface.material = handle->second;
+        }
+        const auto bridgeHandle = DeviceBridge::get_data();
         remixapi_MeshHandle remixApiHandle = nullptr;
-        if(remixapi::g_remix.CreateMesh(&meshInfo, &remixApiHandle) == REMIXAPI_ERROR_CODE_SUCCESS) {
+        if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+          result = remixapi::g_remix.CreateMesh(&meshInfo, &remixApiHandle);
+        }
+        if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
           MeshHandle handle(bridgeHandle, remixApiHandle);
         } else {
           Logger::err("[RemixApi_CreateMesh] Remix API call failed!");
         }
-
+        if (hasLegacy) {
+          ServerMessage message(Commands::Bridge_Response, currentUID);
+          message.send_data(static_cast<uint32_t>(result));
+        }
         break;
       }
 
@@ -3157,9 +3355,11 @@ void ProcessDeviceCommandQueue() {
         // allocate them locally, since we know only one instance will be
         // supported at a time
         struct InstanceExtensions {
+          remixapi_InstanceInfoGameSurfaceEXT gameSurface;
           serialize::InstanceInfoObjectPicking objectPicking;
           serialize::InstanceInfoBlend blend;
           serialize::InstanceInfoTransforms boneXforms;
+          serialize::InstanceInfoGpuInstancing gpuInstancing;
           serialize::InstanceInfoParticleSystem particleSystem;
         } exts;
         memset(&exts, 0, sizeof(InstanceExtensions));
@@ -3178,10 +3378,21 @@ void ProcessDeviceCommandQueue() {
 
         instInfo.pNext = nullptr;
         
+        bool validInstancePayload = true;
+        bool hasGpuInstancing = false;
         bool bInstExtExists = remixapi::pullBool();
         auto* pInfoProto = &getInfoProto(instInfo);
         while(bInstExtExists) {
           const auto extSType = remixapi::pullSType();
+          if (extSType == REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GAME_SURFACE_EXT) {
+            exts.gameSurface.sType = extSType;
+            exts.gameSurface.pNext = nullptr;
+            exts.gameSurface.wetTag = DeviceBridge::get_data();
+            pInfoProto->pNext = &exts.gameSurface;
+            pInfoProto = &getInfoProto(exts.gameSurface);
+            bInstExtExists = remixapi::pullBool();
+            continue;
+          }
           switch (extSType) {
             case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_OBJECT_PICKING_EXT:
             {
@@ -3207,6 +3418,22 @@ void ProcessDeviceCommandQueue() {
               pInfoProto = &getInfoProto(exts.boneXforms);
               break;
             }
+            case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT:
+            {
+              void* data = nullptr;
+              const uint32_t size = DeviceBridge::get_data(&data);
+              if (hasGpuInstancing || !remixapi::gpu_instancing::validPayload(data, size)) {
+                validInstancePayload = false;
+                break;
+              }
+              hasGpuInstancing = true;
+              serialize::InstanceInfoGpuInstancing instances(data);
+              instances.deserialize();
+              exts.gpuInstancing = std::move(instances);
+              pInfoProto->pNext = &exts.gpuInstancing;
+              pInfoProto = &getInfoProto(exts.gpuInstancing);
+              break;
+            }
             case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT:
             {
               assert(!exts.particleSystem.pNext);
@@ -3224,7 +3451,7 @@ void ProcessDeviceCommandQueue() {
           bInstExtExists = remixapi::pullBool();
         }
 
-        if(remixapi::g_remix.DrawInstance(&instInfo) != REMIXAPI_ERROR_CODE_SUCCESS) {
+        if(!validInstancePayload || remixapi::g_remix.DrawInstance(&instInfo) != REMIXAPI_ERROR_CODE_SUCCESS) {
           Logger::err("[RemixApi_DrawInstance] Remix API call failed!");
         }
 
@@ -3325,10 +3552,22 @@ void ProcessDeviceCommandQueue() {
 
         auto bridgeHandle = DeviceBridge::get_data();
         remixapi_LightHandle lightHandle = nullptr;
-        if(remixapi::g_remix.CreateLight(&lightInfo, &lightHandle) == REMIXAPI_ERROR_CODE_SUCCESS) {
+        const auto lightResult = remixapi::g_remix.CreateLight(&lightInfo, &lightHandle);
+        if(lightResult == REMIXAPI_ERROR_CODE_SUCCESS) {
           LightHandle handle(bridgeHandle, lightHandle);
         } else {
-          Logger::err("[RemixApi_CreateLight] Remix API call failed!");
+          Logger::err(format_string(
+            "[RemixApi_CreateLight] failed code=%u hash=%016llx bridge=%u radiance=(%g,%g,%g) "
+            "sphere=(radius:%g volume:%g) disk=(radii:%g,%g x:%g,%g,%g y:%g,%g,%g dir:%g,%g,%g cone:%g soft:%g focus:%g)",
+            static_cast<unsigned>(lightResult), static_cast<unsigned long long>(lightInfo.hash),
+            static_cast<unsigned>(bridgeHandle), lightInfo.radiance.x, lightInfo.radiance.y, lightInfo.radiance.z,
+            exts.sphere.radius, exts.sphere.volumetricRadianceScale,
+            exts.disk.xRadius, exts.disk.yRadius,
+            exts.disk.xAxis.x, exts.disk.xAxis.y, exts.disk.xAxis.z,
+            exts.disk.yAxis.x, exts.disk.yAxis.y, exts.disk.yAxis.z,
+            exts.disk.direction.x, exts.disk.direction.y, exts.disk.direction.z,
+            exts.disk.shaping_value.coneAngleDegrees, exts.disk.shaping_value.coneSoftness,
+            exts.disk.shaping_value.focusExponent));
         }
         
         break;
@@ -3530,7 +3769,7 @@ void ProcessDeviceCommandQueue() {
         uint32_t actual_size = 0;
 
         if (remixapi::g_remix.GetGameValue) {
-          result = remixapi::g_remix.GetGameValue(key_str.c_str(), buf.data(), kMaxValueSize, &actual_size);
+          result = remixapi::g_remix.GetGameValue(remixapi::legacy_surface::serverQueryKey(key_str.c_str()), buf.data(), kMaxValueSize, &actual_size);
           // Value larger than our internal buffer -- impl honored the contract
           // and left buf untouched. We have no bytes to forward; surface as
           // GENERAL_FAILURE rather than sending uninit memory or desyncing.

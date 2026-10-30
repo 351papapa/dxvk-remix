@@ -117,6 +117,8 @@ namespace dxvk {
     RTX_OPTION("rtx", float, stochasticAlphaBlendPlanarDifference, 0.2f, "Max planar difference for a valid neighbor.");
     RTX_OPTION("rtx", bool, stochasticAlphaBlendUseRadianceVolume, true, "Get radiance from radiance volume.");
     RTX_OPTION("rtx", float, stochasticAlphaBlendRadianceVolumeMultiplier, 1.0, "Radiance volume multiplier.");
+    RTX_OPTION("rtx", bool, stochasticAlphaBlendRescaleFroxelGain, false,
+               "Rescale the analytic-light cache for all stochastic alpha blend surfaces using its radiance-volume fallback, including non-particles. Uses rtx.volumetrics.particleSkyLitFroxelGain without changing fog or neighbor-based lighting.");
     RTX_OPTION("rtx", bool, stochasticAlphaBlendEnableFilter, true, "Filter samples to suppress noise.");
     RTX_OPTION("rtx", bool, stochasticAlphaBlendDiscardBlackPixel, false, "Discard black pixels.");
 

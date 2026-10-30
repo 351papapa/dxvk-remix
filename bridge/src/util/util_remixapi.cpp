@@ -439,11 +439,12 @@ uint32_t MeshInfo::_calcSize() const {
   return size;
 }
 
-static inline uint32_t blendWeightSizePerVtx(const remixapi_MeshInfoSkinning& skinning) {
-  return skinning.blendWeights_count * skinning.bonesPerVertex * sizeof(float);
+// Counts include every bone influence for every vertex.
+static inline uint32_t blendWeightBytes(const remixapi_MeshInfoSkinning& skinning) {
+  return skinning.blendWeights_count * sizeof(float);
 }
-static inline uint32_t blendIndicesSizePerVtx(const remixapi_MeshInfoSkinning& skinning) {
-  return skinning.blendIndices_count * skinning.bonesPerVertex * sizeof(uint32_t);
+static inline uint32_t blendIndexBytes(const remixapi_MeshInfoSkinning& skinning) {
+  return skinning.blendIndices_count * sizeof(uint32_t);
 }
 template<>
 static inline uint32_t sizeOf(const remixapi_MeshInfoSurfaceTriangles& surface) {
@@ -456,9 +457,9 @@ static inline uint32_t sizeOf(const remixapi_MeshInfoSurfaceTriangles& surface) 
   if(surface.skinning_hasvalue) {
     size += sizeOf(surface.skinning_value.bonesPerVertex);
     size += sizeOf(surface.skinning_value.blendWeights_count);
-    size += surface.vertices_count * blendWeightSizePerVtx(surface.skinning_value);
+    size += blendWeightBytes(surface.skinning_value);
     size += sizeOf(surface.skinning_value.blendIndices_count);
-    size += surface.vertices_count * blendIndicesSizePerVtx(surface.skinning_value);
+    size += blendIndexBytes(surface.skinning_value);
   }
   size += sizeof(uint32_t);
   return size;
@@ -491,11 +492,11 @@ void serialize(const remixapi_MeshInfoSurfaceTriangles& surface, void*& pSeriali
     bridge_util::serialize(skinning.bonesPerVertex, pSerialize);
     // Blend Weights
     bridge_util::serialize(skinning.blendWeights_count, pSerialize);
-    const size_t blendWeightsSize = surface.vertices_count * blendWeightSizePerVtx(skinning);
+    const size_t blendWeightsSize = blendWeightBytes(skinning);
     bridge_util::serialize(skinning.blendWeights_values, pSerialize, blendWeightsSize);
     // Blend Indices
     bridge_util::serialize(skinning.blendIndices_count, pSerialize);
-    const size_t blendIndicesSize = surface.vertices_count * blendIndicesSizePerVtx(skinning);
+    const size_t blendIndicesSize = blendIndexBytes(skinning);
     bridge_util::serialize(skinning.blendIndices_values, pSerialize, blendIndicesSize);
   }
   bridge_util::serialize(surface.material, pSerialize);
@@ -524,11 +525,11 @@ void deserialize(void*& pDeserialize, remixapi_MeshInfoSurfaceTriangles& surface
     bridge_util::deserialize(pDeserialize, skinning.bonesPerVertex);
     // Blend Weights
     bridge_util::deserialize(pDeserialize, skinning.blendWeights_count);
-    const size_t blendWeightsSize = surface.vertices_count * blendWeightSizePerVtx(skinning);
+    const size_t blendWeightsSize = blendWeightBytes(skinning);
     deserialize_const_p(pDeserialize, skinning.blendWeights_values, blendWeightsSize);
     // Blend Indices
     bridge_util::deserialize(pDeserialize, skinning.blendIndices_count);
-    const size_t blendIndicesSize = surface.vertices_count * blendIndicesSizePerVtx(skinning);
+    const size_t blendIndicesSize = blendIndexBytes(skinning);
     deserialize_const_p(pDeserialize, skinning.blendIndices_values, blendIndicesSize);
   }
   bridge_util::deserialize(pDeserialize, surface.material);

@@ -357,6 +357,7 @@ public:
   void releaseBufferSlot(uint32_t slot) { m_bufferCache.release(slot); }
   
   const InstanceManager& getInstanceManager() const { return m_instanceManager; }
+  uint8_t nextDecalSortOrder() { return m_instanceManager.nextDecalSortOrder(); }
   const AccelManager& getAccelManager() const { return m_accelManager; }
   // Sticky, set once any material with thin-opaque subsurface data (measurement distance > 0)
   // is created while rtx.subsurface.enableThinOpaque is on. Until then no surface can be thin-opaque.

@@ -50,6 +50,7 @@ namespace dxvk {
   //
   // CS thread only, except the command queue's producers.
   class TransientLane;
+  class RetainedCompat;
 
   class RetainedScene {
     friend class TransientLane;  // The transient lane builds from the same geometry table.
@@ -106,7 +107,7 @@ namespace dxvk {
     RtInstance* submeshInstance(uint64_t handle, uint32_t submesh) const;
     // Describes and builds a frontend-resolved entry at once, during the caller's command instead of at the next
     // frame(), and queues its result for takeFeedback (frontend::SceneInterface::buildInstance).
-    void buildNow(const Rc<DxvkContext>& ctx, uint64_t handle, ExternalDrawState&& state);
+    bool buildNow(const Rc<DxvkContext>& ctx, uint64_t handle, ExternalDrawState&& state, bool reportFeedback = true);
     // The feedback queue of frontend-resolved entries: buildNow's results, and Released for an entry a later build
     // rejected.
     void takeFeedback(std::vector<frontend::InstanceFeedback>& out);
@@ -166,6 +167,7 @@ namespace dxvk {
     size_t frontendEntryCount() const { return m_frontendEntries; }
     // The transient lane (rtx_scene_transient.h).
     TransientLane& transient() { return *m_transient; }
+    RetainedCompat& compat() { return *m_compat; }
 
   private:
     enum class Lane : uint8_t { Pending, Direct, Legacy, Rejected };
@@ -248,6 +250,7 @@ namespace dxvk {
 
     SceneManager& m_scene;
     std::unique_ptr<TransientLane> m_transient;
+    std::unique_ptr<RetainedCompat> m_compat;
     scene::SceneCommandQueue m_queue;
     std::unordered_map<uint64_t, Entry> m_entries;
     std::unordered_map<GeomKey, std::unique_ptr<Geometry>, GeomKeyHash> m_geometry;

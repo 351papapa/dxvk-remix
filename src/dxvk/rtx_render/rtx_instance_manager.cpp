@@ -1015,12 +1015,11 @@ namespace dxvk {
         currentInstance.surface.isAnimatedWater = currentInstance.testCategoryFlags(InstanceCategories::AnimatedWater);
         currentInstance.surface.isOceanWater = currentInstance.surface.isAnimatedWater
           && reinterpret_cast<uint64_t>(drawCall.getGeometryData().externalMaterial) == 0x57415445524C4142ull;
-        currentInstance.surface.associatedGeometryHash = drawCall.getHash(RtxOptions::geometryAssetHashRule());
+        currentInstance.surface.associatedGeometryHash = drawCall.getGeometryData().legacyDrawHash
+          ? drawCall.getGeometryData().legacyDrawHash : drawCall.getHash(RtxOptions::geometryAssetHashRule());
         currentInstance.surface.isTextureFactorBlend = legacySurface.isTextureFactorBlend;
         currentInstance.surface.isPlayerModel = currentInstance.testCategoryFlags(InstanceCategories::ThirdPersonPlayerModel);
-        // Flare vertex colors carry lamp tint and optical fade.
-        currentInstance.surface.isVertexColorBakedLighting = legacySurface.isVertexColorBakedLighting
-          && !m_device->getCommon()->metaLensFlareMaterials().matches(drawCall.getMaterialData().getColorTexture().getImageHash());
+        currentInstance.surface.isVertexColorBakedLighting = legacySurface.isVertexColorBakedLighting;
         currentInstance.surface.isMotionBlurMaskOut = currentInstance.testCategoryFlags(InstanceCategories::IgnoreMotionBlur);
 
         // Note: Skip the spritesheet adjustment logic in the surface interaction when using Ray Portal materials as this logic

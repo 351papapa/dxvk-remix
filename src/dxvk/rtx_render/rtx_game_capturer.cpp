@@ -601,7 +601,8 @@ namespace dxvk {
       }
       Logger::info(str::format("[GameCapturer] Using external mesh hash: 0x", std::hex, meshHash, std::dec));
     } else {
-      meshHash = pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
+      meshHash = pBlas->input.getGeometryData().legacyDrawHash
+        ? pBlas->input.getGeometryData().legacyDrawHash : pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
     }
     assert(meshHash != 0);
 

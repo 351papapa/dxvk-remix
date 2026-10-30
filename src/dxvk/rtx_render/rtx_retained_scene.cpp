@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_retained_scene.h"
+#include "rtx_retained_compat.h"
 #include "rtx_scene_transient.h"
 
 #include <algorithm>
@@ -169,7 +170,8 @@ namespace dxvk {
 
   RetainedScene::RetainedScene(SceneManager& scene)
     : m_scene(scene)
-    , m_transient(std::make_unique<TransientLane>(scene, *this)) {
+    , m_transient(std::make_unique<TransientLane>(scene, *this))
+    , m_compat(std::make_unique<RetainedCompat>(scene)) {
   }
 
   RetainedScene::~RetainedScene() {
@@ -370,7 +372,7 @@ namespace dxvk {
     m_entries.erase(found);
   }
 
-  void RetainedScene::buildNow(const Rc<DxvkContext>& ctx, uint64_t handle, ExternalDrawState&& state) {
+  bool RetainedScene::buildNow(const Rc<DxvkContext>& ctx, uint64_t handle, ExternalDrawState&& state, bool reportFeedback) {
     frontend::InstanceFeedback result;
     result.handle = handle;
     // The resolver's mesh replacement for the description's asset keys. A replacement it cannot expand leaves an
@@ -384,8 +386,13 @@ namespace dxvk {
           result.kind = frontend::InstanceFeedback::Kind::Rejected;
           result.reason = reason;
           result.resolverRejected = true;
-          m_feedback.push_back(result);
-          return;
+          if (!reportFeedback) {
+            Logger::err(str::format("[RetainedCompat] replacement rejected: handle ", handle, ", reason ", reason));
+          }
+          if (reportFeedback) {
+            m_feedback.push_back(result);
+          }
+          return false;
         }
         result.replaced = true;
       }
@@ -404,8 +411,14 @@ namespace dxvk {
       result.kind = frontend::InstanceFeedback::Kind::Rejected;
       result.reason = entry.legacyReason;
       result.replaced = false;
+      if (!reportFeedback) {
+        Logger::err(str::format("[RetainedCompat] direct build rejected: handle ", handle, ", reason ", result.reason != nullptr ? result.reason : "unknown"));
+      }
     }
-    m_feedback.push_back(result);
+    if (reportFeedback) {
+      m_feedback.push_back(result);
+    }
+    return result.kind == frontend::InstanceFeedback::Kind::Accepted;
   }
 
   bool RetainedScene::inheritHistory(const Rc<DxvkContext>& ctx, uint64_t handle, uint64_t from) {
@@ -512,9 +525,9 @@ namespace dxvk {
       drawnParts += running->getIgnored() ? 0 : 1;
       parts.push_back(std::move(part));
     }
-    // drawReplacements places lights only on a replacement that drew a mesh.
+    // An empty replacement suppresses the original. Lights need a drawn mesh anchor.
     if (drawnParts == 0) {
-      return "replacement: no meshes";
+      out.lightTemplates.clear();
     }
 
     // Anti-culling bounds as a replacement instance computes them (meshes and lights, object space).
@@ -529,8 +542,10 @@ namespace dxvk {
 
     state.inlineSubmeshes = std::make_shared<const std::vector<RasterGeometry>>(std::move(submeshes));
     state.inlineSubmeshParts = std::make_shared<const std::vector<ExternalDrawState::SubmeshPart>>(std::move(parts));
-    // The stored draw state points at the first submesh the entry owns.
-    state.drawCall.overrideGeometryData(std::shared_ptr<const RasterGeometry>(state.inlineSubmeshes, &state.inlineSubmeshes->front()));
+    // Empty replacements keep the original description but own no drawable submeshes.
+    if (!state.inlineSubmeshes->empty()) {
+      state.drawCall.overrideGeometryData(std::shared_ptr<const RasterGeometry>(state.inlineSubmeshes, &state.inlineSubmeshes->front()));
+    }
     return nullptr;
   }
 
@@ -668,6 +683,7 @@ namespace dxvk {
   }
 
   void RetainedScene::frontendFrame(const Rc<DxvkContext>& ctx, const std::optional<Vector3>& origin) {
+    m_compat->finishFrame(ctx);
     if (m_lastFrameRun == m_scene.device()->getCurrentFrameId()) {
       return;
     }

@@ -48,6 +48,7 @@ namespace dxvk {
   class RtxContext;
   struct ExternalDrawState;
   struct FrontendSceneSeam;
+  class RetainedCompat;
   struct LegacyMaterialData;
   struct MaterialData;
   struct RasterGeometry;
@@ -212,6 +213,7 @@ namespace dxvk {
     private:
       friend class SceneInterface;
       friend struct dxvk::FrontendSceneSeam;
+      friend class dxvk::RetainedCompat;
 
       std::unique_ptr<ExternalDrawState> m_state;
       SceneInputRecord m_input;

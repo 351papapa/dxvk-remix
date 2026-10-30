@@ -137,6 +137,10 @@ namespace dxvk {
       RTX_OPTION("rtx.weather.precipitation", float, spreadDegrees, 2.0f,
                  "Half-angle of the random emission cone about the spawn plane's normal, in degrees. A degree or "
                  "two breaks up the otherwise perfectly parallel streaks.");
+      RTX_OPTION("rtx.weather.precipitation", bool, occludeWithNoRainZones, false,
+                 "Stop precipitation inside supplied no-rain boxes, including drops crossing their top or sides. "
+                 "Covered spawn positions retry elsewhere on the emitter. Works independently of surface wetness. "
+                 "Only authored boxes provide shelter; enable Stop Under Cover for additional scene geometry.");
       RTX_OPTION("rtx.weather.precipitation", bool, occludeUnderCover, false,
                  "Stop precipitation under roofs, bridges and overhangs by ray tracing the scene's acceleration "
                  "structure when each particle spawns: an upward shelter probe checks each drop for opaque cover "

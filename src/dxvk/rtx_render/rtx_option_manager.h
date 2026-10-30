@@ -133,12 +133,10 @@ namespace dxvk {
     // Call this only from the dxvk-cs thread.
     static void clearDrawcallTranslationInvalid();
 
-    // Increments each time applyPendingValues changes the resolved value of at least one option.
-    // Call this only from the dxvk-cs thread.
-    static uint32_t valueChangeGeneration() { return s_valueChangeGeneration; }
+    // Returns the resolved change generation while excluding concurrent option updates.
+    static uint32_t valueChangeGeneration();
 
-    // Returns the names of the options whose resolved value changed since the last call, for the log, and clears them.
-    // Call this only from the dxvk-cs thread.
+    // Takes the changed names for the prewarm log while excluding concurrent option updates.
     static std::string takeChangedOptionNames();
 
   private:

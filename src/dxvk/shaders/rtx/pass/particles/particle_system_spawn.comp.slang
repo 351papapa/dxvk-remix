@@ -1,4 +1,8 @@
 //!feature wetness ENABLE_SURFACE_WETNESS
+//!variant particle_system_spawn.comp
+//!variant particle_system_spawn_zones.comp
+//!> ENABLE_NO_RAIN_ZONES
+//!end-variants
 /*
 * Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 *
@@ -48,6 +52,7 @@ RWStructuredBuffer<GpuParticle> Particles;
 // [0] particles that ran the occlusion trace, [1] particles killed at birth because every candidate was covered,
 // [2] particles whose life the landing trace shortened, [3] particles moved to open sky by relocation.
 // [4] contact candidates, [5] water contacts, [6] wet-ground contacts, [7] rejected contacts.
+// [8] zone-rejected candidates, [9] zone birth kills, [10] zone motion kills, [11] actual scene rays.
 layout(binding = PARTICLE_SYSTEM_BINDING_SPAWN_TRACE_STATS_OUTPUT)
 RWStructuredBuffer<uint> SpawnTraceStats;
 
@@ -304,11 +309,19 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
   //
   // topLevelAS is last frame's structure and may not exist early in a scene, hence the sceneTlasValid gate.
   const bool traceOcclusion = particleSystem.desc.traceSpawnOcclusion && particleCb.sceneTlasValid != 0;
+#ifdef ENABLE_NO_RAIN_ZONES
+  const uint zoneCount = particleSystem.desc.useNoRainZones ? particleCb.noRainZoneCount : 0;
+#else
+  const uint zoneCount = 0;
+#endif
   bool sheltered = false;
+  bool zoneSheltered = false;
 
-  if (traceOcclusion)
+  if (traceOcclusion || zoneCount)
   {
-    InterlockedAdd(SpawnTraceStats[0], 1);
+    if (traceOcclusion) {
+      InterlockedAdd(SpawnTraceStats[0], 1);
+    }
 
     // The probe reaches 1 km of authored distance (100000 cm times sceneScale), so it still clears
     // high geometry when the scene scale is understated. Sky-bound rays leave the TLAS bounds quickly.
@@ -323,6 +336,19 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
         // and spawns two drops at the same position.
         candidate = sampleSpawnPoint(spawnCtx, particleSystem,
                                   particleIdx + attempt * particleSystem.desc.maxNumParticles);
+      }
+
+#ifdef ENABLE_NO_RAIN_ZONES
+      zoneSheltered = noRainZonesIntersectSegment(wetnessZones, zoneCount, candidate.spawnPosition, candidate.spawnPosition);
+#endif
+      sheltered = zoneSheltered;
+      if (zoneSheltered) {
+        InterlockedAdd(SpawnTraceStats[8], 1);
+        continue;
+      }
+      if (!traceOcclusion) {
+        relocated = attempt > 0;
+        break;
       }
 
       const float speed = length(candidate.initialVelocity);
@@ -342,6 +368,7 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
       RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE> shelterQuery;
       shelterQuery.TraceRayInline(topLevelAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE, OBJECT_MASK_OPAQUE, shelterRay);
       shelterQuery.Proceed();
+      InterlockedAdd(SpawnTraceStats[11], 1);
 
       sheltered = shelterQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
       if (!sheltered)
@@ -378,15 +405,18 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
   GpuParticle newParticle;
   newParticle.reset(particleSystem, candidate.spawnPosition, candidate.initialVelocity, candidate.uvMinMax, candidate.color, candidate.randSeed);
 
-  if (traceOcclusion)
+  if (traceOcclusion || zoneCount)
   {
     if (sheltered)
     {
       // Every candidate was covered, so the particle is born sleeping.
       newParticle.timeToLive = 0.0f;
       InterlockedAdd(SpawnTraceStats[1], 1);
+      if (zoneSheltered) {
+        InterlockedAdd(SpawnTraceStats[9], 1);
+      }
     }
-    else
+    else if (traceOcclusion)
     {
       const float speed = length(candidate.initialVelocity);
       if (speed > 1e-6f)
@@ -402,6 +432,7 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
         RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE> rayQuery;
         rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE, OBJECT_MASK_OPAQUE, ray);
         rayQuery.Proceed();
+        InterlockedAdd(SpawnTraceStats[11], 1);
 
         if (rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
         {

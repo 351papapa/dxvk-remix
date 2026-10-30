@@ -226,6 +226,7 @@ dxvk_src = files([
   'rtx_render/rtx_water_simulation.h',
   'rtx_render/rtx_water_surface.cpp',
   'rtx_render/rtx_water_surface.h',
+  'rtx_render/rtx_volumetric_weather.h',
   'rtx_render/rtx_water_weather.h',
   'rtx_render/rtx_window_light.h',
   'rtx_render/rtx_window_topology.h',
@@ -348,8 +349,6 @@ dxvk_src = files([
   'rtx_render/rtx_intersection_test_helpers.h',
   'rtx_render/rtx_io.cpp',
   'rtx_render/rtx_io.h',
-  'rtx_render/rtx_lens_flare_material.cpp',
-  'rtx_render/rtx_lens_flare_material.h',
   'rtx_render/rtx_light_manager.cpp',
   'rtx_render/rtx_light_manager.h',
   'rtx_render/rtx_light_manager_gui.cpp',
@@ -427,6 +426,8 @@ dxvk_src = files([
   'rtx_render/rtx_resources.h',
   'rtx_render/rtx_restir_gi_rayquery.cpp',
   'rtx_render/rtx_restir_gi_rayquery.h',
+  'rtx_render/rtx_retained_compat.cpp',
+  'rtx_render/rtx_retained_compat.h',
   'rtx_render/rtx_retained_scene.cpp',
   'rtx_render/rtx_retained_scene.h',
   'rtx_render/rtx_rtxdi_rayquery.cpp',
@@ -440,6 +441,7 @@ dxvk_src = files([
   'rtx_render/rtx_scene_transient.h',
   'rtx_render/rtx_screenshot.cpp',
   'rtx_render/rtx_screenshot.h',
+  'rtx_render/rtx_skinning_retarget.h',
   'rtx_render/rtx_sky_ui.cpp',
   'rtx_render/rtx_sky_ui.h',
   'rtx_render/rtx_numos_gpu.cpp',
@@ -580,6 +582,8 @@ dxvk_src = files([
   'imgui/implot_demo.cpp',
   'imgui/implot_internal.h',
   'imgui/implot_items.cpp',
+
+  'shaders/rtx/pass/rtxdi/local_sphere_select.h',
 ])
 
 thread_dep = dependency('threads')

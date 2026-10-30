@@ -29,6 +29,11 @@
 
 #include "../../test_utils.h"
 
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <functional>
+#include <thread>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -52,11 +57,15 @@ namespace rtx_option_test {
   static constexpr RtxOptionLayerKey kTestLayerHighKey  = { 3000, "TestLayerHigh" };
   
   // Static variables to track onChange callback invocations - separate counters for each option
+  static std::function<void()> s_dirtyQueueCallback;
   static int s_intCallbackCount = 0;
   static int s_floatCallbackCount = 0;
   
   static void testIntOnChangeCallback(DxvkDevice* device) {
     s_intCallbackCount++;
+    if (s_dirtyQueueCallback) {
+      s_dirtyQueueCallback();
+    }
   }
   
   static void testFloatOnChangeCallback(DxvkDevice* device) {
@@ -2930,16 +2939,122 @@ namespace rtx_option_test {
     std::cout << "    PASSED" << std::endl;
   }
 
+
+  void test_changedOptionSnapshotThreading() {
+    std::cout << "  Running test_changedOptionSnapshotThreading..." << std::endl;
+    RtxOptionManager::takeChangedOptionNames();
+    auto* testLayer = RtxOptionManager::acquireLayer("", kTestLayerMidKey);
+    TestOptions::testInt.setDeferred(1234, testLayer);
+    RtxOptionManager::applyPendingValues(nullptr, false);
+
+    // A consumer must wait until the resolver has finished updating the snapshot.
+    for (bool names : { true, false }) {
+      std::unique_lock<std::mutex> updateLock(RtxOptionImpl::getUpdateMutex());
+      std::promise<void> entered;
+      auto started = entered.get_future();
+      auto reader = std::async(std::launch::async, [&] {
+        entered.set_value();
+        if (names) {
+          return !RtxOptionManager::takeChangedOptionNames().empty();
+        }
+        return RtxOptionManager::valueChangeGeneration() > 0;
+      });
+      started.wait();
+      const bool waited = reader.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+      updateLock.unlock();
+      const bool valid = reader.get();
+      TEST_ASSERT(waited, (names ? "Changed-name consumer raced the option resolver" : "Generation consumer raced the option resolver"));
+      TEST_ASSERT(valid, "Snapshot lost the resolved change");
+    }
+
+    constexpr uint32_t iterations = 50000;
+    const uint32_t initialGeneration = RtxOptionManager::valueChangeGeneration();
+    std::atomic<bool> done { false };
+    std::atomic<uint32_t> snapshots { 0 };
+    auto consumer = std::async(std::launch::async, [&] {
+      uint32_t previous = initialGeneration;
+      while (!done.load(std::memory_order_acquire)) {
+        const uint32_t generation = RtxOptionManager::valueChangeGeneration();
+        TEST_ASSERT(generation >= previous, "Change generations moved backwards");
+        previous = generation;
+        const std::string names = RtxOptionManager::takeChangedOptionNames();
+        size_t begin = 0;
+        while (begin < names.size()) {
+          const size_t end = names.find(", ", begin);
+          const std::string name = names.substr(begin, end == std::string::npos ? end : end - begin);
+          TEST_ASSERT(name == "rtx.test.testInt" || name == "rtx.test.testString", "Concurrent snapshot contains an invalid name");
+          if (end == std::string::npos) {
+            break;
+          }
+          begin = end + 2;
+        }
+        if (!names.empty()) {
+          ++snapshots;
+        }
+        std::this_thread::yield();
+      }
+    });
+    for (uint32_t i = 0; i < iterations; ++i) {
+      TestOptions::testInt.setDeferred(static_cast<int32_t>(i + 2000), testLayer);
+      TestOptions::testString.setDeferred("concurrent snapshot payload " + std::to_string(i), testLayer);
+      RtxOptionManager::applyPendingValues(nullptr, false);
+      if ((i & 15) == 0) {
+        std::this_thread::yield();
+      }
+    }
+    done.store(true, std::memory_order_release);
+    consumer.get();
+    TEST_ASSERT(RtxOptionManager::valueChangeGeneration() == initialGeneration + iterations, "Resolved changes lost a generation");
+    TEST_ASSERT(snapshots > 0, "Concurrent consumer did not observe any changes");
+    RtxOptionManager::releaseLayer(testLayer);
+    RtxOptionManager::applyPendingValues(nullptr, false);
+    RtxOptionManager::takeChangedOptionNames();
+    std::cout << "    PASSED: " << iterations << " updates, " << snapshots << " concurrent snapshots" << std::endl;
+  }
+
   // ============================================================================
   // Test Runner
   // ============================================================================
   
+
+  void test_dirtyQueueCallbackLock() {
+    const int previousCallbackCount = s_intCallbackCount;
+    auto* layer = RtxOptionManager::acquireLayer("", kTestLayerHighKey);
+    RtxOptionManager::applyPendingValues(nullptr, false);
+    std::promise<void> callbackEntered;
+    std::promise<void> writerLocked;
+    auto entered = callbackEntered.get_future();
+    auto locked = writerLocked.get_future();
+    s_dirtyQueueCallback = [&] {
+      callbackEntered.set_value();
+      locked.wait();
+    };
+    TestOptions::testIntWithCallback.setDeferred(12345, layer);
+    auto resolver = std::async(std::launch::async, [] {
+      RtxOptionManager::applyPendingValues(nullptr, false);
+    });
+    entered.wait();
+    std::unique_lock<std::mutex> updateLock(RtxOptionImpl::getUpdateMutex());
+    writerLocked.set_value();
+    const bool waited = resolver.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout;
+    updateLock.unlock();
+    resolver.get();
+    s_dirtyQueueCallback = {};
+    RtxOptionManager::releaseLayer(layer);
+    RtxOptionManager::applyPendingValues(nullptr, false);
+    s_intCallbackCount = previousCallbackCount;
+    TEST_ASSERT(waited, "Resolver accessed the dirty queue while another thread held its update mutex");
+    std::cout << "Dirty queue callback lock PASSED" << std::endl;
+  }
+
   void runAllTests() {
     std::cout << "============================================" << std::endl;
     std::cout << "Running RTX Option Unit Tests" << std::endl;
     std::cout << "============================================" << std::endl;
     
     initializeTestEnvironment();
+    test_changedOptionSnapshotThreading();
+    test_dirtyQueueCallbackLock();
     
     // Basic functionality tests
     test_basicTypes();

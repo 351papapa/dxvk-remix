@@ -1,5 +1,79 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Standard flare materials and environment menu grouping
+
+Removed the dedicated flare identity/material subsystem and all five
+`rtx.fork.lensFlare.*` options. Flare cards now use host-authored vertex alpha and
+standard USD texture/emission replacements, with no runtime-specific matching.
+Water, Procedural Grass, Window Lighting and Wetness / Rain are siblings of Sky
+and Material Options in Game Setup, matching their original placement.
+No GPU simulation or instancing work moved to the CPU. These changes are preset
+independent. Commit: uncommitted local integration.
+See [flare materials](../documentation/RemixFlareMaterials.md).
+
+## 2026-10-30 — Bound GPU stage readback by the query capacity
+
+GPU timestamp readback and interval arrays now derive their size from the query
+array. The collector accepted up to 80 queries but read them into 64 local slots;
+enabling detailed NUMOS pass timing triggered a stack-cookie failure in
+beginGpuStageTiming. No rendering settings or GPU algorithms changed.
+The crash dump identifies the readback function. Matching-build regression and
+game validation are recorded in the migration workspace. Commit: uncommitted
+local integration.
+
+## 2026-10-30 — Keep external skeletal replacements alive
+
+The API draw path resets primitive ownership when an asynchronously loaded replacement
+bucket changes, and marks non-instanced skeletal draws as seen in the current frame.
+This prevents another character from taking over the same replacement owner and prevents
+unseen-instance collection from hiding submitted characters. GPU point-instancer batch
+handling is unchanged. No settings, API signatures or quality levels changed.
+
+Validation: a native API scene with three skeletons and two replacement parts per skeleton
+rendered zero parts before the fix and all six afterward; independent poses shift their
+GPU readback bounds by the expected 0, 3 and 6 pixels. The deployed bridge build also
+restores the player's replacement and punch animation. Full pedestrian visual coverage
+and final performance acceptance remain pending. Commit: uncommitted local integration.
+
+
+## 2026-10-30 — Serialize dirty-option queue cleanup
+
+Hold the option update mutex while checking and clearing the dirty queue after
+callbacks. Deferred setters can run on another thread during those callbacks,
+so unlocked cleanup races their hash-map insertions. Callbacks still run outside
+the mutex. No GPU algorithm, setting default, shader or quality level changes.
+
+The production-library regression fails before this change when another thread
+holds the update mutex at callback return. The 20:27 game `vector too long`
+worker failure remains unproven as the same cause: its post-catch dump has no
+throw stack, and a debugger replay did not reproduce it. Earlier benchmark
+results refer to runtime `79458308`, not this pending build. Commits: uncommitted
+local integration. Evidence: `dirty-option-tests/before-lock.json` in the
+migration workspace; build and fixed-test results are recorded there separately.
+
+## 2026-10-30 — Synchronize option-change snapshots during D3D9 presentation
+
+The presentation thread now uses the option resolver mutex when reading the change generation and consuming changed option names. This prevents the prewarm UI from reading or clearing the name vector while the render thread appends to it. The D3D9 heap-corruption dump contains raw stack addresses in the changed-name consumer path; a regression using the actual option manager independently exposes the unprotected read in the previous implementation. The fixed manager passed the full option suite and 50,000 concurrent updates; a ten-minute D3D9 replay and a subsequent API session completed without another heap crash. This supports the fix but does not fully reconstruct the earlier heap-corruption call stack. No rendering options, quality settings or GPU algorithms changed. Commit: pending integration. Final matching route acceptance is in progress.
+
+## 2026-10-30 — GPU no-rain-zone precipitation shelter
+
+Weather precipitation can reuse the wetness zone BVH to reject covered births and
+kill drops crossing a box top or side, including crossings between two outside
+endpoints. All particle queries stay on the GPU and existing scene-ray shelter
+remains independently available.
+- Options: `rtx.weather.precipitation.occludeWithNoRainZones` (false/off), with an ImGui control; authored shelter is independent of graphics quality presets.
+- Validation: eleven production shader variants, optional-code removal checks, the precipitation unit test and 655,360 GPU segment/point queries passed. Full runtime and 16 native/bridge scenarios passed, including zero scene rays in zone-only cases. The game on/off check also passed with 565 boxes, 1,129 BVH nodes, positive GPU zone kills only when enabled, and zero scene rays in both cases.
+- Commits: pending integration.
+- Docs: [Precipitation](../documentation/RemixPrecipitation.md#gpu-no-rain-zone-shelter).
+
+## 2026-10-30 — Divergent foam geometry reads
+
+The foam field's triangle index and position loads now retain `NonUniform` on the actual storage-buffer element pointers and declare the matching capability. This corrects incomplete SPIR-V generated by the bundled Slang compiler without changing the GPU foam algorithm, geometry, or quality settings. No options changed. Commit: pending integration. See [water diagnostics](../documentation/RemixWater.md#divergent-geometry-loads).
+
+## 2026-10-30 — Bridge skinning payload bounds
+
+Fixed skinned mesh serialization multiplying total influence counts by the vertex count again. A 256-vertex one-influence water tile now transfers 1 KiB per weight/index array instead of reading 256 KiB beyond it. No options or rendering quality changed. Matched x86/x64 bridge builds are required; see [Bridge capabilities](../documentation/RemixBridgeCapabilities.md). Commit: pending integration.
+
 The record of major Remix Plus changes on the trunk, newest first.
 
 **What counts as major:**
@@ -28,7 +102,70 @@ Entry format:
 - Docs: [RemixApi.md](RemixApi.md)   (only if a public doc covers it)
 ```
 
+## 2026-10-30
+
+### Translucent particle lighting resolve
+Preserve the old particle approximation flag at the ordered and two unordered translucent resolve call sites, retaining v2 raw-cache units. Precipitation keeps the full translucent PBR classification used by both runtimes; the raw-cache rain fixture does not exercise this approximation branch.
+- Options: none.
+- Commits: pending integration.
+- Docs: [Particle lighting](../documentation/RemixParticleLightingMigration.md).
+
+
+### Font atlas upload without an RGBA staging allocation
+Upload the existing grayscale font atlas directly and reconstruct white RGB through the Vulkan image-view swizzle. This removes the unchecked RGBA expansion allocation implicated in an initialization crash; glyph coverage, filtering and menu appearance are unchanged.
+- Options: none.
+- Commits: this entry lands with the local integration commit.
+- Docs: [Font atlas upload](../documentation/FontAtlasUpload.md).
+
+### Private retained interface bridge export
+The x86 bridge now lists `remixapi_GetRetainedInterface` in its module exports. Retained-catalog hosts can resolve the existing implementation by name instead of failing initialization. Existing export ordinals and the public API table are unchanged.
+- Options: none.
+- Commits: this entry lands with the local integration commit.
+- Docs: [Retained compatibility](RemixRetainedCompatibility.md).
+
 ## 2026-10-29
+
+### Particle surface lighting compatibility
+Restore the old opaque particle cache-gain and upper-hemisphere controls while preserving the v2 sky provider. Raw translucent cache consumers apply only the target gain; SAB rescaling remains an independent control for all fallback alpha surfaces. GBuffer selection now respects both wetness and particle-sky shader variants, including slim/compact and preparation paths.
+- Options: `rtx.particles.rescaleSkyLitFroxelGain`, `rtx.particles.skyAmbientHemisphere`, `rtx.stochasticAlphaBlendRescaleFroxelGain` (all false); target `rtx.volumetrics.particleSkyLitFroxelGain` defaults1 and is inert until enabled. These authored appearance controls are preset-independent.
+- Validation:352 production gain checks, ten shader compilations/validation and CPU/SPIR-V offsets passed. Constant buffer sizes are unchanged. Integrated GPU images and game performance remain pending.
+- Docs: [Particle lighting](../documentation/RemixParticleLightingMigration.md).
+
+### Local sampling and instance culling migration
+Nearest sphere-light candidates are selected and merged on the GPU before RTXDI. Direct-light overlap with the global estimator uses partition weights to avoid double energy; portal samples retain their full global weight. Point instances retain the current batched GPU generation path with optional world-space frustum rejection; volume integration can use the old workgroup shapes without changing sampling or radiometry.
+- Options: `rtx.di.localSphereInitialSampleCount` (0/off), `rtx.pointInstancer.frustumCull` (false), `frustumSpherePad` (0), `frustumNearSkip` (600 world units), and `rtx.volumetrics.integrateWorkgroup8x8` / `integrateWorkgroup8x4` (false).
+- Presets: Ultra/High/Medium/Low set nearest samples0 and point-frustum cullingfalse; Custom preserves authored values. Workgroup shapes change execution layout only and are preset-independent.
+- Validation: a production-function statistical test passed70 cases (35million draws) for overlap and RNG alignment; the production GPU selector passed220 cases; point generation passed 336 cases and 150,336 output records. Full-runtime rendering and game performance acceptance are pending.
+- Commits: this entry lands with the local integration commit.
+- Docs: [Sphere candidates](../documentation/GpuLocalSphereSampling.md), [point culling](../documentation/PointInstancerFrustumCulling.md), [volume workgroups](../documentation/VolumeIntegrationWorkgroups.md).
+
+### Weather-controlled fog and wetness transitions
+Typed weather presets can control the existing global volumetric parameters, preserving their ownership and extinction interpolation. Wetness structural fields step to the incoming preset while puddle thresholds ramp from the dry threshold; wetness amount is independent of precipitation density.
+- Options: `rtx.weather.controlVolumetricFog` (false). This controls authored appearance and is independent of quality presets.
+- Validation: 126 CPU checks passed; full-runtime image and game acceptance are pending.
+- Commits: this entry lands with the local integration commit.
+- Docs: [Weather volumetrics](../documentation/WeatherVolumetrics.md), [design](../documentation/WeatherVolumetricsDesign.md).
+
+### HUD telemetry and persistent-light bridge forwarding
+HUD CSV export includes base-frame history source IDs so overlapping windows can be deduplicated separately from generated display frames. The matching x86 bridge now forwards `AutoInstancePersistentLights` in command order and advertises its client capability through `vc.bridge.autoInstancePersistentLightsVersion`.
+- Options: `dxvk.hudExport` (empty/off), `dxvk.hudExportIntervalMs` (250 ms, clamped 16-10000 ms).
+- Validation: CPU history/CSV tests and 384 existing wire IDs passed. Native/bridge rendering and real-game telemetry checks are pending.
+- Commits: this entry lands with the local integration commit.
+- Docs: [HUD export](../documentation/HudTelemetry.md), [format](../documentation/HudTelemetryFormat.md).
+
+### Bounded idle opacity-micromap reclamation
+A bounded idle sweep complements the current pressure-based OMM eviction. Active BLAS references refresh cache use without rebuilding instances; existing stable cluster coalescing supplies the old repacking purpose.
+- Options: `rtx.opacityMicromap.cache.idleTimeoutSeconds` (0/off), `idleMaxEntriesPerSweep` (32), `idleMaxMiBPerSweep` (32), `idleDiagnostics` (false). Cache lifetime controls are independent of graphics quality.
+- Validation: 38 CPU cache-selection and lifetime cases passed; game memory and timing acceptance are pending.
+- Commits: this entry lands with the local integration commit.
+- Docs: [Acceleration memory migration](../documentation/RemixAccelMemoryMigration.md).
+
+### Local retained host compatibility
+WorldMesh-style fixed-width catalogs and observed surface identities now feed the current persistent scene path, with matching bridge negotiation and game texture lookup. Ordered replay, explicit frame commits and sticky asynchronous errors are preserved; GPU transforms remain batch data rather than CPU draw loops.
+- Options: none added or changed.
+- Commits: pending local migration integration.
+- Docs: [Retained compatibility](RemixRetainedCompatibility.md).
+- Validation: plugin policy/capture tests and native/bridge compile checks; visual and performance acceptance requires the live GPU fixture.
 
 ### Emissive flare material migration
 Reference textures can identify legacy flare cards for explicit additive emission,
@@ -1668,3 +1805,17 @@ Cherry-picked from upstream dxvk-remix: reduced VRAM for unused RTXDI, frame-gen
 - Measured (upstream, 4K DLSS Auto): frame generation off −22 MB; SR 0.2 −38 MB textures, −85 MB buffers.
 - Commits: 0b2886492, 697b56c25, 78a832ca1, 8526d7618, ccace60d0, 4dacdccbf.
 - Docs: [upstream-sync.md](upstream-sync.md)
+
+## 2026-10-30 — Empty retained mesh replacements
+
+Accept empty USD replacements as intentional hidden geometry. They no longer latch an error that disables the WorldMesh catalog. No options or quality settings changed. GPU instancing remains unchanged. Commit: pending integration. See documentation/RemixBridgeCapabilities.md.
+
+
+## 2026-10-30 — Restore authored skeleton retarget metadata
+
+Restore `remix:retargetVersion=1` mesh metadata and bone-palette correction from
+the later character replacement workspace. Retargeted vertex deformation uses
+the GPU skinning pass, including small mesh sections. No options, defaults,
+presets or third-party dependencies change. Commits: local uncommitted port.
+Build and live acceptance are pending. Stable asset-key submission is a separate
+required plugin change; this metadata reader alone does not restore characters.

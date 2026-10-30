@@ -594,6 +594,7 @@ namespace dxvk {
     m_builtList.clear();
 
     m_leastRecentlyUsedList.clear();
+    m_idleCursor = kEmptyHash;
     for (auto& [hash, item] : m_ommCache) {
       queueSoftwareSlotRelease(item); // rtx.alphaBake.softwareOmm
     }
@@ -673,6 +674,10 @@ namespace dxvk {
       RemixGui::DragInt("Budget: Max Allowed Size [MB]", &OpacityMicromapOptions::Cache::maxBudgetSizeMBObject(), 8.f, 0, 256 * 1024, "%d", sliderFlags);
       RemixGui::DragInt("Budget: Min Vidmem Free To Not Allocate [MB]", &OpacityMicromapOptions::Cache::minFreeVidmemMBToNotAllocateObject(), 16.f, 0, 256 * 1024, "%d", sliderFlags);
       ADVANCED(RemixGui::DragInt("Min Usage Frame Age Before Eviction", &OpacityMicromapOptions::Cache::minUsageFrameAgeBeforeEvictionObject(), 1.f, 0, 60 * 3600, "%d", sliderFlags));
+      RemixGui::DragInt("Idle Reclaim Timeout [s]", &OpacityMicromapOptions::Cache::idleTimeoutSecondsObject(), 1.f, 0, 3600, "%d", sliderFlags);
+      ADVANCED(RemixGui::DragInt("Idle Reclaim Entries per Sweep", &OpacityMicromapOptions::Cache::idleMaxEntriesPerSweepObject(), 1.f, 0, 256, "%d", sliderFlags));
+      ADVANCED(RemixGui::DragInt("Idle Reclaim Memory per Sweep [MiB]", &OpacityMicromapOptions::Cache::idleMaxMiBPerSweepObject(), 1.f, 0, 4096, "%d", sliderFlags));
+      ADVANCED(RemixGui::Checkbox("Idle Reclaim Diagnostics", &OpacityMicromapOptions::Cache::idleDiagnosticsObject()));
       ADVANCED(RemixGui::Checkbox("Hash Instance Index Only", &OpacityMicromapOptions::Cache::hashInstanceIndexOnlyObject()));
       ImGui::Unindent();
     }
@@ -1530,6 +1535,7 @@ namespace dxvk {
       return;
     }
     found->second.lastUseFrameIndex = m_tracedFrameIndex;
+    found->second.lastIdleUse = m_idleFrameTime;
     m_leastRecentlyUsedList.splice(m_leastRecentlyUsedList.end(), m_leastRecentlyUsedList, found->second.leastRecentlyUsedListIter);
     ++m_churn.mergedTouches;
   }
@@ -2118,6 +2124,7 @@ namespace dxvk {
     }
 
     ommCacheItem.lastUseFrameIndex = m_tracedFrameIndex;
+    ommCacheItem.lastIdleUse = m_idleFrameTime;
 
     // Make the item most recently used
     m_leastRecentlyUsedList.splice(m_leastRecentlyUsedList.end(), m_leastRecentlyUsedList, ommCacheItem.leastRecentlyUsedListIter);
@@ -3036,12 +3043,72 @@ namespace dxvk {
     }
   }
 
+  void OpacityMicromapManager::reclaimIdle() {
+    ScopedCpuProfileZone();
+    const auto now = m_idleFrameTime;
+    const uint32_t timeout = OpacityMicromapOptions::Cache::idleTimeoutSeconds();
+    const uint32_t maxEntries = OpacityMicromapOptions::Cache::idleMaxEntriesPerSweep();
+    const VkDeviceSize maxBytes = VkDeviceSize(OpacityMicromapOptions::Cache::idleMaxMiBPerSweep()) << 20;
+    if (!timeout || !maxEntries || !maxBytes || now - m_lastIdleSweep < std::chrono::seconds(1)) {
+      return;
+    }
+    m_lastIdleSweep = now;
+
+    auto found = m_ommCache.find(m_idleCursor);
+    auto it = found == m_ommCache.end() ? m_leastRecentlyUsedList.begin() : found->second.leastRecentlyUsedListIter;
+    uint32_t scanned = 0;
+    uint32_t evicted = 0;
+    VkDeviceSize released = 0;
+    while (it != m_leastRecentlyUsedList.end() && scanned < 256 && evicted < maxEntries && released < maxBytes) {
+      auto entry = m_ommCache.find(*it++);
+      ++scanned;
+      if (entry == m_ommCache.end()) {
+        continue;
+      }
+      const auto& item = entry->second;
+      // Merged BLASes refresh their use every eight traced frames. Preserve that grace
+      // period when tracing resumes after a pause, even if the wall-clock age is long.
+      const uint32_t frameAge = m_tracedFrameIndex - item.lastUseFrameIndex;
+      if (item.cacheState != OpacityMicromapCacheState::eStep4_Ready || frameAge <= 8 ||
+          now - item.lastIdleUse < std::chrono::seconds(timeout) ||
+          (item.blasOmmBuffers.ptr() && item.blasOmmBuffers->isInUse()) ||
+          (item.ommArrayBuffer.ptr() && item.ommArrayBuffer->isInUse()) ||
+          (item.softStore.ptr() && item.softStore->isInUse()) ||
+          (item.compactIndexBuffer.ptr() && item.compactIndexBuffer->isInUse()) ||
+          (item.compactTriangleArray.ptr() && item.compactTriangleArray->isInUse()) ||
+          (item.compactCounter.ptr() && item.compactCounter->isInUse())) {
+        continue;
+      }
+      released += item.getDeviceSize();
+      ++evicted;
+      ++m_churn.evictions;
+      if (frameAge < OpacityMicromapOptions::Cache::minUsageFrameAgeBeforeEviction()) {
+        ++m_churn.evictedYoungerThan900;
+      }
+      // The normal destruction path keeps BLAS-held references alive, invalidates
+      // affected hardware bindings and defers software bindless-slot release.
+      destroyOmmData(entry);
+    }
+    m_idleCursor = it == m_leastRecentlyUsedList.end() ? kEmptyHash : *it;
+    m_idleEvicted += evicted;
+    m_idleReleasedBytes += released;
+    if (OpacityMicromapOptions::Cache::idleDiagnostics() && now - m_lastIdleLog >= std::chrono::seconds(5)) {
+      m_lastIdleLog = now;
+      Logger::info(str::format("[RTX Opacity Micromap] Idle reclaim: ", m_idleEvicted,
+        " entries, ", m_idleReleasedBytes >> 20, " MiB released from cache; ", m_ommCache.size(), " entries remain"));
+    }
+  }
+
   void OpacityMicromapManager::onFrameStart(Rc<DxvkContext> ctx) {
     ScopedCpuProfileZone();
     const uint32_t currentFrameIndex = m_device->getCurrentFrameId();
     if (m_tracedFrameDeviceFrame != currentFrameIndex) {
       m_tracedFrameDeviceFrame = currentFrameIndex;
       ++m_tracedFrameIndex;
+    }
+
+    if (OpacityMicromapOptions::Cache::idleTimeoutSeconds() != 0) {
+      m_idleFrameTime = std::chrono::steady_clock::now();
     }
 
     m_numBoundOMMs = 0;
@@ -3217,6 +3284,10 @@ namespace dxvk {
 
       m_amountOfMemoryMissing = 0;
       m_trimMinAgeFrames = 0;
+
+      if (m_memoryManager.getBudget() != 0) {
+        reclaimIdle();
+      }
 
       // Call Memory Manager's onFrameStart last since any evicted buffers above 
       // were not used in this frame and thus should go to a pending release queue of the last frame
@@ -3860,6 +3931,7 @@ namespace dxvk {
       // In use: most recently used for the LRU eviction, as a hardware bind does.
       if (ommCacheItem.lastUseFrameIndex != m_tracedFrameIndex) {
         ommCacheItem.lastUseFrameIndex = m_tracedFrameIndex;
+        ommCacheItem.lastIdleUse = m_idleFrameTime;
         m_leastRecentlyUsedList.splice(m_leastRecentlyUsedList.end(), m_leastRecentlyUsedList, ommCacheItem.leastRecentlyUsedListIter);
       }
 

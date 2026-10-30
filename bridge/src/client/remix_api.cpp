@@ -22,11 +22,17 @@
 
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include "d3d9_texture.h"
 
 #include "log/log.h"
 #include "util_bridgecommand.h"
 #include "util_devicecommand.h"
 #include "util_remixapi.h"
+#include <remix/remix_retained_validation.h>
+#include <remix/remix_game_surface.h>
+#include <remix/remix_legacy_surface_validation.h>
+#include "util_remixapi_gpu_instancing.h"
 
 using namespace remixapi::util;
 
@@ -116,16 +122,52 @@ auto serializeAndSend(ClientMessage& msg, const SerializableT& serializable) {
 }
 
 
+remixapi_ErrorCode REMIXAPI_CALL remixapi_dxvk_GetTextureHash(
+  IDirect3DTexture9* texture, uint64_t* out_hash) {
+  ASSERT_REMIXAPI_PFN_TYPE(remixapi_dxvk_GetTextureHash);
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!texture || !out_hash || texture->GetType() != D3DRTYPE_TEXTURE) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  *out_hash = 0;
+  DeviceBridge::ResponseTransaction responseTransaction;
+  UID currentUID = 0;
+  {
+    ClientMessage c(Commands::RemixApi_GetTextureHash);
+    currentUID = c.get_uid();
+    c.send_data(bridge_cast<Direct3DTexture9_LSS*>(texture)->getId());
+  }
+  WAIT_FOR_SERVER_RESPONSE("remixapi_dxvk_GetTextureHash", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);
+  const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+  const uint64_t low = DeviceBridge::get_data();
+  const uint64_t high = DeviceBridge::get_data();
+  DeviceBridge::pop_front();
+  if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+    *out_hash = low | (high << 32);
+  }
+  return result;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMaterial(
   const remixapi_MaterialInfo* info,
   remixapi_MaterialHandle*     out_handle) {
 
   ASSERT_REMIXAPI_PFN_TYPE(remixapi_CreateMaterial);
-  assert(info->sType == REMIXAPI_STRUCT_TYPE_MATERIAL_INFO);
+  if (!info || !out_handle || info->sType != REMIXAPI_STRUCT_TYPE_MATERIAL_INFO) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  *out_handle = nullptr;
+  const bool gameTexture = info->albedoTexture && wcsncmp(info->albedoTexture, L"game:0x", 7) == 0;
+  std::unique_ptr<DeviceBridge::ResponseTransaction> transaction;
+  if (gameTexture) {
+    transaction = std::make_unique<DeviceBridge::ResponseTransaction>();
+  }
+  UID currentUID = 0;
 
   MaterialHandle newHandle;
   {
     ClientMessage c(Commands::RemixApi_CreateMaterial);
+    currentUID = c.get_uid();
 
     serializeAndSend<serialize::MaterialInfo>(c, *info);
 
@@ -191,6 +233,14 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMaterial(
     sendHandle(c, newHandle);
   }
 
+  if (gameTexture) {
+    WAIT_FOR_SERVER_RESPONSE("remixapi_CreateMaterial(game)", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);
+    const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+    DeviceBridge::pop_front();
+    if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return result;
+    }
+  }
   *out_handle = newHandle;
 
   return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -281,29 +331,41 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateMesh(
   remixapi_MeshHandle*     out_handle) {
 
   ASSERT_REMIXAPI_PFN_TYPE(remixapi_CreateMesh);
-  assert(info->sType == REMIXAPI_STRUCT_TYPE_MESH_INFO);
-
+  if (!info || !out_handle || info->sType != REMIXAPI_STRUCT_TYPE_MESH_INFO) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  *out_handle = nullptr;
+  legacy_surface::Input legacyInput;
+  std::vector<uint8_t> legacyBlob;
+  if (!legacy_surface::readInput(*info, legacyInput) ||
+      (legacyInput.hasLegacy() && !legacy_surface::encode(legacyInput, legacyBlob))) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  const bool legacy = legacyInput.hasLegacy();
+  std::unique_ptr<DeviceBridge::ResponseTransaction> transaction;
+  if (legacy) {
+    transaction = std::make_unique<DeviceBridge::ResponseTransaction>();
+  }
+  UID uid = 0;
   MeshHandle newHandle;
   {
-    ClientMessage c(Commands::RemixApi_CreateMesh);
-    
-    serializeAndSend<serialize::MeshInfo>(c, *info);
-
-    const void* infoItr = info;
-    while (auto* const pNext = getPNext(infoItr)) {
-      switch (getSType(pNext)) {
-        default:
-        {
-          Logger::warn("[remixapi_CreateMesh] Unknown sType. Skipping.");
-          break;
-        }
-      }
+    ClientMessage message(legacy ? Commands::RemixApi_CreateMeshLegacy : Commands::RemixApi_CreateMesh);
+    uid = message.get_uid();
+    serializeAndSend<serialize::MeshInfo>(message, *info);
+    if (legacy) {
+      message.send_data(static_cast<uint32_t>(legacyBlob.size()), legacyBlob.data());
     }
-    sendHandle(c, newHandle);
+    sendHandle(message, newHandle);
   }
-  
+  if (legacy) {
+    WAIT_FOR_SERVER_RESPONSE("remixapi_CreateMesh legacy", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, uid);
+    const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+    DeviceBridge::pop_front();
+    if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return result;
+    }
+  }
   *out_handle = newHandle;
-
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
@@ -320,8 +382,121 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyMesh(remixapi_MeshHandle handle
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !instances)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!remixapi_retained::valid(instances[i]) || instances[i].mesh > UINT32_MAX) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+  }
+  if (count) {
+    ClientMessage message(Commands::RemixApi_RetainedUpsert);
+    message.send_data(sizeof(epoch), &epoch);
+    message.send_data(count * sizeof(*instances), instances);
+  }
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !ids)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!ids[i]) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+  }
+  if (count) {
+    ClientMessage message(Commands::RemixApi_RetainedRemove);
+    message.send_data(sizeof(epoch), &epoch);
+    message.send_data(count * sizeof(*ids), ids);
+  }
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedDrawOrdered(uint64_t epoch, uint32_t count, const uint64_t* ids) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !ids)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!ids[i]) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+  }
+  if (count) {
+    ClientMessage message(Commands::RemixApi_RetainedDrawOrdered);
+    message.send_data(sizeof(epoch), &epoch);
+    message.send_data(count * sizeof(*ids), ids);
+  }
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedClear(uint64_t epoch) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!epoch) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  ClientMessage message(Commands::RemixApi_RetainedClear);
+  message.send_data(sizeof(epoch), &epoch);
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedCommitFrame(uint64_t epoch) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!epoch) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  ClientMessage message(Commands::RemixApi_RetainedCommit);
+  message.send_data(sizeof(epoch), &epoch);
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedGetStatus(remixapi_RetainedStatus* status) {
+  if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
+  if (!status) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  *status = {};
+  DeviceBridge::ResponseTransaction transaction;
+  UID uid = 0;
+  {
+    ClientMessage message(Commands::RemixApi_RetainedStatus);
+    uid = message.get_uid();
+  }
+  WAIT_FOR_SERVER_RESPONSE("retainedGetStatus", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, uid);
+  const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+  void* data = nullptr;
+  const uint32_t size = DeviceBridge::get_data(&data);
+  if (size == sizeof(*status)) {
+    std::memcpy(status, data, size);
+  }
+  DeviceBridge::pop_front();
+  return size == sizeof(*status) ? result : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawInstance(const remixapi_InstanceInfo* info) {
   ASSERT_REMIXAPI_PFN_TYPE(remixapi_DrawInstance);
+  if (!info || info->sType != REMIXAPI_STRUCT_TYPE_INSTANCE_INFO || !info->mesh) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  uint32_t chainLength = 0;
+  bool hasGpuInstancing = false;
+  for (const void* next = getPNext(info); next; next = getPNext(next)) {
+    if (++chainLength > 64) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (getSType(next) == REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT) {
+      if (hasGpuInstancing || !gpu_instancing::valid(*static_cast<const remixapi_InstanceInfoGpuInstancingEXT*>(next))) {
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      }
+      hasGpuInstancing = true;
+    }
+  }
   {
     ClientMessage c(Commands::RemixApi_DrawInstance);
 
@@ -335,6 +510,13 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawInstance(const remixapi_InstanceIn
     const void* infoItr = info;
     while (auto* const pNext = getPNext(infoItr)) {
       infoItr = pNext;
+      if (getSType(pNext) == REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GAME_SURFACE_EXT) {
+        const auto* surface = static_cast<const remixapi_InstanceInfoGameSurfaceEXT*>(pNext);
+        send(c, Bool::True);
+        c.send_data(static_cast<uint32_t>(surface->sType));
+        c.send_data(surface->wetTag);
+        continue;
+      }
       switch (getSType(pNext)) {
         case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_OBJECT_PICKING_EXT:
         {
@@ -355,6 +537,13 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawInstance(const remixapi_InstanceIn
           auto* pXforms = static_cast<const remixapi_InstanceInfoBoneTransformsEXT* const>(infoItr);
           send(c, Bool::True);
           serializeAndSend<serialize::InstanceInfoTransforms>(c, *pXforms);
+          break;
+        }
+        case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT:
+        {
+          const auto* instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT*>(infoItr);
+          send(c, Bool::True);
+          serializeAndSend<serialize::InstanceInfoGpuInstancing>(c, *instances);
           break;
         }
         case REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_PARTICLE_SYSTEM_EXT:
@@ -528,6 +717,39 @@ constexpr bool strings_equal(char const * a, char const * b) {
 }
 
 extern "C" {
+  DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
+    uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
+    if (!outInterface || version != REMIXAPI_RETAINED_VERSION || structSize != sizeof(*outInterface)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    *outInterface = {};
+    if (!g_bInterfaceInitialized) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    char capability[2] = {};
+    uint32_t capabilitySize = 0;
+    if (remixapi_GetGameValue("vc.api.retainedOrderedVersion", capability, sizeof(capability), &capabilitySize) != REMIXAPI_ERROR_CODE_SUCCESS ||
+        capabilitySize != 2 || capability[0] != '1' || capability[1] != 0) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    DeviceBridge::ResponseTransaction transaction;
+    UID uid = 0;
+    {
+      ClientMessage message(Commands::RemixApi_RetainedGetInterface);
+      uid = message.get_uid();
+    }
+    WAIT_FOR_SERVER_RESPONSE("remixapi_GetRetainedInterface", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, uid);
+    const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
+    DeviceBridge::pop_front();
+    if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+      *outInterface = { REMIXAPI_RETAINED_VERSION, sizeof(*outInterface), retainedBatchUpsert,
+        retainedBatchRemove, retainedClear, retainedCommitFrame, retainedGetStatus, retainedDrawOrdered };
+    }
+    return result;
+  }
+
+
+
 
   DLLEXPORT remixapi_ErrorCode __stdcall remixapi_InitializeLibrary(
     const remixapi_InitializeLibraryInfo* info,
@@ -560,6 +782,7 @@ extern "C" {
       interf.DestroyMaterial = remixapi_DestroyMaterial;
       interf.SetCameraMediumMaterial = remixapi_SetCameraMediumMaterial;
       interf.CreateTexture = remixapi_CreateTexture;
+      interf.dxvk_GetTextureHash = remixapi_dxvk_GetTextureHash;
       interf.DestroyTexture = remixapi_DestroyTexture;
       interf.CreateMesh = remixapi_CreateMesh;
       interf.DestroyMesh = remixapi_DestroyMesh;
@@ -571,13 +794,8 @@ extern "C" {
       interf.SetConfigVariable = remixapi_SetConfigVariable;
       interf.dxvk_CreateD3D9 = remixapi_dxvk_CreateD3D9;
       interf.dxvk_RegisterD3D9Device = remixapi_dxvk_RegisterD3D9Device;
-      // Remix Plus API entry points. The runtime's d3d9.dll implements
-      // these (rtx_remix_api.cpp), but they are not forwarded through the
-      // bridge IPC channel. Without a
-      // populated function pointer here the slots are NULL and 32-bit clients
-      // crash the moment they call interf.GetUIState() / SetUIState() /
-      // AutoInstancePersistentLights() / UpdateLightDefinition(). The stubs
-      // below return safe defaults so the bridge stays alive.
+      // Persistent-light auto-instancing is forwarded through the ordered IPC stream.
+      // UI state and light-definition updates expose failure-returning stubs.
       interf.GetUIState                   = remixapi_GetUIState;
       interf.SetUIState                   = remixapi_SetUIState;
       interf.AutoInstancePersistentLights = remixapi_AutoInstancePersistentLights;
@@ -613,11 +831,7 @@ extern "C" {
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  // ---- Remix Plus API entry points (client-side stubs) ----
-  // Mirror the surface the runtime exposes (rtx_remix_api.cpp) so the function
-  // pointers in remixapi_Interface aren't NULL for 32-bit clients. These stubs
-  // do not forward over IPC. Each logs once the first time it's called so
-  // the user sees that the feature isn't reachable through the bridge.
+  // UI state and light-definition updates log once when their bridge stubs are called.
 
   DLLEXPORT remixapi_UIState __stdcall remixapi_GetUIState(void) {
     static bool warned = false;
@@ -641,13 +855,15 @@ extern "C" {
   }
 
   DLLEXPORT remixapi_ErrorCode __stdcall remixapi_AutoInstancePersistentLights(void) {
-    static bool warned = false;
-    if (!warned) {
-      Logger::warn("[remixapi_AutoInstancePersistentLights] Bridge stub: no-op. "
-                   "Persistent-light auto-instancing is not yet plumbed through the bridge.");
-      warned = true;
+    ASSERT_REMIXAPI_PFN_TYPE(remixapi_AutoInstancePersistentLights);
+    if (!remixapi::g_bInterfaceInitialized) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
-    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    // The flush follows queued light updates without a per-frame round trip.
+    {
+      ClientMessage c(Commands::RemixApi_AutoInstancePersistentLights);
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
   DLLEXPORT remixapi_ErrorCode __stdcall remixapi_UpdateLightDefinition(
@@ -707,13 +923,23 @@ extern "C" {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
 
+    // A client-local capability cannot be mistaken for a server-only implementation.
+    if (strcmp(key, "vc.bridge.autoInstancePersistentLightsVersion") == 0) {
+      *out_actual_size = 2;
+      if (in_buffer_size >= 2) {
+        out_buffer[0] = '1';
+        out_buffer[1] = '\0';
+      }
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+
     DeviceBridge::ResponseTransaction responseTransaction;
 
     UID currentUID = 0;
     {
       ClientMessage c(Commands::RemixApi_GetGameValue);
       currentUID = c.get_uid();
-      send(c, key);
+      send(c, legacy_surface::clientQueryKey(key));
       c.send_data(in_buffer_size);
     }
     WAIT_FOR_SERVER_RESPONSE("remixapi_GetGameValue", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);

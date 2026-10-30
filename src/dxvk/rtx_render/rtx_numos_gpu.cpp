@@ -1,4 +1,6 @@
 #include "rtx_numos_gpu.h"
+#include "rtx_context.h"
+#include "../../util/util_env.h"
 
 #include <algorithm>
 #include <cstring>
@@ -567,6 +569,12 @@ namespace dxvk {
       m_ctx->pushConstants(0, size, push);
     }
     m_ctx->dispatch(desc.groupsX, desc.groupsY, desc.groupsZ);
+    static const bool tracePasses = env::getEnvVar("RTX_NUMOS_PASS_TIMINGS") == "1";
+    if (tracePasses) {
+      // beginFrame receives the sky provider's RtxContext. Pass names have static
+      // storage in NUMOS's generated shader table, as the timestamp collector requires.
+      static_cast<RtxContext*>(m_ctx.ptr())->recordGpuStageTiming(info.name);
+    }
   }
 
   void NumosGpu::barrier() {

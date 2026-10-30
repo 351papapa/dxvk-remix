@@ -190,6 +190,10 @@ void main(uint2 thread_id : SV_DispatchThreadID, uint2 localIndex : SV_GroupThre
       MinimalSurfaceInteraction surfaceInteraction = (MinimalSurfaceInteraction)0;
       surfaceInteraction.position = surfacePosition;
       vec3 radiance = evalVolumetricConsumerNEE(VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg, cb.volumeArgs, surfaceInteraction, froxelVolumeHint);
+      // Independent opt-in applies to all SAB fallback surfaces, not neighbor-based lighting.
+      if (cb.stochasticAlphaBlendRadianceVolumeFroxelGain != 1.0f) {
+        radiance *= cb.stochasticAlphaBlendRadianceVolumeFroxelGain;
+      }
       surfaceLight = radiance * surface.color.xyz * cb.stochasticAlphaBlendRadianceVolumeMultiplier;
     }
   }

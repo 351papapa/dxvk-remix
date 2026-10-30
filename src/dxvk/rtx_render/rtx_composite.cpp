@@ -30,6 +30,7 @@
 #include "rtx_imgui.h"
 #include "rtx_context.h"
 #include "rtx_options.h"
+#include "rtx_global_volumetrics.h"
 #include "rtx_ray_reconstruction.h"
 #include "rtx_restir_gi_rayquery.h"
 #include "rtx_debug_view.h"
@@ -194,6 +195,7 @@ namespace dxvk {
       RemixGui::DragFloat("Neighbor Depth Difference", &stochasticAlphaBlendDepthDifferenceObject(), 0.001f, 0.0f, 1.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::DragFloat("Neighbor Planar Difference", &stochasticAlphaBlendPlanarDifferenceObject(), 0.001f, 0.0f, 1.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::Checkbox("Use Radiance Volume", &stochasticAlphaBlendUseRadianceVolumeObject());
+      RemixGui::Checkbox("Rescale Cache for All Alpha Surfaces", &stochasticAlphaBlendRescaleFroxelGainObject());
       RemixGui::DragFloat("Radiance Volume Multiplier", &stochasticAlphaBlendRadianceVolumeMultiplierObject(), 0.001f, 0.0f, 10.f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
       RemixGui::Checkbox("Discard Black Pixels", &stochasticAlphaBlendDiscardBlackPixelObject());
       RemixGui::Checkbox("Filter Stochastic Alpha Blend", &stochasticAlphaBlendEnableFilterObject());
@@ -535,6 +537,8 @@ namespace dxvk {
     compositeArgs.stochasticAlphaBlendPlanarDifference = stochasticAlphaBlendPlanarDifference();
     compositeArgs.stochasticAlphaBlendDiscardBlackPixel = stochasticAlphaBlendDiscardBlackPixel();
     compositeArgs.stochasticAlphaBlendRadianceVolumeMultiplier = stochasticAlphaBlendRadianceVolumeMultiplier();
+    compositeArgs.stochasticAlphaBlendRadianceVolumeFroxelGain = particleFroxelScale(
+      compositeArgs.volumeArgs.volumetricConsumerGain, RtxGlobalVolumetrics::particleSkyLitFroxelGain(), stochasticAlphaBlendRescaleFroxelGain());
     compositeArgs.alphaBlendSurfacePackMult = RtxOptions::getMeterToWorldUnitScale();
     
     // Pre-exposure (rtx_pre_exposure.h): radiance sources, like the sky and the dome light below.

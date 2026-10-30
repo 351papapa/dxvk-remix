@@ -62,6 +62,10 @@ namespace {
       m_context->Release();
     }
 
+    void synchronizeCommands() override {
+      m_context->SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    }
+
     void flushDeferredUploads() override {
       m_context->FlushRemixInitUploads();
     }

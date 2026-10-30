@@ -8,6 +8,10 @@ is the source of truth; this page exists to make it discoverable.
 
 To move an integration from the public `rebased-9-19` runtime to this API, see
 [`RemixApi-Migration.md`](RemixApi-Migration.md).
+For the local fixed-width catalog and captured-surface bridge extension used by existing hosts, see
+[`RemixRetainedCompatibility.md`](RemixRetainedCompatibility.md).
+For local bridge persistent-light capability negotiation, see
+[`RemixBridgeCapabilities.md`](../documentation/RemixBridgeCapabilities.md).
 
 For SDK setup and the high-level mental model, see
 [`RemixSDK.md`](RemixSDK.md). For per-subsystem string-keyed conventions
@@ -770,7 +774,7 @@ independently of the typed C API.
 | :-- | :-- | :-- |
 | `__window.*`, `rtx.windowLight.*` | `SetGameValue`, `SetConfigVariable` | [`RemixWindowLighting.md`](../documentation/RemixWindowLighting.md) |
 | `__wetness.*`, `rtx.wetness.*` | `SetGameValue`, `SetConfigVariable`, weather preset files | [`RemixWetnessAPI.md`](../documentation/RemixWetnessAPI.md) |
-| `rtx.atmosphere.*`, `rtx.weather.*` | `SetConfigVariable` | [`RemixSkyAPI.md`](RemixSkyAPI.md) |
+| `rtx.atmosphere.*`, `rtx.weather.*` | `SetConfigVariable`, typed weather preset files | [`RemixSkyAPI.md`](RemixSkyAPI.md), [global volumetric fog](../documentation/WeatherVolumetrics.md) |
 | `__mcrtx.world_origin.x/y/z` | `SetGameValue` (read while `rtx.worldOrigin.enable` is on) | [`RemixApi-Migration.md`](RemixApi-Migration.md#49-game-values) |
 
 When a new fork-side subsystem starts publishing a `__<ns>.*`
