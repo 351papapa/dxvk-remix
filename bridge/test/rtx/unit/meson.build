@@ -72,6 +72,7 @@ test('remix_api__' + variant,
 endif
 gpu_payload_exe = executable('test_gpu_instancing_payload_' + name_suff, files('test_gpu_instancing_payload.cpp'),
     include_directories : [util_include_path, public_include_path],
+    cpp_args : ['-DREMIX_ALLOW_X86'],
     win_subsystem : 'console')
 test('gpu_instancing_payload', gpu_payload_exe)
 tests += gpu_payload_exe
