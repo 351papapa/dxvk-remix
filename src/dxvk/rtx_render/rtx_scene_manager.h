@@ -295,6 +295,8 @@ public:
   // The scene owns the retained instances (rtx_retained_scene.h), so the retained commands above go to it.
   // It keeps what needs per-frame work on the legacy lane (the *Legacy functions).
   RetainedScene& retainedScene() { return *m_retainedScene; }
+  // Delivers each mesh/material change to every retained cache on the command thread.
+  void consumeExternalAssetChanges();
   // The game lights frontends send (rtx_game_lights.h).
   GameLights& gameLights() { return *m_gameLights; }
   // The counters of the scene interface's input checks ([SceneInput]). Any thread may count.

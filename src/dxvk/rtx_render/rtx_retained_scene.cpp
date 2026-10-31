@@ -1411,6 +1411,17 @@ namespace dxvk {
 
   // ---- frame ----------------------------------------------------------------------------------------------------
 
+  void RetainedScene::invalidateAsset(uint64_t asset) {
+    m_compat->invalidateAsset(asset);
+    auto range = m_assetUsers.equal_range(asset);
+    for (auto it = range.first; it != range.second; ++it) {
+      auto entry = m_entries.find(it->second);
+      if (entry != m_entries.end() && entry->second.lane == Lane::Direct) {
+        queueBuild(entry->second);
+      }
+    }
+  }
+
   void RetainedScene::consumeInvalidations() {
     AssetReplacer& replacer = *m_scene.m_pReplacer;
     // Mods, reloads, variants: everything direct is rebuilt.
@@ -1446,24 +1457,7 @@ namespace dxvk {
     const bool policyChanged = policy != m_hiddenPolicy && m_hiddenPolicy != ~0u;
     m_hiddenPolicy = policy;
 
-    // API meshes and materials registered, refreshed or destroyed: their users are rebuilt. The list is handed back
-    // for the first implementation's own use.
-    replacer.takeChangedExternalAssets(m_changedAssets);
-    if (!all) {
-      for (const uint64_t asset : m_changedAssets) {
-        auto range = m_assetUsers.equal_range(asset);
-        for (auto it = range.first; it != range.second; ++it) {
-          auto entry = m_entries.find(it->second);
-          if (entry != m_entries.end() && entry->second.lane == Lane::Direct) {
-            queueBuild(entry->second);
-          }
-        }
-      }
-    }
-    for (const uint64_t asset : m_changedAssets) {
-      replacer.noteChangedExternalAsset(asset);
-    }
-    m_changedAssets.clear();
+    m_scene.consumeExternalAssetChanges();
 
     if (all || policyChanged) {
       for (auto& [handle, entry] : m_entries) {

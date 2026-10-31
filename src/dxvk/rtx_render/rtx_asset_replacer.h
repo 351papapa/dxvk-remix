@@ -584,14 +584,12 @@ namespace dxvk {
     // only draws using a given API mesh or material handle (registered, refreshed or destroyed;
     // collected until taken). Mesh and material handles are distinct objects, so one list holds both.
     uint64_t getExternalAssetGlobalEpoch() const { return m_externalAssetGlobalEpoch; }
-    uint64_t getExternalAssetChangeGeneration() const { return m_externalAssetChangeGeneration; }
     const std::vector<uint64_t>& changedExternalAssets() const { return m_changedExternalAssets; }
     void takeChangedExternalAssets(std::vector<uint64_t>& out) {
       out.swap(m_changedExternalAssets);
       m_changedExternalAssets.clear();
     }
     void noteChangedExternalAsset(uint64_t handle) {
-      ++m_externalAssetChangeGeneration;
       // Nobody may be taking them (no retained replay): past this many, treat it as a global change.
       if (m_changedExternalAssets.size() >= 65536) {
         m_changedExternalAssets.clear();
@@ -650,7 +648,6 @@ namespace dxvk {
 
     fast_unordered_cache<VariantInfo> m_variantInfos;
     uint64_t m_externalAssetEpoch = 0;
-    uint64_t m_externalAssetChangeGeneration = 0;
     uint64_t m_externalAssetGlobalEpoch = 0;
     std::vector<uint64_t> m_changedExternalAssets;
     AssetResolver m_assetResolver;

@@ -1,5 +1,26 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Consume retained asset changes once across all frontends
+
+Deliver each external mesh/material change to the compatibility catalog, direct
+scene and legacy retained cache together. The direct scene returned consumed
+events to the asset queue, while the compatibility-only frame path never ran
+the legacy consumer that cleared it. That repeatedly dirtied static objects.
+The current upstream dev 39199d71 has the hand-back protocol but no compatibility
+catalog. Real updates, destruction, global invalidation and reloads remain active.
+No options, API signatures, presets, shader code or rendering features change.
+
+A targeted six-second command-thread sample of 2a0f260e found repeated retained
+preparation, geometry lookup and material hashing. The same run logged about
+31–34 ms of command-thread CPU per frame with roughly 3,100 static scene instances
+outside the preserve path. These are diagnostic observations, not a paired FPS
+measurement. A CPU harness compiled the actual delivery methods and reproduced
+3,100,000 queued rebuilds across 1,000 unchanged frames before the fix versus
+3,100 initial rebuilds after it. Shared handles, duplicate events, late updates,
+unrelated assets, destruction/recreation and overflow passed. This does not
+measure rendering. Post-fix game validation is pending. The implementation belongs to
+the commit introducing this entry.
+
 ## 2026-10-31 — Cache the capture directory outside the frame loop
 
 Resolve the immutable DFF capture directory once, preserving the same directory,

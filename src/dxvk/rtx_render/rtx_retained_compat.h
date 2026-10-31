@@ -23,6 +23,7 @@ public:
   void drawImmediate(const Rc<DxvkContext>& ctx, std::unique_ptr<ExternalDrawState> state);
   void finishFrame(const Rc<DxvkContext>& ctx);
   void destroyMesh(remixapi_MeshHandle mesh);
+  void invalidateAsset(uint64_t asset);
   remixapi_RetainedStatus status() const { return m_status; }
   bool hasLegacy(const ExternalDrawState& state) const;
 
@@ -45,7 +46,6 @@ private:
   remixapi_RetainedStatus m_status {};
   uint64_t m_nextHandle = uint64_t(1) << 60;
   uint64_t m_assetEpoch = ~0ull;
-  uint64_t m_assetGeneration = ~0ull;
   uint32_t m_textureGeneration = ~0u;
   uint64_t m_clearEpoch = ~0ull;
   uint64_t m_options = ~0ull;

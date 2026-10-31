@@ -3899,6 +3899,25 @@ namespace dxvk {
     return true;
   }
 
+  void SceneManager::consumeExternalAssetChanges() {
+    if (m_pReplacer->changedExternalAssets().empty()) {
+      return;
+    }
+    // All consumers receive the same batch, even when the host never submits legacy retained draws.
+    // The callbacks only mark existing cache entries dirty and cannot publish asset changes.
+    auto& changedAssets = m_retainedChangedAssetsScratch;
+    m_pReplacer->takeChangedExternalAssets(changedAssets);
+    for (const uint64_t asset : changedAssets) {
+      m_retainedScene->invalidateAsset(asset);
+      auto range = m_retainedSteadyByAsset.equal_range(asset);
+      for (auto it = range.first; it != range.second; ++it) {
+        dropRetainedSteady(it->second, nullptr);
+      }
+      m_retainedSteadyByAsset.erase(range.first, range.second);
+    }
+    changedAssets.clear();
+  }
+
   void SceneManager::submitRetainedExternalDraws(const Rc<DxvkContext>& ctx, RetainedReplayStats* stats) {
     ScopedCpuProfileZone();
     const uint32_t hiddenPolicy = RtxOptions::retainedHiddenPolicy();
@@ -3921,18 +3940,7 @@ namespace dxvk {
         ++m_retainedSteadyAssetEpoch; // every cached result was made under the other rule
       }
       m_retainedInvalidationsConsumed = 0;
-      std::vector<uint64_t>& changedAssets = m_retainedChangedAssetsScratch;
-      m_pReplacer->takeChangedExternalAssets(changedAssets);
-      if (m_retainedPreciseOn) {
-        for (const uint64_t asset : changedAssets) {
-          auto range = m_retainedSteadyByAsset.equal_range(asset);
-          for (auto it = range.first; it != range.second; ++it) {
-            dropRetainedSteady(it->second, nullptr);
-          }
-          m_retainedSteadyByAsset.erase(range.first, range.second);
-        }
-      }
-      changedAssets.clear();
+      consumeExternalAssetChanges();
     }
     if (steadyOn) {
       RetainedSteadyInputs inputs;

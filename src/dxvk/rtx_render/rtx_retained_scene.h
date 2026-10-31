@@ -152,6 +152,7 @@ namespace dxvk {
     scene::SceneCommandQueue& queue() { return m_queue; }
 
     // Runtime events.
+    void invalidateAsset(uint64_t asset);
     void onInstanceFreed(const RtInstance& instance);  // InstanceManager, before the memory is freed
     void onSceneClear();                               // top of SceneManager::clear
     // What a mod hot reload changed (null: everything), for the asset epoch bump it made.
@@ -299,7 +300,6 @@ namespace dxvk {
       RtxParticleSystemDesc globalDesc;
     };
     void resolveParticleSource(const Entry& entry, const RtInstance& instance, uint32_t submesh, ParticleSource& source) const;
-    std::vector<uint64_t> m_changedAssets;
     Vector3 m_origin { 0.f, 0.f, 0.f };
     uint32_t m_hiddenPolicy = ~0u;
     uint64_t m_assetGlobalEpoch = ~0ull;

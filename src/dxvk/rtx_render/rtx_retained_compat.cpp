@@ -322,21 +322,18 @@ void RetainedCompat::invalidate() {
       dirty(id, entry);
     }
   }
-  // Observe the same precise invalidation queue as both public retained paths, without consuming it.
-  // Material creation elsewhere must not trigger an O(world-size) rebuild of this catalog.
-  const uint64_t generation = assets.getExternalAssetChangeGeneration();
-  if (!all && generation != m_assetGeneration) {
-    for (uint64_t asset : assets.changedExternalAssets()) {
-      auto range = m_assetUsers.equal_range(asset);
-      for (auto it = range.first; it != range.second; ++it) {
-        auto found = m_entries.find(it->second);
-        if (found != m_entries.end()) {
-          dirty(found->first, found->second);
-        }
-      }
+  m_scene.consumeExternalAssetChanges();
+}
+
+void RetainedCompat::invalidateAsset(uint64_t asset) {
+  auto range = m_assetUsers.equal_range(asset);
+  for (auto it = range.first; it != range.second; ++it) {
+    auto found = m_entries.find(it->second);
+    if (found != m_entries.end() && !found->second.dirty) {
+      found->second.dirty = true;
+      m_dirty.push_back(found->first);
     }
   }
-  m_assetGeneration = generation;
 }
 
 void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
