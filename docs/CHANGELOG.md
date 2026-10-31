@@ -1,5 +1,21 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Avoid command-stream waits in texture hash queries
+
+Remove the unconditional CS-thread synchronization from the D3D9 texture hash
+query. Texture upload and hash invalidation run on the D3D9 calling thread under
+the device lock; texture registration still enters the ordered command stream.
+No API signatures, options, presets, shader paths or rendering features change.
+
+The reported dock-view regression reproduced in stable diagnostic intervals:
+unmodified dev was about 66 base FPS, while the custom build was about 20.
+The custom bridge reported about 708 round trips and 35 ms waiting per frame,
+mostly GetTextureHash. Its GPU work was about 15 ms despite 49 ms frame times.
+These are diagnostic intervals, not completed paired benchmark runs.
+This change is a candidate fix; post-change game validation is deferred at the
+user's request. It has not demonstrated a measured frame-rate improvement yet.
+The implementation belongs to the commit that introduces this entry.
+
 ## 2026-10-31 — Bridge light definition updates
 
 Added a capability-gated command that keeps bridge light handles stable and

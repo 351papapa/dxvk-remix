@@ -326,9 +326,8 @@ namespace {
     }
     auto* device = registered->device();
     const D3D9DeviceLock lock = device->LockDevice();
-    // Finish CPU command processing before reading the hash authored by the texture upload.
-    // This does not wait for the GPU or read texture pixels back to the CPU.
-    device->SynchronizeCsThread();
+    // D3D9 uploads publish the hash on the calling thread before queuing GPU work.
+    // The device lock serializes those writes with this lookup.
     D3D9CommonTexture* commonTexture = GetCommonTexture(texture);
     if (!commonTexture) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
