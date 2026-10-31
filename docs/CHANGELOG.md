@@ -17,8 +17,16 @@ reduced that to about one total blocking call per frame and lowered game-thread
 CPU from 16.8–17.5 ms to 13.9–14.2 ms. Steady windows changed from 52–57 to
 55–59 base FPS and became GPU-bound; these are diagnostic intervals, not a
 paired statistical benchmark. The final per-texture build passed seven bridge
-tests on each architecture and a version-matched game smoke test. The
-implementation belongs to the commit introducing this entry.
+tests on each architecture and a version-matched game smoke test.
+
+The game was then tested at 4x DLSS frame generation in the same raised dock
+view. Across 455 HUD samples after the scene settled, average output was 213.1
+FPS, median 215.4, 5th percentile 196.2, and 425 samples reached at least 200.
+Frame time had a 5.0 ms P95, 5.7 ms P99 and 6.5 ms maximum, with no sample above
+8 ms. This is one foreground run rather than a statistical acceptance suite.
+The user's installed `rtx.dlfg.maxInterpolatedFrames` setting changes from 2
+(3x) to 3 (4x); the engine default and presets do not change. The implementation
+belongs to the commit introducing this entry.
 
 ## 2026-10-31 — Consume retained asset changes once across all frontends
 
