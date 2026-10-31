@@ -1,12 +1,20 @@
+# Remix Plus changelog
+
 ## 2026-10-31 — Bridge light definition updates
 
-Added a capability-gated update command that preserves existing bridge light
-handles and applies definitions in command order before frame injection. The synchronized status
-query reports asynchronous runtime rejection. No settings or presets change;
-performance measurements are pending. Commit: this change.
-See [contract](../documentation/RemixBridgeLightDefinitions.md).
+Added a capability-gated command that keeps bridge light handles stable and
+applies owned definitions in API command order before frame injection. The
+ordered status query reports asynchronous runtime rejection. No options or
+presets change. Deploy the matching bridge client/server pair together.
+Compiled source: `c9e3cac7`; this validation follow-up changes documentation only.
 
-# Remix Plus changelog
+One discarded 60-second warmup and one 300-second route per configuration gave
+33.698 -> 34.028 base FPS (29.676 -> 29.388 ms), 1% low 18.370 -> 18.309 FPS,
+P99 47.494 -> 47.791 ms, and 74 -> 68 frames over 50 ms.
+This is a single-run observation, not an established percentage gain.
+The comparison includes the matching Core host adaptation and keeps the
+accepted WorldMesh change and rendering settings fixed.
+See the [contract and validation limits](../documentation/RemixBridgeLightDefinitions.md).
 
 ## 2026-10-31 — Skip road ripples outside puddle coverage
 
