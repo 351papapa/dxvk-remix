@@ -90,5 +90,12 @@ skinning_payload_exe = executable('test_mesh_skinning_payload_' + name_suff, fil
 test('mesh_skinning_payload', skinning_payload_exe)
 tests += skinning_payload_exe
 
+light_definition_exe = executable('test_light_definition_' + name_suff, files('test_light_definition.cpp'),
+    include_directories : [util_include_path, public_include_path],
+    cpp_args : ['-DREMIX_ALLOW_X86'],
+    win_subsystem : 'console')
+test('light_definition', light_definition_exe)
+tests += light_definition_exe
+
 alias_target('unit_tests', tests)
 

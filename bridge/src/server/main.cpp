@@ -21,6 +21,7 @@
  */
 #include <remix/remix_retained.h>
 #include "util_remixapi_gpu_instancing.h"
+#include "util_remixapi_light_update.h"
 #include "util_remixapi_retained_error.h"
 #include <remix/remix_game_surface.h>
 #include <remix/remix_legacy_surface_validation.h>
@@ -391,6 +392,9 @@ static bool dumpLeakedObjects() {
 }
 
 void ProcessDeviceCommandQueue() {
+  uint64_t lightUpdateCount = 0;
+  uint64_t lightUpdateErrors = 0;
+  remixapi_ErrorCode lightUpdateError = REMIXAPI_ERROR_CODE_SUCCESS;
   remixapi_RetainedInterface retainedInterface = {};
   HMODULE retainedModule = nullptr;
   uint64_t retainedBridgeEpoch = 0;
@@ -3457,6 +3461,7 @@ void ProcessDeviceCommandQueue() {
       }
 
       case RemixApi_CreateLight:
+      case RemixApi_UpdateLightDefinition:
       {
         // Rather than allocate deserialized struct extensions on the heap,
         // allocate them locally, since we know only one instance will be
@@ -3549,6 +3554,25 @@ void ProcessDeviceCommandQueue() {
         }
 
         auto bridgeHandle = DeviceBridge::get_data();
+        if (rpcHeader.command == RemixApi_UpdateLightDefinition) {
+          ++lightUpdateCount;
+          const auto found = LightHandle::s_handleMap.find(bridgeHandle);
+          auto result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          if (found != LightHandle::s_handleMap.end() && found->second &&
+              remixapi::g_remix.UpdateLightDefinition && remixapi::light_update::validDefinition(&lightInfo)) {
+            result = remixapi::g_remix.UpdateLightDefinition(found->second, &lightInfo);
+          }
+          if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
+            ++lightUpdateErrors;
+            lightUpdateError = result;
+            Logger::err(format_string("[LightUpdates] rejected bridge=%u code=%u errors=%llu",
+              bridgeHandle, unsigned(result), lightUpdateErrors));
+          } else if ((lightUpdateCount & (lightUpdateCount - 1)) == 0) {
+            Logger::info(format_string("[LightUpdates] processed=%llu errors=%llu liveHandles=%zu",
+              lightUpdateCount, lightUpdateErrors, LightHandle::s_handleMap.size()));
+          }
+          break;
+        }
         remixapi_LightHandle lightHandle = nullptr;
         const auto lightResult = remixapi::g_remix.CreateLight(&lightInfo, &lightHandle);
         if(lightResult == REMIXAPI_ERROR_CODE_SUCCESS) {
@@ -3766,7 +3790,20 @@ void ProcessDeviceCommandQueue() {
         remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
         uint32_t actual_size = 0;
 
-        if (remixapi::g_remix.GetGameValue) {
+        if (std::strcmp(key_str.c_str(), remixapi::light_update::serverVersionKey) == 0) {
+          result = REMIXAPI_ERROR_CODE_SUCCESS;
+          buf[0] = '0'; buf[1] = 0; actual_size = 2;
+          if (remixapi::g_remix.GetGameValue && remixapi::g_remix.UpdateLightDefinition) {
+            result = remixapi::g_remix.GetGameValue(remixapi::light_update::runtimeVersionKey,
+              buf.data(), kMaxValueSize, &actual_size);
+          }
+        } else if (std::strcmp(key_str.c_str(), remixapi::light_update::serverStatusKey) == 0) {
+          const auto value = format_string("processed=%llu;errors=%llu;lastError=%u",
+            lightUpdateCount, lightUpdateErrors, unsigned(lightUpdateError));
+          actual_size = uint32_t(value.size() + 1);
+          memcpy(buf.data(), value.c_str(), actual_size);
+          result = REMIXAPI_ERROR_CODE_SUCCESS;
+        } else if (remixapi::g_remix.GetGameValue) {
           result = remixapi::g_remix.GetGameValue(remixapi::legacy_surface::serverQueryKey(key_str.c_str()), buf.data(), kMaxValueSize, &actual_size);
           // Value larger than our internal buffer -- impl honored the contract
           // and left buf untouched. We have no bytes to forward; surface as

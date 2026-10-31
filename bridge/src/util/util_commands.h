@@ -470,6 +470,7 @@ namespace Commands {
     RemixApi_RetainedStatus,
     RemixApi_RetainedDrawOrdered,
     RemixApi_GetTextureHash,
+    RemixApi_UpdateLightDefinition,
   };
 
   // Maybe this will be useful...  
@@ -525,6 +526,7 @@ namespace Commands {
     case RemixApi_DestroyMesh: return "RemixApi_DestroyMesh";
     case RemixApi_DrawInstance: return "RemixApi_DrawInstance";
     case RemixApi_CreateLight: return "RemixApi_CreateLight";
+    case RemixApi_UpdateLightDefinition: return "RemixApi_UpdateLightDefinition";
     case RemixApi_DestroyLight: return "RemixApi_DestroyLight";
     case RemixApi_DrawLightInstance: return "DrawLightInstance";
     case RemixApi_SetConfigVariable: return "RemixApi_SetConfigVariable";

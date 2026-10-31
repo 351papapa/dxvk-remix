@@ -1,3 +1,11 @@
+## 2026-10-31 — Bridge light definition updates
+
+Added a capability-gated update command that preserves existing bridge light
+handles and applies definitions in command order before frame injection. The synchronized status
+query reports asynchronous runtime rejection. No settings or presets change;
+performance measurements are pending. Commit: this change.
+See [contract](RemixBridgeLightDefinitions.md).
+
 ## Remix API Changelog
 
 ## 2026-10-30

@@ -448,9 +448,13 @@ remixapi_ErrorCode UpdateLightDefinition(
     const remixapi_LightInfo* info);
 ```
 
-Queues a definition update for an existing handle, applied next frame
-on the render thread. Cheaper than destroy + recreate when only the
+Queues a definition update for an existing handle on the render thread,
+in call order before subsequent drawing and native D3D9 frame injection. Cheaper than destroy + recreate when only the
 parameters change.
+
+For the 32-bit bridge, negotiate `__bridge.lightDefinitions.version` before use.
+Success means queue admission; the ordered `__bridge.lightDefinitions.status`
+query reports runtime rejection. See [bridge contract](../documentation/RemixBridgeLightDefinitions.md).
 
 ---
 

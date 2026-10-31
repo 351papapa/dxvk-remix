@@ -20,6 +20,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -33,6 +34,7 @@
 #include <remix/remix_game_surface.h>
 #include <remix/remix_legacy_surface_validation.h>
 #include "util_remixapi_gpu_instancing.h"
+#include "util_remixapi_light_update.h"
 
 using namespace remixapi::util;
 
@@ -41,6 +43,7 @@ namespace remixapi {
 namespace {
 
 uint64_t g_appRemixApiVersion = 0;
+std::atomic<bool> g_lightUpdatesSupported { false };
 
 bool isRemixApiVersionCompatible(uint64_t appVersion) {
   constexpr uint64_t kCompiledVersion = REMIXAPI_VERSION_MAKE(
@@ -565,90 +568,89 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawInstance(const remixapi_InstanceIn
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+static void sendLightDefinition(ClientMessage& c, const remixapi_LightInfo& info) {
+  serializeAndSend<serialize::LightInfo>(c, info);
+
+  // For each valid pNext, we will send a true-valued bool to indicate that
+  // server must read another extension. If it reads false, it knows that it
+  // is done reading.
+  // send(c, Bool::True); -> CONTINUE
+  // send(c, Bool::False); -> STOP
+  const void* infoItr = &info;
+  while (auto* const pNext = getPNext(infoItr)) {
+    infoItr = pNext;
+    switch (getSType(infoItr)) {
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT:
+      {
+        auto* pSphere = static_cast<const remixapi_LightInfoSphereEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoSphere>(c, *pSphere);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RECT_EXT:
+      {
+        auto* pRect = static_cast<const remixapi_LightInfoRectEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoRect>(c, *pRect);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT:
+      {
+        auto* pDisk = static_cast<const remixapi_LightInfoDiskEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoDisk>(c, *pDisk);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_CYLINDER_EXT:
+      {
+        auto* pCylinder = static_cast<const remixapi_LightInfoCylinderEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoCylinder>(c, *pCylinder);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT:
+      {
+        auto* pDistant = static_cast<const remixapi_LightInfoDistantEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoDistant>(c, *pDistant);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT:
+      {
+        auto* pDome = static_cast<const remixapi_LightInfoDomeEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoDome>(c, *pDome);
+        break;
+      }
+      case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_USD_EXT:
+      {
+        auto* pUSD = static_cast<const remixapi_LightInfoUSDEXT* const>(infoItr);
+        send(c, Bool::True);
+        serializeAndSend<serialize::LightInfoUSD>(c, *pUSD);
+        break;
+      }
+      default:
+      {
+        Logger::warn("[remixapi_CreateLight] Unknown sType. Skipping.");
+        break;
+      }
+    }
+  }
+  send(c, Bool::False);
+}
+
 remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateLight(
   const remixapi_LightInfo* info,
-  remixapi_LightHandle*     out_handle) {
-    
+  remixapi_LightHandle* out_handle) {
   ASSERT_REMIXAPI_PFN_TYPE(remixapi_CreateLight);
   assert(info->sType == REMIXAPI_STRUCT_TYPE_LIGHT_INFO);
-
   LightHandle newHandle;
   {
     ClientMessage c(Commands::RemixApi_CreateLight);
-
-    serializeAndSend<serialize::LightInfo>(c, *info);
-    
-    // For each valid pNext, we will send a true-valued bool to indicate that
-    // server must read another extension. If it reads false, it knows that it
-    // is done reading.
-    // send(c, Bool::True); -> CONTINUE
-    // send(c, Bool::False); -> STOP
-    const void* infoItr = info;
-    while (auto* const pNext = getPNext(infoItr)) {
-      infoItr = pNext;
-      switch (getSType(infoItr)) {
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT:
-        {
-          auto* pSphere = static_cast<const remixapi_LightInfoSphereEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoSphere>(c, *pSphere);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_RECT_EXT:
-        {
-          auto* pRect = static_cast<const remixapi_LightInfoRectEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoRect>(c, *pRect);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISK_EXT:
-        {
-          auto* pDisk = static_cast<const remixapi_LightInfoDiskEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoDisk>(c, *pDisk);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_CYLINDER_EXT:
-        {
-          auto* pCylinder = static_cast<const remixapi_LightInfoCylinderEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoCylinder>(c, *pCylinder);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT:
-        {
-          auto* pDistant = static_cast<const remixapi_LightInfoDistantEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoDistant>(c, *pDistant);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT:
-        {
-          auto* pDome = static_cast<const remixapi_LightInfoDomeEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoDome>(c, *pDome);
-          break;
-        }
-        case REMIXAPI_STRUCT_TYPE_LIGHT_INFO_USD_EXT:
-        {
-          auto* pUSD = static_cast<const remixapi_LightInfoUSDEXT* const>(infoItr);
-          send(c, Bool::True);
-          serializeAndSend<serialize::LightInfoUSD>(c, *pUSD);
-          break;
-        }
-        default:
-        {
-          Logger::warn("[remixapi_CreateLight] Unknown sType. Skipping.");
-          break;
-        }
-      }
-    }
-    send(c, Bool::False);
+    sendLightDefinition(c, *info);
     sendHandle(c, newHandle);
   }
-
   *out_handle = newHandle;
-
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
@@ -795,7 +797,7 @@ extern "C" {
       interf.dxvk_CreateD3D9 = remixapi_dxvk_CreateD3D9;
       interf.dxvk_RegisterD3D9Device = remixapi_dxvk_RegisterD3D9Device;
       // Persistent-light auto-instancing is forwarded through the ordered IPC stream.
-      // UI state and light-definition updates expose failure-returning stubs.
+      // Light updates use the ordered IPC stream; UI state still exposes stubs.
       interf.GetUIState                   = remixapi_GetUIState;
       interf.SetUIState                   = remixapi_SetUIState;
       interf.AutoInstancePersistentLights = remixapi_AutoInstancePersistentLights;
@@ -831,7 +833,7 @@ extern "C" {
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  // UI state and light-definition updates log once when their bridge stubs are called.
+  // UI state logs once when its bridge stubs are called.
 
   DLLEXPORT remixapi_UIState __stdcall remixapi_GetUIState(void) {
     static bool warned = false;
@@ -867,18 +869,32 @@ extern "C" {
   }
 
   DLLEXPORT remixapi_ErrorCode __stdcall remixapi_UpdateLightDefinition(
-    remixapi_LightHandle      handle,
+    remixapi_LightHandle handle,
     const remixapi_LightInfo* info) {
-    (void) handle;
-    (void) info;
-    static bool warned = false;
-    if (!warned) {
-      Logger::warn("[remixapi_UpdateLightDefinition] Bridge stub: no-op. "
-                   "Light-definition updates are not yet plumbed through the bridge — "
-                   "lights created via CreateLight cannot be updated from 32-bit clients yet.");
-      warned = true;
+    ASSERT_REMIXAPI_PFN_TYPE(remixapi_UpdateLightDefinition);
+    if (!remixapi::g_bInterfaceInitialized) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
-    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    const auto uid = reinterpret_cast<uintptr_t>(handle);
+    if (!uid || uid >= LightHandle::nextUid || !remixapi::light_update::validDefinition(info)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (!remixapi::g_lightUpdatesSupported.load()) {
+      char version[2] = {};
+      uint32_t size = 0;
+      if (remixapi_GetGameValue(remixapi::light_update::versionKey, version, sizeof(version), &size)
+          != REMIXAPI_ERROR_CODE_SUCCESS || size != 2 || version[0] != '1' || version[1] != 0) {
+        return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+      }
+    }
+    // Success acknowledges queue admission. The synchronized status query
+    // reports runtime validation failures without a round trip per light.
+    {
+      ClientMessage c(Commands::RemixApi_UpdateLightDefinition);
+      sendLightDefinition(c, *info);
+      sendHandle(c, LightHandle(handle));
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
   DLLEXPORT remixapi_ErrorCode __stdcall remixapi_SetGameValue(
@@ -939,7 +955,7 @@ extern "C" {
     {
       ClientMessage c(Commands::RemixApi_GetGameValue);
       currentUID = c.get_uid();
-      send(c, legacy_surface::clientQueryKey(key));
+      send(c, legacy_surface::clientQueryKey(remixapi::light_update::serverQueryKey(key)));
       c.send_data(in_buffer_size);
     }
     WAIT_FOR_SERVER_RESPONSE("remixapi_GetGameValue", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);
@@ -955,6 +971,11 @@ extern "C" {
       memcpy(out_buffer, value_ptr, actual);
     }
     DeviceBridge::pop_front();
+    if (std::strcmp(key, remixapi::light_update::versionKey) == 0 &&
+        result == REMIXAPI_ERROR_CODE_SUCCESS && actual == 2 && in_buffer_size >= 2 &&
+        out_buffer[0] == '1' && out_buffer[1] == 0) {
+      remixapi::g_lightUpdatesSupported.store(true);
+    }
     return result;
   }
 
