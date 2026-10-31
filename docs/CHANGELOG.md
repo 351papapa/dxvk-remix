@@ -11,11 +11,14 @@ the affected two-dimensional texture. Render targets and automatic mipmap
 textures still keep their existing no-cache behavior. No API, options, preset,
 shader or rendering-feature changes.
 
-The fixed dock scene measured about 700 synchronous GetTextureHash commands per
-frame while the server spent roughly 11 ms spinning between commands. These
-observations identify the redundant cache invalidation, not an FPS result.
-Post-change game validation is pending. The implementation belongs to the commit
-introducing this entry.
+The fixed dock scene issued about 700 synchronous GetTextureHash commands per
+frame and the client waited 1.05–1.34 ms per frame on them. A cache prototype
+reduced that to about one total blocking call per frame and lowered game-thread
+CPU from 16.8–17.5 ms to 13.9–14.2 ms. Steady windows changed from 52–57 to
+55–59 base FPS and became GPU-bound; these are diagnostic intervals, not a
+paired statistical benchmark. The final per-texture build passed seven bridge
+tests on each architecture and a version-matched game smoke test. The
+implementation belongs to the commit introducing this entry.
 
 ## 2026-10-31 — Consume retained asset changes once across all frontends
 
