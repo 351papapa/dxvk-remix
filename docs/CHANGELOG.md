@@ -1,5 +1,20 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Cache the capture directory outside the frame loop
+
+Resolve the immutable DFF capture directory once, preserving the same directory,
+rule reloads and rendering features. The custom scene preparation path called
+env::getExePath every frame; in a bridge process that takes a system process
+snapshot to find the game. Current upstream dev 39199d71 has no such frame-loop
+lookup. No API, options, presets or shader changes.
+
+The user's cfc2f7cc trial still stuttered. Its runtime log confirms that build
+loaded and records 9.9 ms/frame in scene preparation, including 8.1 ms in the
+anti-cull/graph/terrain/bindless group. A separate 100-call CPU microbenchmark
+of the parent-path lookup measured 5.21 ms median and 6.90 ms P95 on this machine.
+This isolates lookup overhead, not an in-game FPS gain. Post-change game
+measurement remains pending. This entry is introduced with the implementation.
+
 ## 2026-10-31 — Avoid command-stream waits in texture hash queries
 
 Remove the unconditional CS-thread synchronization from the D3D9 texture hash

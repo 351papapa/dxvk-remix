@@ -3062,11 +3062,16 @@ namespace dxvk {
     const bool wetnessEnabled = WetnessOptions::enabled();
     const bool windowsEnabled = WindowLightOptions::enabled();
     if (wetnessEnabled || windowsEnabled || GrassSystem::enabled() || WaterSystem::enabled()) {
-      auto captureFolder = std::filesystem::path(env::getExePath()).parent_path();
-      if (captureFolder.filename() == L".trex") {
-        captureFolder = captureFolder.parent_path();
-      }
-      m_wetnessDffRules.refresh(captureFolder / L"logs" / L"DffDrawCalls",
+      // The executable directory is fixed for the process lifetime. Resolving it
+      // through the bridge queries the parent process.
+      static const auto captureFolder = [] {
+        auto folder = std::filesystem::path(env::getExePath()).parent_path();
+        if (folder.filename() == L".trex") {
+          folder = folder.parent_path();
+        }
+        return folder / L"logs" / L"DffDrawCalls";
+      }();
+      m_wetnessDffRules.refresh(captureFolder,
         WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
     }
 
