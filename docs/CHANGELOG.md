@@ -1,5 +1,22 @@
 # Remix Plus changelog
 
+## 2026-10-31 — Invalidate texture hash caches per texture
+
+Track texture content versions per texture instead of invalidating every
+bridge-side hash when any texture or surface changes. Large scenes often have
+hundreds of stable material textures plus a few uploaded textures per frame;
+the previous device-wide epoch forced all stable hashes back through IPC. Surface
+uploads, texture copies, dirty rectangles and destination writes invalidate only
+the affected two-dimensional texture. Render targets and automatic mipmap
+textures still keep their existing no-cache behavior. No API, options, preset,
+shader or rendering-feature changes.
+
+The fixed dock scene measured about 700 synchronous GetTextureHash commands per
+frame while the server spent roughly 11 ms spinning between commands. These
+observations identify the redundant cache invalidation, not an FPS result.
+Post-change game validation is pending. The implementation belongs to the commit
+introducing this entry.
+
 ## 2026-10-31 — Consume retained asset changes once across all frontends
 
 Deliver each external mesh/material change to the compatibility catalog, direct

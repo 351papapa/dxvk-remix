@@ -40,7 +40,7 @@ tests += executable(
     win_subsystem : 'console')
 
 # Bridge Logic Tests
-logic_tests = [ 'query_results', 'present_semaphore', 'shared_heap_allocator' ]
+logic_tests = [ 'query_results', 'present_semaphore', 'shared_heap_allocator', 'texture_hash_cache' ]
 foreach name : logic_tests
   logic_exe = executable(
       'test_' + name + '_' + name_suff,  files('test_' + name + '.cpp'),

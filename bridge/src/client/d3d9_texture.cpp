@@ -69,6 +69,25 @@ void Direct3DTexture9_LSS::onDestroy() {
   ClientMessage { Commands::IDirect3DTexture9_Destroy, getId() };
 }
 
+bool Direct3DTexture9_LSS::tryGetCachedHash(uint64_t* hash, uint64_t* epoch) const {
+  BRIDGE_PARENT_DEVICE_LOCKGUARD();
+  return m_hashCache.tryGet(hash, epoch);
+}
+
+void Direct3DTexture9_LSS::cacheHash(uint64_t hash, uint64_t epoch) {
+  BRIDGE_PARENT_DEVICE_LOCKGUARD();
+  m_hashCache.store(hash, epoch);
+}
+
+void Direct3DTexture9_LSS::invalidateHashCache() {
+  BRIDGE_PARENT_DEVICE_LOCKGUARD();
+  m_hashCache.invalidate();
+}
+
+bool Direct3DTexture9_LSS::canPersistHashCache() const {
+  return (getDesc().Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_AUTOGENMIPMAP)) == 0;
+}
+
 HRESULT Direct3DTexture9_LSS::GetLevelDesc(UINT Level, D3DSURFACE_DESC* pDesc) {
   LogFunctionCall();
 
@@ -178,7 +197,8 @@ HRESULT Direct3DTexture9_LSS::UnlockRect(UINT Level) {
 
 HRESULT Direct3DTexture9_LSS::AddDirtyRect(CONST RECT* pDirtyRect) {
   LogFunctionCall();
-  
+
+  invalidateHashCache();
   DeviceBridge::ResponseTransaction responseTransaction;
 
   UID currentUID = 0;

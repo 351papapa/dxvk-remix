@@ -23,6 +23,7 @@
 
 #include "d3d9_base_texture.h"
 #include "d3d9_util.h"
+#include "texture_hash_cache.h"
 
 #include <unknwn.h>
 #include <d3d9.h>
@@ -33,11 +34,18 @@
 class Direct3DTexture9_LSS: public LssBaseTexture2D<IDirect3DTexture9> {
   void onDestroy() override;
 
+  TextureHashCache m_hashCache;
+
 public:
   Direct3DTexture9_LSS(BaseDirect3DDevice9Ex_LSS* const pDevice, const TEXTURE_DESC& desc)
     : Direct3DBaseTexture9_LSS(pDevice, desc) {
     m_children.resize(GetLevelCount());
   }
+
+  bool tryGetCachedHash(uint64_t* hash, uint64_t* epoch) const;
+  void cacheHash(uint64_t hash, uint64_t epoch);
+  void invalidateHashCache();
+  bool canPersistHashCache() const;
 
   D3DSURFACE_DESC getLevelDesc(const UINT level) const;
 

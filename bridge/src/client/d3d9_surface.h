@@ -86,6 +86,8 @@ public:
   STDMETHOD(GetDC)(THIS_ HDC* phdc);
   STDMETHOD(ReleaseDC)(THIS_ HDC hdc);
 
+  void invalidateTextureHashCache();
+
   D3DSURFACE_DESC getDesc() const {
     return m_desc;
   }

@@ -251,9 +251,24 @@ HRESULT Direct3DSurface9_LSS::unlock() {
 
   // If this is a read only access then don't bother sending anything to the server
   if ((lockInfo.flags & D3DLOCK_READONLY) == 0) {
+    invalidateTextureHashCache();
     return sendDataToServer(lockInfo);
   }
   return S_OK;
+}
+
+void Direct3DSurface9_LSS::invalidateTextureHashCache() {
+  IUnknown* const parent = getParent();
+  if (parent == nullptr) {
+    return;
+  }
+
+  IDirect3DTexture9* texture = nullptr;
+  if (SUCCEEDED(parent->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&texture))) &&
+      texture != nullptr) {
+    bridge_cast<Direct3DTexture9_LSS*>(texture)->invalidateHashCache();
+    texture->Release();
+  }
 }
 
 RECT Direct3DSurface9_LSS::resolveLockInfoRect(const RECT* const pRect, const D3DSURFACE_DESC& desc) {

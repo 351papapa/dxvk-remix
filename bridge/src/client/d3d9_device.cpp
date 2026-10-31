@@ -881,6 +881,7 @@ HRESULT Direct3DDevice9Ex_LSS<EnableSync>::UpdateSurface(IDirect3DSurface9* pSou
 
   const auto pLssSrcSurface = bridge_cast<Direct3DSurface9_LSS*>(pSourceSurface);
   const auto pLssDestSurface = bridge_cast<Direct3DSurface9_LSS*>(pDestinationSurface);
+  pLssDestSurface->invalidateTextureHashCache();
   DeviceBridge::ResponseTransaction responseTransaction;
   UID currentUID = 0;
   {
@@ -906,6 +907,9 @@ HRESULT Direct3DDevice9Ex_LSS<EnableSync>::UpdateTextureImpl(IDirect3DBaseTextur
   auto pLssDestinationTexture = bridge_cast<T*>(pDestinationTexture);
   assert(pLssSourceTexture && "UpdateTexture: unable to cast source texture!");
   assert(pLssDestinationTexture && "UpdateTexture: unable to cast destination texture!");
+  if constexpr (std::is_same_v<T, Direct3DTexture9_LSS>) {
+    pLssDestinationTexture->invalidateHashCache();
+  }
   DeviceBridge::ResponseTransaction responseTransaction;
   UID currentUID = 0;
   {
@@ -1000,6 +1004,7 @@ HRESULT Direct3DDevice9Ex_LSS<EnableSync>::StretchRect(IDirect3DSurface9* pSourc
 
   const auto pLssSrcSurface = bridge_cast<Direct3DSurface9_LSS*>(pSourceSurface);
   const auto pLssDstSurface = bridge_cast<Direct3DSurface9_LSS*>(pDestSurface);
+  pLssDstSurface->invalidateTextureHashCache();
   DeviceBridge::ResponseTransaction responseTransaction;
   UID currentUID = 0;
   {
@@ -1024,6 +1029,7 @@ HRESULT Direct3DDevice9Ex_LSS<EnableSync>::ColorFill(IDirect3DSurface9* pSurface
   }
 
   const auto pLssSurface = bridge_cast<Direct3DSurface9_LSS*>(pSurface);
+  pLssSurface->invalidateTextureHashCache();
   DeviceBridge::ResponseTransaction responseTransaction;
   UID currentUID = 0;
   {
@@ -1202,7 +1208,7 @@ HRESULT Direct3DDevice9Ex_LSS<EnableSync>::BeginScene() {
       gSceneState = SceneInProgress;
     }
   }
-  
+
   if (remixapi::g_bInterfaceInitialized && remixapi::g_beginSceneCallback) {
     remixapi::g_beginSceneCallback();
   }
