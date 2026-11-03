@@ -1,5 +1,13 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Preserve legacy mesh identity in API captures
+
+USD captures use each legacy API surface's original draw hash, matching runtime
+asset replacement lookup. This preserves existing replacement bindings and keeps
+surfaces sharing an API mesh handle distinct. Pure API host asset keys and the
+D3D9 geometry hash fallback remain supported. No options or defaults change;
+this fix is preset-independent. Commits: this change.
+
 ## 2026-10-31 — Invalidate texture hash caches per texture
 
 Track texture content versions per texture instead of invalidating every

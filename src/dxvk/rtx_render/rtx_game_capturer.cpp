@@ -588,11 +588,12 @@ namespace dxvk {
     assert(pBlas != nullptr);
     const XXH64_hash_t matHash = rtInstance.getMaterialDataHash();
 
-    // API meshes use their API handle as the hash, as the runtime replacement lookup does.
+    // Legacy surfaces retain their individual replacement keys within an API mesh.
     XXH64_hash_t meshHash = 0;
-    // A host asset key is what replacements are looked up with, so the capture uses it too.
     const AssetResolver& resolver = ctx->getCommonObjects()->getSceneManager().getAssetReplacer()->assetResolver();
-    if (pBlas->input.getGeometryData().externalMesh != nullptr) {
+    if (pBlas->input.getGeometryData().legacyDrawHash) {
+      meshHash = pBlas->input.getGeometryData().legacyDrawHash;
+    } else if (pBlas->input.getGeometryData().externalMesh != nullptr) {
       meshHash = reinterpret_cast<XXH64_hash_t>(pBlas->input.getGeometryData().externalMesh);
       if (const AssetResolver::AssetKey* key = resolver.meshKey(meshHash)) {
         if (key->key != 0) {
@@ -601,8 +602,7 @@ namespace dxvk {
       }
       Logger::info(str::format("[GameCapturer] Using external mesh hash: 0x", std::hex, meshHash, std::dec));
     } else {
-      meshHash = pBlas->input.getGeometryData().legacyDrawHash
-        ? pBlas->input.getGeometryData().legacyDrawHash : pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
+      meshHash = pBlas->input.getHash(RtxOptions::geometryAssetHashRule());
     }
     assert(meshHash != 0);
 
