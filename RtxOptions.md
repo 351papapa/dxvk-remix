@@ -1653,15 +1653,31 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.wetness.dropStrength|float|5|||Vehicle droplet visibility strength\.|
 |rtx.wetness.enabled|bool|False|||Master switch for the wetness/rain surface system\. Off: no wet sheen, puddles, road ripples, vehicle droplets or streaks, and the rain\-ending roughness override stops being applied\. Weather and rain particles are unaffected\.|
 |rtx.wetness.nonRoadRoughnessOnly|bool|False|||In road\-only mode, allow rain\-driven roughness on non\-road world surfaces without puddles or ripples\. Respects cullzones and DFF disable rules; DFF enable rules retain full wetness\.|
-|rtx.wetness.puddleAlbedoDarken|float|0.85|||Albedo multiplier inside puddles \(water absorbs light\)\.|
-|rtx.wetness.puddleNoiseScale|float|0.045|||Puddle noise frequency \(world\)\. Larger = smaller puddles\.|
-|rtx.wetness.puddleThresholdBase|float|0.56|||Puddle noise threshold when dry\. Lower = more puddles\.|
-|rtx.wetness.puddleThresholdSpan|float|0.4|||How much full wetness lowers the puddle threshold\.|
-|rtx.wetness.puddleWaveScale|float|1|||Puddle micro\-wave size multiplier\. Larger = bigger, sparser waves\.|
-|rtx.wetness.puddleWaveStrength|float|0.4|||Puddle micro\-wave normal wobble amplitude\. 0 = dead\-flat mirror\.|
+|rtx.wetness.puddleAlbedoDarken|float|0.25|||Albedo multiplier reached under water at 2 cm depth\.|
+|rtx.wetness.puddleCellSize|float|2.8|||Ground unevenness cell size in meters\. Larger cells form broader puddles\.|
+|rtx.wetness.puddleCoverage|float|0.7|||Water level at full wetness, from 0 to 1\. Higher values flood more of the ground unevenness\.|
+|rtx.wetness.puddleDepressionWeight|float|0.3|||Weight of measured ground depressions in the puddle water level\.|
+|rtx.wetness.puddleDetailDistance|float|400|||Maximum puddle shading distance in meters\.|
+|rtx.wetness.puddleEdgeWidth|float|0.025|||Water depth in meters over which a puddle edge becomes fully covered\.|
+|rtx.wetness.puddleMicroAmplitude|float|0.03|||Height amplitude of small ground unevenness in meters\.|
+|rtx.wetness.puddleOcclusion|float|0.5|||How strongly static overhead cover suppresses puddles, from 0 to 1\.|
+|rtx.wetness.puddleRoughness|float|0.035|||Roughness of standing water, from 0 to 1\.|
+|rtx.wetness.puddleShoreDarkening|float|0.8|||Albedo multiplier of the damp puddle shore\.|
+|rtx.wetness.puddleShoreWidth|float|0.02|||Height in meters of the damp band above the puddle water line\.|
+|rtx.wetness.puddleSlopeFeather|float|2.4|||Slope fade width as a multiple of the slope limit\.|
+|rtx.wetness.puddleSlopeLimit|float|0.053|||Ground grade at which puddles start to drain\. 0\.053 is a 5\.3 percent grade\.|
+|rtx.wetness.puddleWaveScale|float|1|||Wind ripple wavelength multiplier\. 1 starts at a 12 cm wavelength\.|
+|rtx.wetness.puddleWaveStrength|float|0.08|||Standing\-water wind ripple normal strength\. 0 disables wind ripples\.|
 |rtx.wetness.rainEndRoughness|float|0.75|||Absolute opaque roughness target while rain is ending\.|
 |rtx.wetness.rainEndRoughnessEnabled|bool|False|||Blend GLOBAL opaque roughness toward rainEndRoughness while the weather goes from rainy to dry\. Off by default: it overrides the authored roughness of every opaque surface and fights the wetness layer's own decay, so materials do not simply return to their normal roughness\. Enable only if you want a uniform damp look while the world dries\.|
 |rtx.wetness.rainEndTransitionSeconds|float|15|||Seconds to blend into and out of the rain\-ending roughness override\.|
+|rtx.wetness.rainMapEnabled|bool|False|||Measure static ground height, depressions, slope and rain cover around the camera\. Puddles fade out at the map boundary\. Requires ray queries each frame\.|
+|rtx.wetness.rainMapExtent|float|128|||Side length of the rain map in meters\. Larger extents cover more ground at lower spatial precision\.|
+|rtx.wetness.rainMapResolution|int|512|||Rain map texels per side, from 64 to 2048\. Increasing resolution increases ray queries and memory use\.|
+|rtx.wetness.rainMapTraceAbove|float|100|||Rain map trace height above the camera, in meters\.|
+|rtx.wetness.rainMapTraceBelow|float|60|||Rain map trace depth below the camera, in meters\.|
+|rtx.wetness.rainOcclusionFeather|float|1.5|||Rain cover blur radius in meters, capped at 12 map texels\.|
+|rtx.wetness.rainOcclusionMinHeight|float|2.5|||Minimum cover height above ground in meters\. Lower obstacles do not act as roofs\.|
 |rtx.wetness.respectNoRainZones|bool|False|||Disable wetness inside no\-rain cullzones\. DFF enable rules override this restriction; rain is still required\.|
 |rtx.wetness.rippleGridScale|float|8.5|||Road ripple cells per world unit\. Higher = more, smaller rings\.|
 |rtx.wetness.rippleRadius|float|1|||Road ripple ring expansion speed multiplier\.|
@@ -1674,6 +1690,9 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.wetness.streakGridScale|float|12|||Streak grid cells per object unit\.|
 |rtx.wetness.streakLength|float|0.4|||Object units a streak travels per run\.|
 |rtx.wetness.streakSize|float|1|||Streak head size multiplier\.|
+|rtx.wetness.surfaceDrySeconds|float|120|||Seconds to dry retained surface wetness after the hold period\.|
+|rtx.wetness.surfaceHoldSeconds|float|90|||Seconds surface wetness is held after rain stops\.|
+|rtx.wetness.surfaceRetentionEnabled|bool|False|||Keep authored surface wetness after rain stops, then dry it gradually\. Rain impacts continue to follow the current rainfall\.|
 |rtx.wetness.waterWaveScale|float|1|||Water \(AnimatedWater\) micro\-wave size multiplier\. Larger = bigger, sparser chop\.|
 |rtx.wetness.waterWaveStrength|float|0.5|||Water \(AnimatedWater\) micro\-wave normal wobble amplitude\. 0 = off\.|
 |rtx.windowLight.enabled|bool|False|||Enable per\-window emission and clock\-driven street lamps\.|

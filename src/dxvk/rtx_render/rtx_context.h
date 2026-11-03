@@ -35,6 +35,7 @@
 #include "rtx_options.h"
 #include "rtx_wetness_zones.h"
 #include "rtx_wetness_transition.h"
+#include "rtx_wetness_retention.h"
 #include "rtx_perf_log.h"
 #include "rtx_fork_frame_features.h"
 
@@ -235,6 +236,7 @@ namespace dxvk {
   private:
     WetnessZoneIndex m_wetnessZones;
     WetnessTransition m_rainEndRoughness;
+    WetnessRetention m_surfaceWetness;
     float m_rainEndKeySeconds = 0.0f;
     Rc<DxvkBuffer> m_wetnessZoneBuffer;
     void updateWetnessZones();

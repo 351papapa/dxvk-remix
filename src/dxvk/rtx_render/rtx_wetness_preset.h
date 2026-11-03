@@ -9,7 +9,7 @@
 #include "rtx/pass/wetness_args.h"
 
 namespace dxvk {
-  enum class WetnessBlend { Linear, Step, RampFromDry };
+  enum class WetnessBlend { Linear, Step };
 
   struct WetnessParameter {
     const char* name;
@@ -18,9 +18,9 @@ namespace dxvk {
   };
 
   inline constexpr WetnessParameter kWetnessParameters[] = {
-    { "puddleNoiseScale", &WetnessArgs::puddleNoiseScale, WetnessBlend::Step },
-    { "puddleThresholdBase", &WetnessArgs::puddleThresholdBase, WetnessBlend::RampFromDry },
-    { "puddleThresholdSpan", &WetnessArgs::puddleThresholdSpan, WetnessBlend::Step },
+    { "puddleCellSize", &WetnessArgs::puddleCellSize, WetnessBlend::Step },
+    { "puddleCoverage", &WetnessArgs::puddleCoverage, WetnessBlend::Step },
+    { "puddleMicroAmplitude", &WetnessArgs::puddleMicroAmplitude, WetnessBlend::Step },
     { "puddleAlbedoDarken", &WetnessArgs::puddleAlbedoDarken },
     { "puddleWaveStrength", &WetnessArgs::puddleWaveStrength, WetnessBlend::Step },
     { "puddleWaveScale", &WetnessArgs::puddleWaveScale, WetnessBlend::Step },
@@ -64,7 +64,7 @@ namespace dxvk {
       }
     }
 
-    static WetnessArgs blend(const WetnessArgs& a, const WetnessArgs& b, float t, bool rampPuddles = true) {
+    static WetnessArgs blend(const WetnessArgs& a, const WetnessArgs& b, float t) {
       t = std::isfinite(t) ? std::clamp(t, 0.0f, 1.0f) : 0.0f;
       const WetnessArgs defaults;
       WetnessArgs out = b;
@@ -75,7 +75,6 @@ namespace dxvk {
         // Keep the incoming noise pattern fixed while its coverage grows from dry.
         switch (parameter.blend) {
         case WetnessBlend::Step: out.*member = bv; break;
-        case WetnessBlend::RampFromDry: out.*member = (rampPuddles ? 0.95f : av) + (bv - (rampPuddles ? 0.95f : av)) * t; break;
         case WetnessBlend::Linear: out.*member = av + (bv - av) * t; break;
         }
         if (t >= 1.0f) { out.*member = bv; }

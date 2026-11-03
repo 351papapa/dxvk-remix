@@ -76,7 +76,9 @@ bool tracePuddleGround(float3 position, out uint surfaceId, out float3 hit) {
       surfaceMaterials.GetDimensions(materialCount, materialStride);
       uint surfaceCount, surfaceStride;
       surfaces.GetDimensions(surfaceCount, surfaceStride);
-      if (id < materialCount && id < surfaceCount && !surfaces[id].isParticle && surfaceMaterials[id].isOpaque()) { query.CommitNonOpaqueTriangleHit(); }
+      if (id < materialCount && id < surfaceCount && wetStaticGround(surfaces[id]) && surfaceMaterials[id].isOpaque()) {
+        query.CommitNonOpaqueTriangleHit();
+      }
     }
   }
   if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
@@ -91,7 +93,7 @@ float wetRoadAtContact(float3 position, out uint id, out float3 hit) {
   if (!tracePuddleGround(position, id, hit)) { return 0; }
   uint surfaceCount, surfaceStride;
   surfaces.GetDimensions(surfaceCount, surfaceStride);
-  if (id >= surfaceCount) { return 0; }
+  if (id >= surfaceCount || !wetStaticGround(surfaces[id])) { return 0; }
   uint tag = surfaces[id].wetnessTag;
   if ((tag >> 24) != 2u) { return 0; }
   if ((tag & 0x800u) != 0 || (cb.wetnessArgs.roadOnly != 0 && (tag & 0x500u) == 0)) { return 0; }

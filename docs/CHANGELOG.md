@@ -1,5 +1,22 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Terrain puddles and retained surface wetness
+
+Puddles use a rising water level over small ground unevenness and an optional
+camera-centered rain map of static ground height, relief, slope and overhead
+cover. Primary surface shading and contact particles share the same mask; dry
+ground and excluded dynamic surfaces do not form puddles. Optional surface
+retention keeps water after rain stops while rain impacts follow current rain.
+
+Replaces `puddleNoiseScale`, `puddleThresholdBase` and `puddleThresholdSpan` with
+`puddleCellSize`, `puddleCoverage` and `puddleMicroAmplitude`. Adds rain-map,
+water-depth/shore/slope and hold/dry controls under `rtx.wetness`; rain-map and
+surface-retention switches default off. Wind-ripple defaults and puddle bottom
+darkening now match the water-layer model. Ultra/High/Medium/Low all retain a
+512-square, 128-meter rain map and 400-meter detail distance; Custom remains
+authored. No FPS improvement is claimed. Commits: this change.
+See [terrain wetness](../documentation/TerrainWetness.md).
+
 ## 2026-11-04 — Validated configured runtime build
 
 Adds a repository-owned build entry for the configured Release runtime. It checks

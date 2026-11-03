@@ -23,12 +23,12 @@
 
 struct WetnessArgs {
 
-  float puddleNoiseScale = 0.045f;   // world-space noise frequency (larger = smaller patches)
-  float puddleThresholdBase = 0.56f; // noise threshold at zero wetness
-  float puddleThresholdSpan = 0.4f;  // how much wetness lowers the threshold
-  float puddleAlbedoDarken = 0.85f;  // albedo multiplier inside puddles
-  float puddleWaveStrength = 0.4f;   // micro-wave normal wobble amplitude inside puddles (0 = flat mirror)
-  float puddleWaveScale = 1.0f;      // puddle micro-wave size multiplier (larger = bigger, sparser waves)
+  float puddleCellSize = 2.8f;       // meters
+  float puddleCoverage = 0.7f;
+  float puddleMicroAmplitude = 0.03f; // meters
+  float puddleAlbedoDarken = 0.25f;
+  float puddleWaveStrength = 0.08f;
+  float puddleWaveScale = 1.0f;
 
   float rippleGridScale = 8.5f;      // cells per world unit
   float rippleSpawnPeriod = 1.5f;    // seconds between drops per cell
@@ -69,20 +69,43 @@ struct WetnessArgs {
   float shoreOriginY = 0.0f;
   float shoreInvSpacing = 0.0f;
   float shoreStrength = 0.0f;
+
+  float puddleDepressionWeight = 0.3f;
+  float puddleSlopeLimit = 0.053f;
+  float puddleSlopeFeather = 2.4f;
+  float puddleEdgeWidth = 0.025f;
+  float puddleShoreWidth = 0.02f;
+  float puddleShoreDarkening = 0.8f;
+  float puddleRoughness = 0.035f;
+  float puddleOcclusion = 0.5f;
+  float puddleDetailDistance = 400.0f;
+  float rainIntensity = 1.0f;
+  float rainOcclusionMinHeight = 2.5f;
+  float rainOcclusionFeather = 1.5f;
+  uint rainMapEnabled = 0;
+  uint rainMapResolution = 512;
+  float rainMapOriginX = 0.0f;
+  float rainMapOriginY = 0.0f;
+  float rainMapExtent = 128.0f;
+  float rainMapTexel = 0.25f;
+  float rainMapTraceTop = 0.0f;
+  float rainMapTraceBottom = 0.0f;
 };
 
 #ifndef __cplusplus
 float resolveWeatherWetness(uint tag, WetnessArgs wetness) {
-
-  return lerp(float(tag & 0xFFu) * (1.0f / 255.0f), saturate(wetness.weatherWetness),
+  const float weatherAmount = (tag >> 24) == 2u ? wetness.weatherWetness : wetness.rainIntensity;
+  return lerp(float(tag & 0xFFu) * (1.0f / 255.0f), saturate(weatherAmount),
               saturate(float(wetness.weatherWetnessActive) * (1.0f / 65535.0f)));
 }
 #endif
 
 #ifdef __cplusplus
 static_assert((sizeof(WetnessArgs) & 15) == 0);
-static_assert(sizeof(WetnessArgs) == 144); // Shared C++/Slang frame-constant layout.
+static_assert(sizeof(WetnessArgs) == 224); // Shared C++/Slang frame-constant layout.
 
+#include <algorithm>
+#include <cmath>
 #include "rtx_option.h"
 
 namespace dxvk {
@@ -101,12 +124,31 @@ struct WetnessOptions {
   RTX_OPTION("rtx.wetness", float, rainEndRoughness, 0.75f, "Absolute opaque roughness target while rain is ending.");
   RTX_OPTION("rtx.wetness", float, rainEndTransitionSeconds, 15.0f, "Seconds to blend into and out of the rain-ending roughness override.");
 
-  RTX_OPTION("rtx.wetness", float, puddleNoiseScale, 0.045f, "Puddle noise frequency (world). Larger = smaller puddles.");
-  RTX_OPTION("rtx.wetness", float, puddleThresholdBase, 0.56f, "Puddle noise threshold when dry. Lower = more puddles.");
-  RTX_OPTION("rtx.wetness", float, puddleThresholdSpan, 0.4f, "How much full wetness lowers the puddle threshold.");
-  RTX_OPTION("rtx.wetness", float, puddleAlbedoDarken, 0.85f, "Albedo multiplier inside puddles (water absorbs light).");
-  RTX_OPTION("rtx.wetness", float, puddleWaveStrength, 0.4f, "Puddle micro-wave normal wobble amplitude. 0 = dead-flat mirror.");
-  RTX_OPTION("rtx.wetness", float, puddleWaveScale, 1.0f, "Puddle micro-wave size multiplier. Larger = bigger, sparser waves.");
+  RTX_OPTION("rtx.wetness", float, puddleCellSize, 2.8f, "Ground unevenness cell size in meters. Larger cells form broader puddles.");
+  RTX_OPTION("rtx.wetness", float, puddleCoverage, 0.7f, "Water level at full wetness, from 0 to 1. Higher values flood more of the ground unevenness.");
+  RTX_OPTION("rtx.wetness", float, puddleMicroAmplitude, 0.03f, "Height amplitude of small ground unevenness in meters.");
+  RTX_OPTION("rtx.wetness", float, puddleAlbedoDarken, 0.25f, "Albedo multiplier reached under water at 2 cm depth.");
+  RTX_OPTION("rtx.wetness", float, puddleWaveStrength, 0.08f, "Standing-water wind ripple normal strength. 0 disables wind ripples.");
+  RTX_OPTION("rtx.wetness", float, puddleWaveScale, 1.0f, "Wind ripple wavelength multiplier. 1 starts at a 12 cm wavelength.");
+  RTX_OPTION("rtx.wetness", float, puddleDepressionWeight, 0.3f, "Weight of measured ground depressions in the puddle water level.");
+  RTX_OPTION("rtx.wetness", float, puddleSlopeLimit, 0.053f, "Ground grade at which puddles start to drain. 0.053 is a 5.3 percent grade.");
+  RTX_OPTION("rtx.wetness", float, puddleSlopeFeather, 2.4f, "Slope fade width as a multiple of the slope limit.");
+  RTX_OPTION("rtx.wetness", float, puddleEdgeWidth, 0.025f, "Water depth in meters over which a puddle edge becomes fully covered.");
+  RTX_OPTION("rtx.wetness", float, puddleShoreWidth, 0.02f, "Height in meters of the damp band above the puddle water line.");
+  RTX_OPTION("rtx.wetness", float, puddleShoreDarkening, 0.8f, "Albedo multiplier of the damp puddle shore.");
+  RTX_OPTION("rtx.wetness", float, puddleRoughness, 0.035f, "Roughness of standing water, from 0 to 1.");
+  RTX_OPTION("rtx.wetness", float, puddleOcclusion, 0.5f, "How strongly static overhead cover suppresses puddles, from 0 to 1.");
+  RTX_OPTION("rtx.wetness", float, puddleDetailDistance, 400.0f, "Maximum puddle shading distance in meters.");
+  RTX_OPTION("rtx.wetness", bool, rainMapEnabled, false, "Measure static ground height, depressions, slope and rain cover around the camera. Puddles fade out at the map boundary. Requires ray queries each frame.");
+  RTX_OPTION("rtx.wetness", uint32_t, rainMapResolution, 512, "Rain map texels per side, from 64 to 2048. Increasing resolution increases ray queries and memory use.");
+  RTX_OPTION("rtx.wetness", float, rainMapExtent, 128.0f, "Side length of the rain map in meters. Larger extents cover more ground at lower spatial precision.");
+  RTX_OPTION("rtx.wetness", float, rainMapTraceAbove, 100.0f, "Rain map trace height above the camera, in meters.");
+  RTX_OPTION("rtx.wetness", float, rainMapTraceBelow, 60.0f, "Rain map trace depth below the camera, in meters.");
+  RTX_OPTION("rtx.wetness", float, rainOcclusionMinHeight, 2.5f, "Minimum cover height above ground in meters. Lower obstacles do not act as roofs.");
+  RTX_OPTION("rtx.wetness", float, rainOcclusionFeather, 1.5f, "Rain cover blur radius in meters, capped at 12 map texels.");
+  RTX_OPTION("rtx.wetness", bool, surfaceRetentionEnabled, false, "Keep authored surface wetness after rain stops, then dry it gradually. Rain impacts continue to follow the current rainfall.");
+  RTX_OPTION("rtx.wetness", float, surfaceHoldSeconds, 90.0f, "Seconds surface wetness is held after rain stops.");
+  RTX_OPTION("rtx.wetness", float, surfaceDrySeconds, 120.0f, "Seconds to dry retained surface wetness after the hold period.");
 
   RTX_OPTION("rtx.wetness", float, rippleGridScale, 8.5f, "Road ripple cells per world unit. Higher = more, smaller rings.");
   RTX_OPTION("rtx.wetness", float, rippleSpawnPeriod, 1.5f, "Seconds between raindrops per road cell. Higher = sparser.");
@@ -136,12 +178,21 @@ public:
     args.nonRoadRoughnessOnly = nonRoadRoughnessOnly();
     args.respectNoRainZones = respectNoRainZones();
     args.rainEndRoughness = rainEndRoughness();
-    args.puddleNoiseScale = puddleNoiseScale();
-    args.puddleThresholdBase = puddleThresholdBase();
-    args.puddleThresholdSpan = puddleThresholdSpan();
+    args.puddleCellSize = puddleCellSize();
+    args.puddleCoverage = puddleCoverage();
+    args.puddleMicroAmplitude = puddleMicroAmplitude();
     args.puddleAlbedoDarken = puddleAlbedoDarken();
     args.puddleWaveStrength = puddleWaveStrength();
     args.puddleWaveScale = puddleWaveScale();
+    args.puddleDepressionWeight = puddleDepressionWeight();
+    args.puddleSlopeLimit = puddleSlopeLimit();
+    args.puddleSlopeFeather = puddleSlopeFeather();
+    args.puddleEdgeWidth = puddleEdgeWidth();
+    args.puddleShoreWidth = puddleShoreWidth();
+    args.puddleShoreDarkening = puddleShoreDarkening();
+    args.puddleRoughness = puddleRoughness();
+    args.puddleOcclusion = puddleOcclusion();
+    args.puddleDetailDistance = puddleDetailDistance();
 
     args.rippleGridScale = rippleGridScale();
     args.rippleSpawnPeriod = rippleSpawnPeriod();
@@ -169,6 +220,28 @@ public:
     args.shoreInvSpacing = 0.0f;
     args.shoreStrength = 0.0f;
   }
+
+  static void sanitizePuddleParams(WetnessArgs& args) {
+    const auto finite = [](float value, float fallback, float low, float high) {
+      return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+    };
+    args.puddleCellSize = finite(args.puddleCellSize, 2.8f, 0.01f, 1000.0f);
+    args.puddleCoverage = finite(args.puddleCoverage, 0.7f, 0.0f, 1.0f);
+    args.puddleMicroAmplitude = finite(args.puddleMicroAmplitude, 0.03f, 0.0001f, 1.0f);
+    args.puddleDepressionWeight = finite(args.puddleDepressionWeight, 0.3f, 0.0f, 10.0f);
+    args.puddleSlopeLimit = finite(args.puddleSlopeLimit, 0.053f, 0.0001f, 1.0f);
+    args.puddleSlopeFeather = finite(args.puddleSlopeFeather, 2.4f, 0.001f, 10.0f);
+    args.puddleEdgeWidth = finite(args.puddleEdgeWidth, 0.025f, 0.0001f, 1.0f);
+    args.puddleShoreWidth = finite(args.puddleShoreWidth, 0.02f, 0.0001f, 1.0f);
+    args.puddleShoreDarkening = finite(args.puddleShoreDarkening, 0.8f, 0.0f, 1.0f);
+    args.puddleAlbedoDarken = finite(args.puddleAlbedoDarken, 0.25f, 0.0f, 1.0f);
+    args.puddleRoughness = finite(args.puddleRoughness, 0.035f, 0.0f, 1.0f);
+    args.puddleOcclusion = finite(args.puddleOcclusion, 0.5f, 0.0f, 1.0f);
+    args.puddleDetailDistance = finite(args.puddleDetailDistance, 400.0f, 0.0f, 10000.0f);
+    args.puddleWaveStrength = finite(args.puddleWaveStrength, 0.08f, 0.0f, 2.0f);
+    args.puddleWaveScale = finite(args.puddleWaveScale, 1.0f, 0.01f, 100.0f);
+  }
+
 };
 
 } // namespace dxvk

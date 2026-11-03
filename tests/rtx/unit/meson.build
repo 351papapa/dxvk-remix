@@ -220,4 +220,9 @@ exe = executable('test_retained_compat_policy', files('test_retained_compat_poli
 test('test_retained_compat_policy', exe, env: test_env)
 tests += exe
 
+exe = executable('test_wetness_retention', files('test_wetness_retention.cpp'),
+  dependencies : test_unit_deps, win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_wetness_retention', exe, env: test_env)
+tests += exe
+
 alias_target('unit_tests', tests)

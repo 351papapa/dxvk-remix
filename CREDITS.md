@@ -156,3 +156,16 @@ were adapted from the same local runtime and its saved working tree. GPU top-K
 selection, typed weather ownership and integration with the v2 batched instance
 and cache lifetime paths are local adaptations. Existing NVIDIA MIT and DXVK
 zlib/libpng notices are retained; no additional third-party library is bundled.
+
+
+## Terrain puddles and rain map
+
+The rain-map tracing and relief passes, puddle water-level formulation, damp shore
+and directional wind ripples are adapted from xoxor4d/dxvk-remix, game/gta4 commit
+7f5210e1a7cd1356bf0271230f82e6132b08ad8c. These fork-owned files are distributed
+under that repository's zlib/libpng license, reproduced in ThirdPartyLicenses.txt.
+The local adaptation uses device-owned resources, Y/Z-up and meter conversion,
+VC surface classifications and the existing weather/no-rain-zone integration.
+The existing NVIDIA MIT notices and unmodified procedural-noise implementation
+are retained. No code from the unlicensed gta4-rtx plugin is copied. Surface
+wetness retention is an independently implemented state machine.

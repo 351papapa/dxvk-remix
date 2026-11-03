@@ -1354,7 +1354,7 @@ namespace dxvk {
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
       blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
-      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend, gamePreset->wetness.values[1].has_value());
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
       s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), gameBlend);
       s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), gameBlend);
       s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), gameBlend);
@@ -1387,7 +1387,7 @@ namespace dxvk {
     }
     s.elapsed += std::max(deltaSeconds, 0.0f);
     const float t = s.duration > 0.0f ? s.elapsed / s.duration : 1.0f;
-    s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t), target && target->wetness.values[1].has_value());
+    s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t));
     s.waterCurrent = WaterWeatherState::blend(s.waterFrom, waterGoal, smoothstep01(t));
     s.precipitationCurrent = PrecipitationPreset::blend(s.precipitationFrom, precipitationGoal, smoothstep01(t));
     s.volumetricCurrent = VolumetricWeatherPreset::blend(s.volumetricFrom, volumetricGoal, smoothstep01(t));

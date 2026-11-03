@@ -57,6 +57,7 @@
 #include "rtx_render/rtx_initializer.h"
 #include "rtx_render/rtx_scene_manager.h"
 #include "rtx_render/rtx_water.h"
+#include "rtx_render/rtx_rain_map.h"
 #include "rtx_render/rtx_precipitation.h"
 #include "rtx_render/rtx_screenshot.h"
 #include "rtx_render/rtx_reflex.h"
@@ -165,6 +166,8 @@ namespace dxvk {
       return m_numosWeather.get();
     }
     // NV-DXVK end
+
+    RtxRainMap& metaRainMap() { return m_rainMap.get(m_device); }
 
     WaterSystem& metaWater() { return m_water.get(m_device); }
 
@@ -436,6 +439,7 @@ namespace dxvk {
     Active<RtxGlobalVolumetrics>            m_globalVolumetrics;
     Active<RtxNumos>                        m_numos;  // NV-DXVK: NUMOS sky provider
     Lazy<WaterSystem>                      m_water;
+    Lazy<RtxRainMap>                       m_rainMap;
     Lazy<PrecipitationSystem>              m_precipitation;
     Active<NumosWeather>                    m_numosWeather;  // NV-DXVK: its weather presets
     Active<SparseRendering>                 m_sparseRendering;

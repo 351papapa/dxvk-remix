@@ -191,6 +191,8 @@ layout(binding = BINDING_SHORE_WETNESS_FIELD)
 Texture2D<float4> shoreWetnessField;
 layout(binding = BINDING_SHORE_WETNESS_HEIGHT)
 Texture2D<float4> shoreWetnessHeight;
+layout(binding = BINDING_RAIN_MAP)
+Texture2D<float4> wetnessRainMap;
 
 float beachWetness(float3 position) {
   if (cb.wetnessArgs.shoreStrength <= 0.0f) { return 0.0f; }

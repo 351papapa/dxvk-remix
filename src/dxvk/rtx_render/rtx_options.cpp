@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_options.h"
+#include "rtx/pass/wetness_args.h"
 
 #include <filesystem>
 #include <mutex>
@@ -572,6 +573,9 @@ namespace dxvk {
     }
 
     if (graphicsPreset() == GraphicsPreset::Ultra) {
+      WetnessOptions::rainMapResolutionObject().setDeferred(512u);
+      WetnessOptions::rainMapExtentObject().setDeferred(128.0f);
+      WetnessOptions::puddleDetailDistanceObject().setDeferred(400.0f);
       pathMinBounces.setDeferred(1);
       pathMaxBounces.setDeferred(4);
       enableTransmissionApproximationInIndirectRays.setDeferred(false);
@@ -597,6 +601,9 @@ namespace dxvk {
       SparseRendering::Options::enableSparseRendering.setDeferred(false);
 
     } else if (graphicsPreset() == GraphicsPreset::High) {
+      WetnessOptions::rainMapResolutionObject().setDeferred(512u);
+      WetnessOptions::rainMapExtentObject().setDeferred(128.0f);
+      WetnessOptions::puddleDetailDistanceObject().setDeferred(400.0f);
       // High uses upstream RTX Remix's Ultra path settings with a lighter SHaRC update than Ultra.
       pathMinBounces.setDeferred(1);
       pathMaxBounces.setDeferred(4);
@@ -625,6 +632,9 @@ namespace dxvk {
       applySparseRenderingPreset(0.357f, 0.69f, true);
 
     } else if (graphicsPreset() == GraphicsPreset::Medium) {
+      WetnessOptions::rainMapResolutionObject().setDeferred(512u);
+      WetnessOptions::rainMapExtentObject().setDeferred(128.0f);
+      WetnessOptions::puddleDetailDistanceObject().setDeferred(400.0f);
       DxvkDLFG::litePreset.setDeferred(true);
 
       lowGraphicsPresetCommonSettings();
@@ -641,6 +651,9 @@ namespace dxvk {
       SparseRendering::Options::enableSparseRendering.setDeferred(isRayReconstruction);
       applySparseRenderingPreset(0.228f, 0.83f, true);
     } else if (graphicsPreset() == GraphicsPreset::Low) {
+      WetnessOptions::rainMapResolutionObject().setDeferred(512u);
+      WetnessOptions::rainMapExtentObject().setDeferred(128.0f);
+      WetnessOptions::puddleDetailDistanceObject().setDeferred(400.0f);
       DxvkDLFG::litePreset.setDeferred(true);
 
       lowGraphicsPresetCommonSettings();

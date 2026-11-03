@@ -20,7 +20,13 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #pragma once
-#include "rtx/external/simplex_noise.slangh"
+#include "rtx/utility/procedural_noise.slangh"
+#include "rtx/pass/instance_definitions.h"
+
+// Puddle water level, rain-map sampling and wind ripples are adapted from xoxor4d/dxvk-remix,
+// commit 7f5210e1a7cd1356bf0271230f82e6132b08ad8c, with world-unit and surface-tag integration.
+// The original zlib/libpng license is retained in ThirdPartyLicenses.txt.
+
 vec2 wetHash22(vec2 p)
 {
   const vec2 k1 = vec2(127.1f, 311.7f);
@@ -34,11 +40,150 @@ float wetUpNormal(float3 normal) { return cb.isZUp ? normal.z : normal.y; }
 float2 wetGroundPosition(float3 position) { return cb.isZUp ? position.xy : position.xz; }
 float3 wetWorldVector(float3 value) { return cb.isZUp ? value : value.xzy; }
 
-// Shared by wet surface shading and contact-particle spawning.
+bool wetStaticGround(Surface surface) {
+  const uint wetClass = surface.wetnessTag >> 24;
+  return surface.isStatic && surface.isFullyOpaque && !surface.isParticle && !surface.isAnimatedWater
+    && !surface.isDecal && !surface.isPlayerModel && wetClass != 1u && wetClass != 3u;
+}
+
+float wetRainIntensity(uint tag) {
+  return lerp(float(tag & 0xFFu) * (1.0f / 255.0f), saturate(cb.wetnessArgs.rainIntensity),
+    saturate(float(cb.wetnessArgs.weatherWetnessActive) * (1.0f / 65535.0f)));
+}
+
+float4 wetNoise(float2 groundMeters, float frequency, float slice) {
+  return valueNoiseLutSample<false>(float3(groundMeters * frequency, slice));
+}
+
+float4 wetSampleRainMap(float2 ground, out float weight) {
+  weight = 0.0f;
+  if (!cb.wetnessArgs.rainMapEnabled) {
+    return float4(0.0f);
+  }
+  const WetnessArgs args = cb.wetnessArgs;
+  const float2 uv = (ground - float2(args.rainMapOriginX, args.rainMapOriginY)) / args.rainMapExtent;
+  const float margin = 1.0f / float(args.rainMapResolution);
+  const float2 fromCenter = abs(uv - 0.5f);
+  const float fade = 1.0f - smoothstep(0.4f, 0.5f - margin, max(fromCenter.x, fromCenter.y));
+  if (fade <= 0.0f) {
+    return float4(0.0f);
+  }
+  const float4 value = wetnessRainMap.SampleLevel(AtmosphereSkyViewSampler, uv, 0);
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  weight = value.y > args.rainMapTraceBottom - 0.5f * units ? fade : 0.0f;
+  return value;
+}
+
+float wetRainExposureRay(float3 position) {
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  RayDesc ray;
+  ray.Origin = position;
+  ray.Direction = wetWorldVector(float3(0.0f, 0.0f, 1.0f));
+  ray.TMin = max(cb.wetnessArgs.rainOcclusionMinHeight, 0.01f * units);
+  ray.TMax = max(80.0f * units, ray.TMin + 0.01f * units);
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<0> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      continue;
+    }
+    const uint id = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+    if (id < cb.surfaceCount && wetStaticGround(surfaces[nonuniformEXT(id)])) {
+      query.Abort();
+      return 0.0f;
+    }
+  }
+  return 1.0f;
+}
+
+struct WetPuddleSample {
+  float coverage;
+  float depth;
+  float shore;
+  float rainExposure;
+};
+
+// Both surface shading and contact particles use the same height, wetness and exposure calculation.
+WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStrength) {
+  WetPuddleSample result = {};
+  const WetnessArgs args = cb.wetnessArgs;
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  const float cameraDistance = length(position - cameraGetWorldPosition(cb.camera));
+  wetStrength = saturate(wetStrength);
+  if (wetStrength <= 0.0f || zNormal <= 0.95f || cameraDistance > args.puddleDetailDistance * units) {
+    return result;
+  }
+
+  const float2 ground = wetGroundPosition(position);
+  float rainMapWeight;
+  const float4 rainMap = wetSampleRainMap(ground, rainMapWeight);
+  const bool onMappedGround = rainMapWeight > 0.5f && abs(rainMap.y - wetUpNormal(position)) < 0.5f * units;
+  const float mapWeight = args.rainMapEnabled ? rainMapWeight : 1.0f;
+  result.rainExposure = 1.0f;
+  if (onMappedGround) {
+    result.rainExposure = 1.0f - saturate(rainMap.x);
+  } else if (cameraDistance < 120.0f * units) {
+    // A bridge deck must not inherit the street's relief or overhead cover.
+    result.rainExposure = lerp(wetRainExposureRay(position), 1.0f,
+      smoothstep(60.0f * units, 120.0f * units, cameraDistance));
+  }
+  if (mapWeight <= 0.0f) {
+    return result;
+  }
+
+  const float2 groundMeters = ground / units;
+  const float frequency = 1.0f / max(args.puddleCellSize, 0.01f);
+  const float n1 = wetNoise(groundMeters, frequency, 53.0f).x;
+  const float n2 = wetNoise(groundMeters, frequency * 2.7f, 61.0f).x;
+  const float amplitude = max(args.puddleMicroAmplitude, 0.0001f) * units;
+  const float micro = (n1 + 0.35f * n2) * (amplitude / 1.35f);
+  const float depression = onMappedGround ? max(rainMap.z, 0.0f) * args.puddleDepressionWeight : 0.0f;
+  const float slopeFade = onMappedGround
+    ? 1.0f - smoothstep(args.puddleSlopeLimit, args.puddleSlopeLimit * (1.0f + args.puddleSlopeFeather), rainMap.w)
+    : 1.0f;
+  const float terrain = micro - depression;
+  const float level = amplitude * (2.0f * saturate(args.puddleCoverage) * wetStrength - 1.0f);
+  const float depth = level - terrain;
+  const float exposure = smoothstep(0.95f, 0.98f, zNormal) * slopeFade * mapWeight
+    * lerp(1.0f, result.rainExposure, saturate(args.puddleOcclusion));
+  const float submerged = smoothstep(0.0f, max(args.puddleEdgeWidth, 0.0001f) * units, depth);
+
+  result.coverage = submerged * exposure;
+  result.depth = max(depth, 0.0f);
+  result.shore = smoothstep(-max(args.puddleShoreWidth, 0.0001f) * units, 0.0f, depth)
+    * (1.0f - submerged) * exposure * wetStrength;
+  return result;
+}
+
 float wetPuddleCoverage(float3 position, float zNormal, float wetStrength) {
-  float horizontalFactor = saturate((zNormal - 0.78f) / 0.2f);
-  float scale = cb.wetnessArgs.puddleNoiseScale;
-  float noise = saturate(simplexNoise3D(position * scale) + simplexNoise3D(position * scale * 2.3f) * 0.4f);
-  float threshold = cb.wetnessArgs.puddleThresholdBase - wetStrength * cb.wetnessArgs.puddleThresholdSpan;
-  return pow(smoothstep(threshold - 0.075f, threshold + 0.075f, noise), 1.5f) * wetStrength * horizontalFactor;
+  return wetEvaluatePuddle(position, zNormal, wetStrength).coverage;
+}
+
+float3 wetWindRipples(float3 position, float cameraDistance) {
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  const float2 groundMeters = wetGroundPosition(position) / units;
+  const float t = cb.timeSinceStartSeconds * 2.5f;
+  const float shortest = 0.12f * max(cb.wetnessArgs.puddleWaveScale, 0.01f);
+  const float footprint = cameraDistance / units * 0.004f;
+  float2 slope = float2(0.0f);
+  float amplitude = 1.0f;
+  float wavelength = shortest;
+  float total = 0.0f;
+  [unroll]
+  for (int i = 0; i < 6; ++i) {
+    const float angle = 0.7f + float(i) * 2.39996f;
+    const float2 direction = float2(cos(angle), sin(angle));
+    const float speed = 2.6f * sqrt(wavelength / shortest);
+    const float visible = saturate(1.0f - footprint / wavelength);
+    slope += direction * (amplitude * visible
+      * cos(dot(groundMeters, direction) * (6.2831853f / wavelength) + t * speed + float(i) * 1.7f));
+    total += amplitude;
+    amplitude *= 0.78f;
+    wavelength *= 1.37f;
+  }
+  slope /= total;
+  const float gust = saturate(wetNoise(groundMeters + t * 0.3f, 0.6f, 71.0f).x * 0.5f + 0.5f);
+  const float envelope = lerp(0.52f, 1.0f, gust);
+  return wetWorldVector(float3(-slope * (cb.wetnessArgs.puddleWaveStrength * envelope), 0.0f));
 }

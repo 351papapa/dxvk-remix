@@ -1,0 +1,16 @@
+// Adapted from xoxor4d/dxvk-remix, commit 7f5210e1a7cd1356bf0271230f82e6132b08ad8c.
+// Modified for configurable world orientation and units. See ThirdPartyLicenses.txt for the original zlib/libpng license.
+#pragma once
+
+#include "rtx/pass/rain_map/rain_map_binding_indices.h"
+
+// Lowest opaque static height and cover height, measured on the world up axis.
+layout(binding = RAIN_MAP_BINDING_HEIGHT_OUTPUT, rg32f)
+RWTexture2D<float2> rainMapHeightOutput;
+
+layout(binding = RAIN_MAP_BINDING_HEIGHT_INPUT)
+Texture2D<float2> rainMapHeightInput;
+
+// Rain cover, ground height, depression in world units, and dimensionless slope.
+layout(binding = RAIN_MAP_BINDING_MAP_OUTPUT, rgba32f)
+RWTexture2D<float4> rainMapOutput;

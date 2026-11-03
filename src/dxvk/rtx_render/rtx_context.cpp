@@ -781,6 +781,9 @@ namespace dxvk {
         recordGpuStageTiming("RaytraceArgsAfterAtmosphere");
         preGateFlush(2);
 
+        getCommonObjects()->metaRainMap().dispatch(*this, rtOutput);
+        recordGpuStageTiming("RainMap");
+
         // Volumetric Lighting
         dispatchVolumetrics(rtOutput);
         recordGpuStageTiming("Volumetrics");
@@ -1967,6 +1970,13 @@ namespace dxvk {
     getSceneManager().getWindowLights().fillShaderParams(constants.windowLightArgs);
     WetnessOptions::fillShaderParams(constants.wetnessArgs);
     weather.fillWetnessArgs(constants.wetnessArgs);
+    WetnessOptions::sanitizePuddleParams(constants.wetnessArgs);
+    constants.wetnessArgs.rainIntensity = constants.wetnessArgs.weatherWetness;
+    const bool retainWetness = WetnessOptions::enabled() && WetnessOptions::surfaceRetentionEnabled()
+      && constants.wetnessArgs.weatherWetnessActive == 65535u;
+    constants.wetnessArgs.weatherWetness = m_surfaceWetness.update(constants.wetnessArgs.rainIntensity,
+      GlobalTime::get().deltaTime(), WetnessOptions::surfaceHoldSeconds(), WetnessOptions::surfaceDrySeconds(), retainWetness);
+    getCommonObjects()->metaRainMap().prepare(*this, constants);
     const float authoredWetnessWeight = std::clamp(float(constants.wetnessArgs.weatherWetnessActive) / 65535.0f, 0.0f, 1.0f);
     constants.wetnessArgs.contactWetness = 1.0f + (constants.wetnessArgs.weatherWetness - 1.0f) * authoredWetnessWeight;
     getCommonObjects()->metaWater().publishControls(camera);
@@ -2161,6 +2171,9 @@ namespace dxvk {
     bindResourceBuffer(BINDING_SURFACE_DATA_BUFFER, surfaces != nullptr ? DxvkBufferSlice(surfaces) : DxvkBufferSlice());
     bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, materials != nullptr ? DxvkBufferSlice(materials) : DxvkBufferSlice());
     bindResourceBuffer(BINDING_WETNESS_ZONES, m_wetnessZoneBuffer != nullptr ? DxvkBufferSlice(m_wetnessZoneBuffer) : DxvkBufferSlice());
+    bindResourceView(BINDING_RAIN_MAP, getCommonObjects()->metaRainMap().view(*this), nullptr);
+    bindResourceSampler(BINDING_ATMOSPHERE_SKY_VIEW_SAMPLER,
+      getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
     return constants != nullptr && surfaces != nullptr && materials != nullptr;
   }
 
@@ -2217,6 +2230,7 @@ namespace dxvk {
     // Sky provider (NUMOS) outputs, slots 200-213.
     getCommonObjects()->metaNumos().bindCommonResources(*this);
     getCommonObjects()->metaWater().bindShoreWetnessResources(this);
+    bindResourceView(BINDING_RAIN_MAP, getCommonObjects()->metaRainMap().view(*this), nullptr);
   }
 
   void RtxContext::bindResourceView(const uint32_t slot, const Rc<DxvkImageView>& imageView, const Rc<DxvkBufferView>& bufferView)
