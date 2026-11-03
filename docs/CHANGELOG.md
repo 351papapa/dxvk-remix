@@ -1,5 +1,15 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Validated configured runtime build
+
+Adds a repository-owned build entry for the configured Release runtime. It checks
+physical source identity, preserves byte-identical G-buffer shader data through
+verified COFF generation, and validates package dependencies before updating the
+local distribution. The existing configuration and supporting package are required;
+this is not a cold-install or game-deployment workflow. No renderer options,
+optimization flags, or shader algorithms change. Commits: this change.
+See [build instructions](ValidatedRuntimeBuild.md).
+
 ## 2026-11-04 — Preserve legacy mesh identity in API captures
 
 USD captures use each legacy API surface's original draw hash, matching runtime
