@@ -353,6 +353,66 @@ void loadInputRadiance(
   }
 }
 
+// This bounds only the first straight camera-water segment. PSR reflection/refraction
+// continues on a bent path that the composite's virtual hit distance cannot describe.
+// Invalid/missing planes retain the native volume behavior; no scene-specific fallback.
+struct WaterViewSegment
+{
+  bool primaryMiss;
+  float hitDistance;
+  bool empty;
+};
+
+WaterViewSegment waterViewSegmentLength(
+  bool primaryMiss, float hitDistance, vec3 origin, vec3 viewDir)
+{
+  WaterViewSegment segment;
+  segment.primaryMiss = primaryMiss;
+  segment.hitDistance = hitDistance;
+  segment.empty = false;
+
+  if (!cb.cameraWaterSurfaceActive ||
+      !isfinite(cb.cameraWaterSurfaceHeight) || !all(isfinite(origin)) || !all(isfinite(viewDir)) ||
+      (!primaryMiss && (!isfinite(hitDistance) || hitDistance < 0.0f)))
+  {
+    return segment;
+  }
+
+  // A camera on/above the plane has no initial underwater segment when looking out.
+  // An above-plane camera looking down may enter water later, but that is not the
+  // camera's initial medium segment and must not fill the intervening air with water.
+  const float depth = cb.cameraWaterSurfaceHeight - origin.z;
+  if (!isfinite(depth))
+  {
+    return segment;
+  }
+  if (depth < 0.0f || (depth == 0.0f && viewDir.z >= 0.0f))
+  {
+    segment.primaryMiss = false;
+    segment.hitDistance = 0.0f;
+    segment.empty = true;
+    return segment;
+  }
+
+  // Downward and parallel rays do not leave the water half-space. Preserve their
+  // native finite-hit or miss behavior, including the native far attenuation tail.
+  if (viewDir.z <= 0.0f)
+  {
+    return segment;
+  }
+
+  const float exitDistance = depth / viewDir.z;
+  if (isfinite(exitDistance) && (primaryMiss || exitDistance < hitDistance))
+  {
+    // The SDK ignores hitDistance on a miss and appends infinite attenuation.
+    // A finite water exit therefore must also turn the volume query into a hit.
+    segment.primaryMiss = false;
+    segment.hitDistance = exitDistance;
+    segment.empty = exitDistance == 0.0f;
+  }
+  return segment;
+}
+
 vec3 integrateVolumetricTransmittance(
   inout RNG randomState,
   const VolumeArgs volumeArgs,
@@ -475,14 +535,19 @@ void applyVolumetricLighting(
   const bool fullRateVolumetrics = primaryMiss
     ? !bool(cb.sparseRenderingArgs.enableSparseVolumetricsPrimaryMiss)
     : !bool(cb.sparseRenderingArgs.enableSparseVolumetricsPrimaryHit);
+  const WaterViewSegment viewSegment = waterViewSegmentLength(
+    primaryMiss, viewDistance, cameraGetWorldPosition(cb.camera), primaryRayDirections.worldDirection);
   if (pixelIsActive || fullRateVolumetrics)
   {
     vec2 volumeUV = cameraPixelCoordinateToScreenUV(cb.camera, pixelCoordinate);
     volumeUV.x /= cb.volumeArgs.numFroxelVolumes;
-    integrateVolumetricNEE(
-      randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
-      cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, primaryMiss, cameraGetWorldPosition(cb.camera), viewDistance, primaryRayDirections.worldDirection,
-      volumetricPreintegratedRadiance, volumeAttenuation);
+    if (!viewSegment.empty)
+    {
+      integrateVolumetricNEE(
+        randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
+        cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, viewSegment.primaryMiss, cameraGetWorldPosition(cb.camera), viewSegment.hitDistance, primaryRayDirections.worldDirection,
+        volumetricPreintegratedRadiance, volumeAttenuation);
+    }
     controlMaskVolumeAttenuation = volumeAttenuation;
   }
   else
@@ -493,13 +558,13 @@ void applyVolumetricLighting(
     if (cb.enableDlssNrVolumetricControlMask || denseSky)
     {
       RNG transmittanceRandomState = randomState;
-      const vec3 transmittance = integrateVolumetricTransmittance(
+      const vec3 transmittance = viewSegment.empty ? vec3(1.0f) : integrateVolumetricTransmittance(
         transmittanceRandomState,
         cb.volumeArgs,
         cb.timeSinceStartMS,
-        primaryMiss,
+        viewSegment.primaryMiss,
         cameraGetWorldPosition(cb.camera),
-        viewDistance,
+        viewSegment.hitDistance,
         primaryRayDirections.worldDirection);
       controlMaskVolumeAttenuation = transmittance;
       if (denseSky)
@@ -585,10 +650,15 @@ void applyVolumetricLighting(
         volumeUV.x /= cb.volumeArgs.numFroxelVolumes;
         
         vec3 alphaVolumetricPreintegratedRadiance = vec3(0.0f, 0.0f, 0.0f);
-        integrateVolumetricNEE(
-          randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
-          cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, false, cameraGetWorldPosition(cb.camera), surface.hitT, primaryRayDirections.worldDirection,
-          alphaVolumetricPreintegratedRadiance, alphaVolumeAttenuation);
+        const WaterViewSegment alphaSegment = waterViewSegmentLength(
+          false, surface.hitT, cameraPosition, primaryRayDirections.worldDirection);
+        if (!alphaSegment.empty)
+        {
+          integrateVolumetricNEE(
+            randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
+            cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, alphaSegment.primaryMiss, cameraPosition, alphaSegment.hitDistance, primaryRayDirections.worldDirection,
+            alphaVolumetricPreintegratedRadiance, alphaVolumeAttenuation);
+        }
 
         alphaBlendOutput *= alphaVolumeAttenuation * (1 - backgroundAlpha);
         alphaBlendOutput += alphaVolumetricPreintegratedRadiance * (1 - backgroundAlpha);
@@ -717,6 +787,9 @@ void applyCloudComposite(
   float alphaBlendHitDistance,
   inout vec3 foregroundRadiance,
   float foregroundDepthKm,
+  // A PSR surface that path tracing already traversed. Screen clouds are added only
+  // when their depth places them in front of this surface.
+  float psrSurfaceDistance,
   // Reflected rays already received their cloud contribution during path tracing.
   bool performedPSR,
   out vec4 cloudOverPixel)
@@ -735,6 +808,23 @@ void applyCloudComposite(
     SkyApSampler, pixelCoordinate, primaryMiss, viewDistance, backgroundAlpha, radianceThroughput,
     radianceOutput, alphaBlendOutput, alphaBlendSurfaceValid, alphaBlendHitDistance,
     foregroundRadiance, foregroundDepthKm, performedPSR, cloudOverPixel);
+  if (performedPSR && psrSurfaceDistance > 0.0f) {
+    const vec2 depthKm = SkyCloudDepth.Load(int3(pixelCoordinate, 0)).xy;
+    const float entryKm = depthKm.x;
+    const float meanKm = depthKm.y;
+    const vec4 cloudSample = SkyCloudRender.Load(int3(pixelCoordinate, 0));
+    const vec4 cloud = vec4(cloudSample.rgb, 1.0f - cloudSample.a);
+    const float visibility = numosCloudDepthVisibility(
+      entryKm, meanKm, numosWorldToKm(psrSurfaceDistance, skyArgs), cloud.a);
+    if (visibility > 0.0f) {
+      // The cloud is in front of the PSR surface, so the surface's transmittance
+      // must not tint it.
+      radianceOutput = radianceOutput * (1.0f - cloud.a * visibility) +
+        cloud.rgb * visibility;
+      cloudOverPixel = vec4(
+        cloud.rgb * visibility, cloud.a * visibility);
+    }
+  }
   radianceOutput /= scale;
   alphaBlendOutput /= scale;
   foregroundRadiance /= scale;
@@ -999,14 +1089,21 @@ vec4 compositeResult(
   applySkyDisks(primaryMiss, geometryFlags.performedAnyPSR(), primaryRayDirections.worldDirection, primaryAttenuation,
                 radianceOutput);
 
+  const bool psrAerialSurface = kSkyProvider &&
+                                geometryFlags.performedAnyPSR() &&
+                                foreground.w > 0.0f &&
+                                cb.skyProviderActive != 0;
+  const float psrSurfaceDistance = psrAerialSurface ? numosKmToWorld(foreground.w, skyArgs) : 0.0f;
+
   // Clouds (NUMOS), before the aerial perspective: radianceOutput is the denoised surface radiance,
   // or on a sky pixel the cloudless sky the geometry resolver wrote (plus volumetrics). PSR pixels
-  // received their clouds along their paths while path tracing.
+  // receive path-traced clouds, plus screen clouds whose depth is in front of the PSR surface.
   vec4 cloudOverPixel;
   applyCloudComposite(
     pixelCoordinate, primaryMiss, viewDistance, backgroundAlpha, primaryAttenuation,
     radianceOutput, alphaBlendOutput, alphaBlendSurfaceValid, alphaBlendHitDistance,
     foregroundRadiance, separateForeground ? foreground.w : 0.0f,
+    psrSurfaceDistance,
     geometryFlags.performedAnyPSR(), cloudOverPixel);
   // The cloud's opacity over the opaque result. It is 0 at PSR pixels, whose clouds come from path tracing.
   cloudCoverage = cloudOverPixel.a;
@@ -1018,6 +1115,7 @@ vec4 compositeResult(
       pixelCoordinate, primaryMiss, viewDistance, backgroundAlpha, primaryAttenuation,
       radianceLayer, alphaBlendLayer, alphaBlendSurfaceValid, alphaBlendHitDistance,
       foregroundLayer, separateForeground ? foreground.w : 0.0f,
+      psrSurfaceDistance,
       geometryFlags.performedAnyPSR(), layerCloudOverPixel);
   }
 
@@ -1026,12 +1124,7 @@ vec4 compositeResult(
   //   * a path that hit something gets it at its own virtual distance, weighted by its own attenuation;
   //   * everything else gets it at the PSR surface's distance, where the air in front of the pixel ends.
   // The PSR surface distance comes from AtmosphereForeground.w, which the geometry resolver writes.
-  const bool psrAerialSurface = kSkyProvider &&
-                                geometryFlags.performedAnyPSR() &&
-                                foreground.w > 0.0f &&
-                                cb.skyProviderActive != 0;
   if (psrAerialSurface) {
-    const float psrSurfaceDistance = numosKmToWorld(foreground.w, skyArgs);
     const vec3 psrSurfaceVolumeAttenuation = calcVolumetricAttenuation(cb.volumeArgs, none, false,
       psrSurfaceDistance, cameraGetWorldPosition(cb.camera), primaryRayDirections.worldDirection);
 

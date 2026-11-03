@@ -1,4 +1,5 @@
 #include "rtx_water.h"
+#include "rtx_water_medium.h"
 #include "rtx_pre_exposure.h"
 #include "rtx_host_calibration.h"
 #include "rtx_context.h"
@@ -9,33 +10,28 @@
 #include "rtx/pass/water_caustics.h"
 #include <rtx_shaders/water_caustics.h>
 #include <rtx_shaders/water_caustics_local.h>
+#include <rtx_shaders/water_caustics_solar.h>
+#include <rtx_shaders/water_caustics_local_solar.h>
 #include <rtx_shaders/water_caustics_composite.h>
+#include <rtx_shaders/water_caustics_envelope.h>
 #include <algorithm>
 #include "../util/util_global_time.h"
-#include "rtx/pass/water_underwater.h"
-#include <rtx_shaders/water_underwater.h>
-#include <rtx_shaders/water_underwater_shafts.h>
-#include <rtx_shaders/water_underwater_shafts_scene.h>
 #include "rtx/pass/water_foam.h"
 #include <rtx_shaders/water_foam.h>
 #include <rtx_shaders/water_foam_update.h>
 #include <rtx_shaders/water_foam_update_culled.h>
 #include <cstddef>
 #include <cmath>
+#include <cstring>
 #include "rtx_water_foam_args.h"
 
 namespace dxvk {
 namespace {
-static_assert(sizeof(WaterUnderwaterArgs) == 64);
-static_assert(offsetof(WaterUnderwaterArgs, shaftStrength) == 12);
-static_assert(offsetof(WaterUnderwaterArgs, fogColor) == 16);
-static_assert(offsetof(WaterUnderwaterArgs, shaftScale) == 32);
-static_assert(offsetof(WaterUnderwaterArgs, shaftSamples) == 44);
-static_assert(offsetof(WaterUnderwaterArgs, debugMode) == 48);
-static_assert(offsetof(WaterUnderwaterArgs, sceneLightCandidates) == 52);
-static_assert(offsetof(WaterUnderwaterArgs, sceneLightStrength) == 56);
-static_assert(offsetof(WaterUnderwaterArgs, patternAvailable) == 60);
 static_assert(sizeof(WaterCausticsArgs) == 128);
+static_assert(offsetof(WaterCausticsArgs, solarContrast) == 124);
+static_assert(offsetof(WaterCausticsArgs, solarSurfaceHeight) == 16);
+static_assert(offsetof(WaterCausticsArgs, solarProjectionEnabled) == 20);
+static_assert(sizeof(WaterVolumeCausticsArgs) == 64);
 static_assert(offsetof(WaterCausticsArgs, poolScale) == 44,
   "WaterCausticsArgs::poolScale must reuse the old padding word at offset 44");
 static_assert(offsetof(WaterCausticsArgs, dispersion) == 120,
@@ -68,6 +64,93 @@ static_assert(offsetof(WaterFoamArgs, excludeCharacters) == 17 * sizeof(uint32_t
   "WaterFoamArgs::excludeCharacters must sit at byte offset 68");
 static_assert(offsetof(WaterFoamArgs, reset) == 14 * sizeof(uint32_t),
   "WaterFoamArgs::reset must stay at byte offset 56");
+struct WaterCausticSun {
+  uint32_t index = kNewLightIdx;
+  Vector3 direction;
+  Vector3 irradiance;
+};
+
+WaterCausticSun selectWaterCausticSun(RtxContext* ctx) {
+  WaterCausticSun sun {};
+  float strongestFlux = 0.0f;
+  for (const auto* light : ctx->getCommonObjects()->getSceneManager().getLightManager().getLinearizedLights()) {
+    if (light->getType() != RtLightType::Distant || light->getBufferIdx() == kNewLightIdx) { continue; }
+    const auto& distant = light->getDistantLight();
+    const auto direction = -distant.getDirection();
+    const auto radiance = distant.getRadiance();
+    const float height = RtxOptions::zUp() ? direction.z : direction.y;
+    const float flux = height * (0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z);
+    if (height <= 0.0f || !std::isfinite(flux) || flux <= strongestFlux) { continue; }
+    strongestFlux = flux;
+    sun.index = light->getBufferIdx();
+    sun.direction = direction;
+    // Integrating the projected distant-light cone gives pi times stored radiance.
+    const float encodeScale = 3.14159265f * PreExposure::get() * (light->isSkyProviderLight ? 1.0f : HostCalibration::lightScale());
+    sun.irradiance = radiance * encodeScale;
+  }
+  return sun;
+}
+
+float finiteCausticSetting(float value, float minimum, float maximum) {
+  return std::isfinite(value) ? std::clamp(value, minimum, maximum) : minimum;
+}
+
+class WaterCausticEnvelopeShader : public ManagedShader {
+  SHADER_SOURCE(WaterCausticEnvelopeShader, VK_SHADER_STAGE_COMPUTE_BIT, water_caustics_envelope)
+  BEGIN_PARAMETER()
+    SAMPLER2D(0)
+    RW_TEXTURE2D(1)
+  END_PARAMETER()
+};
+
+Rc<DxvkImageView> createWaterCausticMipChain(RtxContext* ctx, const Rc<DxvkImageView>& source) {
+  const auto& sourceInfo = source->info();
+  const auto sourceExtent = source->mipLevelExtent(0);
+  if (sourceInfo.type != VK_IMAGE_VIEW_TYPE_2D || sourceInfo.aspect != VK_IMAGE_ASPECT_COLOR_BIT
+      || sourceInfo.numLayers != 1u || sourceExtent.width == 0u || sourceExtent.height == 0u) {
+    Logger::warn("[Water volume caustics] Unsupported envelope source view");
+    return nullptr;
+  }
+
+  // POT dimensions make every mip reduction an area-preserving 2x2 average.
+  VkExtent3D extent {1u, 1u, 1u};
+  while (extent.width < sourceExtent.width) { extent.width <<= 1u; }
+  while (extent.height < sourceExtent.height) { extent.height <<= 1u; }
+  const uint32_t maxDimension = ctx->getDevice()->adapter()->deviceProperties().limits.maxImageDimension2D;
+  if (extent.width > maxDimension || extent.height > maxDimension) {
+    Logger::warn("[Water volume caustics] Envelope exceeds device image limits");
+    return nullptr;
+  }
+  uint32_t mipLevels = 1u;
+  for (uint32_t size = std::max(extent.width, extent.height); size > 1u; size >>= 1u) {
+    ++mipLevels;
+  }
+  Rc<DxvkContext> baseContext = ctx;
+  auto resource = Resources::createImageResource(baseContext, "Water caustic shaped envelope", extent, VK_FORMAT_R16_SFLOAT,
+    1u, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, 0,
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VkClearColorValue {}, mipLevels);
+  resource.image->addShaderReadStages(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  auto mipInfo = resource.view->info();
+  mipInfo.numLevels = 1u;
+  const auto mipView = ctx->getDevice()->createImageView(resource.image, mipInfo);
+  // Resource initialization ended the render pass. Source uploads are visible
+  // before shaping, and generated levels declare their fragment reads.
+  ctx->emitMemoryBarrier(0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  ctx->bindResourceView(0, source, nullptr);
+  ctx->bindResourceSampler(0, ctx->getResourceManager().getSampler(
+    VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT));
+  ctx->bindResourceView(1, mipView, nullptr);
+  ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, WaterCausticEnvelopeShader::getShader());
+  ctx->dispatch((extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u);
+  ctx->emitMemoryBarrier(0, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  ctx->generateMipmaps(resource.view, VK_FILTER_LINEAR);
+  Logger::info(str::format("[Water volume caustics] Shaped envelope cache: ", extent.width, "x", extent.height,
+    " levels=", mipLevels, " sourceCookie=", source->cookie()));
+  return resource.view;
+}
+
 class WaterFoamShader : public ManagedShader {
   SHADER_SOURCE(WaterFoamShader, VK_SHADER_STAGE_COMPUTE_BIT, water_foam)
   BINDLESS_ENABLED()
@@ -103,28 +186,6 @@ class WaterFoamUpdateShader : public ManagedShader {
     RW_TEXTURE2D(BINDING_WATER_FOAM_SURFACE_HEIGHT)
   END_PARAMETER()
 };
-class WaterUnderwaterShader : public ManagedShader {
-  SHADER_SOURCE(WaterUnderwaterShader, VK_SHADER_STAGE_COMPUTE_BIT, water_underwater)
-  BINDLESS_ENABLED()
-  PUSH_CONSTANTS(WaterUnderwaterArgs)
-  BEGIN_PARAMETER()
-    COMMON_RAYTRACING_BINDINGS
-    TEXTURE2D(UNDERWATER_DEPTH)
-    RW_TEXTURE2D(UNDERWATER_COLOR)
-    TEXTURE2D(UNDERWATER_SHAFT_FIELD)
-  END_PARAMETER()
-};
-class WaterUnderwaterShaftShader : public ManagedShader {
-  SHADER_SOURCE(WaterUnderwaterShaftShader, VK_SHADER_STAGE_COMPUTE_BIT, water_underwater_shafts)
-  BINDLESS_ENABLED()
-  PUSH_CONSTANTS(WaterUnderwaterArgs)
-  BEGIN_PARAMETER()
-    COMMON_RAYTRACING_BINDINGS
-    TEXTURE2D(UNDERWATER_DEPTH)
-    SAMPLER2D(UNDERWATER_PATTERN)
-    RW_TEXTURE2D(UNDERWATER_SHAFT_FIELD)
-  END_PARAMETER()
-};
 class WaterCausticsShader : public ManagedShader {
   SHADER_SOURCE(WaterCausticsShader, VK_SHADER_STAGE_COMPUTE_BIT, water_caustics)
   BINDLESS_ENABLED()
@@ -144,6 +205,8 @@ class WaterCausticsShader : public ManagedShader {
     TEXTURE2D(CAUSTICS_SECONDARY_CONE)
     TEXTURE2D(CAUSTICS_ACTIVE_PIXELS)
     SAMPLER2D(CAUSTICS_PATTERN)
+    STRUCTURED_BUFFER(CAUSTICS_SURFACE_INPUT)
+    SAMPLER2D(CAUSTICS_ENVELOPE)
     RW_TEXTURE2D(CAUSTICS_CACHE)
   END_PARAMETER()
 };
@@ -173,6 +236,79 @@ void WaterSystem::prepareCausticTexture(RtxContext* ctx) {
       Logger::warn("[WaterCaustics] Pattern missing: " + m_causticTexturePath);
     }
   }
+}
+
+void WaterSystem::prepareVolumeCaustics(RtxContext* ctx) {
+  WaterVolumeCausticsArgs args {};
+  uint64_t sourceCookie = 0;
+  Rc<DxvkImageView> pattern;
+  Rc<DxvkBuffer> surfaceInput;
+  WaterLightSurface surface;
+  bool active = false;
+  const float contrast = finiteCausticSetting(volumetricCausticsStrength(), 0.0f, 1.0f);
+  const bool requested = enabled() && causticsEnabled() && contrast > 0.0f && causticsStrength() > 0.0f;
+  if (requested && RtxOptions::zUp() && gpuSurface() && m_gpuSurface != nullptr) {
+    surface.valid = m_gpuSurface->surfaceHeightAt(ctx->getSceneManager().getCamera().getPosition(), surface.height);
+    if (surface.valid) {
+      prepareCausticTexture(ctx);
+      pattern = m_causticTexture.getImageView();
+      surfaceInput = m_gpuSurface->waterLevelBuffer();
+      const auto sun = selectWaterCausticSun(ctx);
+      if (pattern != nullptr && surfaceInput != nullptr && sun.index != kNewLightIdx) {
+        sourceCookie = pattern->cookie();
+        if (m_volumeCausticPattern != nullptr && m_volumeCausticSourceCookie == sourceCookie) {
+          pattern = m_volumeCausticPattern;
+        } else {
+          pattern = createWaterCausticMipChain(ctx, pattern);
+        }
+      } else {
+        pattern = nullptr;
+      }
+      active = m_cameraMedium.active && pattern != nullptr;
+      if (active) {
+        args.strength = contrast;
+        args.scale = finiteCausticSetting(causticsScale(), 0.5f, 16.0f);
+        args.speed = finiteCausticSetting(causticsSpeed(), 0.0f, 3.0f);
+        args.maxDepth = finiteCausticSetting(causticsMaxDepth(), 0.5f, 30.0f);
+        args.randomized = causticsRandomized();
+        args.sunIndex = sun.index;
+        args.surfaceHeight = surface.height;
+        args.fadeStart = finiteCausticSetting(causticsFadeStart(), 0.0f, 0.9f);
+        args.receiverStrength = finiteCausticSetting(causticsStrength(), 0.0f, 8.0f);
+        args.textureMaxLod = float(pattern->info().numLevels - 1u);
+        const auto extent = pattern->mipLevelExtent(0);
+        args.textureSize = {float(extent.width), float(extent.height)};
+      }
+    }
+  }
+  if (pattern == nullptr) {
+    sourceCookie = 0;
+  }
+  // The receiver shares this cache above water, independently of volume activation.
+  // Light buffer indices can be reordered each frame without changing the mask.
+  auto previousKey = m_volumeCausticsArgs;
+  auto currentKey = args;
+  previousKey.sunIndex = currentKey.sunIndex = 0;
+  m_volumeCausticsChanged = active != m_volumeCausticsActive
+    || (active && (std::memcmp(&previousKey, &currentKey, sizeof(args)) != 0 || pattern != m_volumeCausticPattern
+      || surfaceInput != m_volumeCausticSurface));
+  if (m_volumeCausticsChanged) {
+    Logger::info(str::format("[Water volume caustics] active=", active, " contrast=", args.strength,
+      " sunIndex=", args.sunIndex, " scale=", args.scale, " speed=", args.speed));
+  }
+  m_volumeCausticsArgs = args;
+  m_volumeCausticsActive = active;
+  m_causticLightSurface = surface;
+  m_volumeCausticPattern = pattern;
+  m_volumeCausticSourceCookie = sourceCookie;
+  m_volumeCausticSurface = surfaceInput;
+}
+
+void WaterSystem::bindVolumeCausticsResources(RtxContext* ctx) {
+  ctx->bindResourceView(VOLUME_WATER_CAUSTICS_PATTERN, m_volumeCausticPattern, nullptr);
+  ctx->bindResourceSampler(VOLUME_WATER_CAUSTICS_PATTERN,
+    ctx->getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT));
+  ctx->bindResourceBuffer(VOLUME_WATER_CAUSTICS_SURFACE_INPUT, DxvkBufferSlice(m_volumeCausticSurface));
 }
 
 void WaterSystem::prepareCaustics(RtxContext* ctx, const Resources::RaytracingOutput& output) {
@@ -211,9 +347,15 @@ void WaterSystem::prepareCaustics(RtxContext* ctx, const Resources::RaytracingOu
   args.dispersion = std::clamp(causticsDispersion(), 0.0f, 2.0f);
   args.speed = std::clamp(causticsSpeed(), 0.0f, 3.0f);
   args.maxDepth = std::clamp(causticsMaxDepth(), 0.5f, 30.0f);
-  const auto color = transmittanceColor();
-  args.transmittance = {color.x, color.y, color.z};
-  args.transmittanceDistance = std::clamp(transmittanceDistance(), 0.1f, 100.0f);
+  args.solarContrast = finiteCausticSetting(volumetricCausticsStrength(), 0.0f, 1.0f);
+  args.solarSurfaceHeight = m_causticLightSurface.height;
+  args.solarProjectionEnabled = m_causticLightSurface.valid && m_volumeCausticSurface != nullptr
+    && m_volumeCausticPattern != nullptr;
+  if (m_volumeCausticPattern != nullptr) {
+    const auto envelopeExtent = m_volumeCausticPattern->mipLevelExtent(0);
+    args.solarPadding = {float(m_volumeCausticPattern->info().numLevels - 1u),
+      float(std::max(envelopeExtent.width, envelopeExtent.height))};
+  }
   args.fadeStart = std::clamp(causticsFadeStart(), 0.0f, 0.9f);
   args.localLightRange = std::clamp(causticsLocalLightRange(), 5.0f, 200.0f);
   const uint32_t localLimit = static_cast<uint32_t>(std::clamp(causticsLocalLights(), 0, 8));
@@ -263,25 +405,10 @@ void WaterSystem::prepareCaustics(RtxContext* ctx, const Resources::RaytracingOu
       }
     }
   }
-  {
-    float strongestFlux = 0.0f;
-    for (const auto* light : ctx->getCommonObjects()->getSceneManager().getLightManager().getLinearizedLights()) {
-      if (light->getType() != RtLightType::Distant || light->getBufferIdx() == kNewLightIdx) { continue; }
-      const auto& distant = light->getDistantLight();
-      const auto direction = -distant.getDirection();
-      const auto radiance = distant.getRadiance();
-      const float height = RtxOptions::zUp() ? direction.z : direction.y;
-      const float flux = height * (0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z);
-      if (height <= 0.0f || !std::isfinite(flux) || flux <= strongestFlux) { continue; }
-      strongestFlux = flux;
-      args.lightDirection = {direction.x, direction.y, direction.z};
-      // distantLightSampleArea divides by sin(halfAngle)^2; integrating the
-      // projected cone gives pi * stored radiance, independent of angular size.
-      const float encodeScale = 3.14159265f * PreExposure::get() * (light->isSkyProviderLight ? 1.0f : HostCalibration::lightScale());
-      args.lightIrradiance = {radiance.x * encodeScale, radiance.y * encodeScale, radiance.z * encodeScale};
-      args.lightValid = 1;
-    }
-  }
+  const auto sun = selectWaterCausticSun(ctx);
+  args.lightDirection = {sun.direction.x, sun.direction.y, sun.direction.z};
+  args.lightIrradiance = {sun.irradiance.x, sun.irradiance.y, sun.irradiance.z};
+  args.lightValid = sun.index != kNewLightIdx;
   ctx->pushConstants(0, sizeof(args), &args);
   ctx->bindResourceView(CAUSTICS_PRIMARY_POSITION, output.getCurrentPrimaryWorldPositionWorldTriangleNormal().view(Resources::AccessType::Read), nullptr);
   ctx->bindResourceView(CAUSTICS_SECONDARY_POSITION, output.m_secondaryWorldPositionWorldTriangleNormal.view(Resources::AccessType::Read), nullptr);
@@ -295,12 +422,22 @@ void WaterSystem::prepareCaustics(RtxContext* ctx, const Resources::RaytracingOu
   ctx->bindResourceView(CAUSTICS_PRIMARY_CONE, output.m_primaryConeRadius.view, nullptr);
   ctx->bindResourceView(CAUSTICS_SECONDARY_CONE, output.m_secondaryConeRadius.view(Resources::AccessType::Read), nullptr);
   ctx->bindResourceView(CAUSTICS_ACTIVE_PIXELS, output.m_sparseRenderingActiveLocalPixelCoords.view, nullptr);
+  ctx->bindResourceView(CAUSTICS_ENVELOPE, m_volumeCausticPattern, nullptr);
+  ctx->bindResourceSampler(CAUSTICS_ENVELOPE, ctx->getResourceManager().getSampler(
+    VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT));
   ctx->bindResourceView(CAUSTICS_PATTERN, m_causticTexture.getImageView(), nullptr);
   ctx->bindResourceSampler(CAUSTICS_PATTERN, ctx->getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT));
   ctx->bindResourceView(CAUSTICS_CACHE, m_causticRadiance.view, nullptr);
-  ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, args.localLightCount > 0
-    ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, WaterCausticsShader, water_caustics_local)
-    : WaterCausticsShader::getShader());
+  ctx->bindResourceBuffer(CAUSTICS_SURFACE_INPUT, m_volumeCausticSurface != nullptr
+    ? DxvkBufferSlice(m_volumeCausticSurface) : DxvkBufferSlice());
+  const bool solarProjection = args.solarProjectionEnabled && args.lightValid;
+  ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, solarProjection
+    ? (args.localLightCount > 0
+      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, WaterCausticsShader, water_caustics_local_solar)
+      : GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, WaterCausticsShader, water_caustics_solar))
+    : (args.localLightCount > 0
+      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, WaterCausticsShader, water_caustics_local)
+      : WaterCausticsShader::getShader()));
   ctx->dispatch((extent.width + 7) / 8, (extent.height + 7) / 8, 1);
   m_causticsPrepared = true;
 }
@@ -485,67 +622,6 @@ void WaterSystem::compositeFoam(RtxContext* ctx, const Resources::RaytracingOutp
   if (m_foamCompositeTexture.isImageEmpty()) { return; }
   ctx->bindResourceView(WATER_FOAM_COLOR, output.m_finalOutput.view(Resources::AccessType::ReadWrite), nullptr);
   ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, WaterFoamShader::getShader());
-  ctx->dispatch((args.width + 7) / 8, (args.height + 7) / 8, 1);
-}
-void WaterSystem::compositeUnderwater(RtxContext* ctx, const Resources::RaytracingOutput& output) {
-  const uint32_t debugMode = static_cast<uint32_t>(std::clamp(underwaterDebugView(), 0, 4));
-  if (debugMode == 0 && (!enabled() || !underwaterEnabled() || underwaterDensity() <= 0.0f)) { return; }
-  ScopedCpuProfileZone();
-  ScopedGpuProfileZone(ctx, "Underwater Absorption And Light Shafts");
-  if (underwaterLightShafts() || debugMode >= 2) { prepareCausticTexture(ctx); }
-  ctx->bindCommonRayTracingResources(output);
-  ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
-  WaterUnderwaterArgs args {};
-  args.width = output.m_finalOutputExtent.width;
-  args.height = output.m_finalOutputExtent.height;
-  args.density = std::clamp(underwaterDensity(), 0.0f, 0.3f);
-  args.shaftStrength = (underwaterLightShafts() || debugMode >= 2)
-    ? std::clamp(underwaterShaftStrength(), debugMode >= 2 ? 0.0001f : 0.0f, 4.0f) : 0.0f;
-  args.debugMode = debugMode;
-  args.sceneLightCandidates = static_cast<uint32_t>(std::clamp(underwaterSceneLightCandidates(), 1, 32));
-  args.sceneLightStrength = std::clamp(underwaterSceneLightStrength(), 0.0f, 4.0f);
-  args.patternAvailable = m_causticTexture.isImageEmpty() ? 0u : 1u;
-  const auto color = underwaterFogColor();
-  args.fogColor = {color.x * PreExposure::get(), color.y * PreExposure::get(), color.z * PreExposure::get()};
-  args.transition = 0.15f;
-  args.shaftScale = std::clamp(underwaterShaftScale(), 1.0f, 24.0f);
-  args.shaftMaxDistance = std::clamp(underwaterShaftMaxDistance(), 5.0f, 80.0f);
-  args.shaftAnisotropy = std::clamp(underwaterShaftAnisotropy(), 0.0f, 0.8f);
-  args.shaftSamples = static_cast<uint32_t>(std::clamp(underwaterShaftSamples(), 4, 256));
-  ctx->bindResourceView(UNDERWATER_DEPTH, output.m_primaryLinearViewZ.view, nullptr);
-  const VkExtent3D shaftExtent { (args.width + 3) / 4, (args.height + 3) / 4, 1 };
-  if (m_underwaterShafts.image == nullptr
-      || m_underwaterShafts.image->info().extent.width != shaftExtent.width
-      || m_underwaterShafts.image->info().extent.height != shaftExtent.height) {
-    Rc<DxvkContext> baseContext = ctx;
-    m_underwaterShafts = Resources::createImageResource(baseContext, "Underwater shaft radiance and depth",
-      shaftExtent, VK_FORMAT_R16G16B16A16_SFLOAT);
-    Logger::info(str::format("[Underwater] GPU volume field created: ", shaftExtent.width, "x", shaftExtent.height));
-  }
-  if (args.shaftStrength > 0.0f) {
-    if (!m_underwaterShaftsDispatched) {
-      Logger::info(str::format("[Underwater] Shaft dispatch active: density=", args.density,
-        " strength=", args.shaftStrength, " samples=", args.shaftSamples, " sceneLights=", underwaterSceneLights(),
-        " candidates=", args.sceneLightCandidates, " debug=", debugMode));
-      m_underwaterShaftsDispatched = true;
-    }
-    WaterUnderwaterArgs volumeArgs = args;
-    volumeArgs.width = shaftExtent.width;
-    volumeArgs.height = shaftExtent.height;
-    ctx->pushConstants(0, sizeof(volumeArgs), &volumeArgs);
-    ctx->bindResourceView(UNDERWATER_SHAFT_FIELD, m_underwaterShafts.view, nullptr);
-    ctx->bindResourceView(UNDERWATER_PATTERN, m_causticTexture.getImageView(), nullptr);
-    ctx->bindResourceSampler(UNDERWATER_PATTERN, ctx->getResourceManager().getSampler(
-      VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT));
-    ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, underwaterSceneLights()
-      ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, WaterUnderwaterShaftShader, water_underwater_shafts_scene)
-      : WaterUnderwaterShaftShader::getShader());
-    ctx->dispatch((volumeArgs.width + 7) / 8, (volumeArgs.height + 7) / 8, 1);
-  }
-  ctx->pushConstants(0, sizeof(args), &args);
-  ctx->bindResourceView(UNDERWATER_SHAFT_FIELD, m_underwaterShafts.view, nullptr);
-  ctx->bindResourceView(UNDERWATER_COLOR, output.m_finalOutput.view(Resources::AccessType::ReadWrite), nullptr);
-  ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, WaterUnderwaterShader::getShader());
   ctx->dispatch((args.width + 7) / 8, (args.height + 7) / 8, 1);
 }
 }

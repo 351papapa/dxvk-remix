@@ -626,8 +626,17 @@ VisibilityResult traceVisibilityRay<let VisibilityMode : uint>(
 
   VisibilityResult result = traceVisibilityRay<VisibilityMode>(visibilityRay, rayMask, expectedRayPortalIndex, rayOriginPortalSpace, hasRayOriginatedFromViewModel, usePreviousTLAS, clearOpaqueHitAttenuation);
 
-  // We want to calculate the attenuation from the light to the surface - which is why we use targetPosition (light) and neg-direction (light to surface)
-  result.attenuation *= calcVolumetricAttenuation(cb.volumeArgs, none, false, result.hitDistance, targetPosition, -visibilityRay.direction);
+  if (cb.cameraWaterVolumeActive && cb.cameraWaterSurfaceValid && cb.isZUp && !cb.volumeArgs.enableAtmosphere &&
+      clearOpaqueHitAttenuation && expectedRayPortalIndex == invalidRayPortalIndex && rayOriginPortalSpace == PORTAL_SPACE_NONE)
+  {
+    // Use the traced surface-side origin to keep water depth precise for distant lights.
+    result.attenuation *= evalResolvedVolumeAttenuation(false, result.hitDistance, visibilityRay.origin, visibilityRay.direction);
+  }
+  else
+  {
+    // Atmosphere and portal paths retain the light-to-surface evaluation convention.
+    result.attenuation *= calcVolumetricAttenuation(cb.volumeArgs, none, false, result.hitDistance, targetPosition, -visibilityRay.direction);
+  }
 
 #ifdef OPAQUE_MATERIAL_USE_POM
   result.attenuation = result.attenuation * pomAttenuation;

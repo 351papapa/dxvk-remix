@@ -26,7 +26,21 @@
 #include "rtx/utility/froxel.slangh"
 #include "rtx/concept/ray/ray.slangh"
 #include "rtx/concept/volume/volume.slangh"
+#if VOLUME_WATER_SOLAR_COOKIE
+// Resolve the SDK's sampling functions before locally wrapping only its final
+// integration calls. Reservoir targets and finalized weights stay unchanged.
+#include "rtx/algorithm/lighting.slangh"
+#include "rtx/pass/volumetrics/water_volume_caustics.slangh"
+#define VolumeReSTIR_GetLightSample(reservoir, interaction, sample, inversePdf) \
+  waterVolumeGetLightSample(reservoir, interaction, sample, inversePdf, froxelIndex, froxelVolume)
+#define RAB_GetLightSampleWithTypeHint(lightIndex, lightUV, lightType, interaction) \
+  waterVolumeGetLightSampleWithTypeHint(lightIndex, lightUV, lightType, interaction, froxelIndex, froxelVolume)
+#endif
 #include "rtx/algorithm/volume_integrator.slangh"
+#if VOLUME_WATER_SOLAR_COOKIE
+#undef VolumeReSTIR_GetLightSample
+#undef RAB_GetLightSampleWithTypeHint
+#endif
 
 void volume_integrate_pass(ivec3 threadIndex)
 { 

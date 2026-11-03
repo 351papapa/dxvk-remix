@@ -15,6 +15,15 @@ VisibilityResult evalVolumeNEEVisibility(
   // But that will require a separate TLAS that doesn't contain such objects
   PortalSpace2BitsType portalSpace = PORTAL_SPACE_NONE;
 
+#if VOLUME_WATER_SURFACE_LIGHTING
+  // Beer uses the virtual water-entry sample. Occlusion still reaches the source.
+  if (lightSample.volumeVisibilityRay.w > 0.0f)
+  {
+    visibilityRay.direction = lightSample.volumeVisibilityRay.xyz;
+    visibilityRay.tMax = lightSample.volumeVisibilityRay.w;
+  }
+#endif
+
   // Trace a visibility ray to test if the light is visible
 
   // Note: Only trace rays against fully opaque objects, alpha blend objects, optionally translucent

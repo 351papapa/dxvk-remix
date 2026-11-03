@@ -30,6 +30,15 @@ foreach external_dll : external_dll_paths
 endforeach
 
 tests = []
+exe = executable('test_retained_world_batch', files('test_retained_world_batch.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_retained_world_batch', exe, env: test_env)
+tests += exe
+exe = executable('test_index_only_geometry', files('test_index_only_geometry.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_index_only_geometry', exe, env: test_env)
+tests += exe
+exe = executable('test_retained_static_batch', files('test_retained_static_batch.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_retained_static_batch', exe, env: test_env)
+tests += exe
 exe = executable('test_draw_capture', files('test_draw_capture.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
 test('test_draw_capture', exe, env: test_env, args: [join_paths(meson.current_build_dir(), 'draw_capture_test_output')])
 tests += exe
@@ -181,6 +190,12 @@ exe = executable('test_water_foam_boundary', files('test_water_foam_boundary.cpp
 test('test_water_foam_boundary', exe, env: test_env)
 tests += exe
 
+exe = executable('test_water_medium', files('test_water_medium.cpp'),
+  include_directories : include_directories('../../../include'), dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_water_medium', exe, env: test_env)
+tests += exe
+
 exe = executable('test_water_weather', files('test_water_weather.cpp'),
   include_directories : [include_directories('../../../include'), include_directories('../../../src/dxvk/shaders')], dependencies : test_unit_deps, cpp_args: ['-DNOMINMAX'],
   win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
@@ -196,6 +211,13 @@ tests += exe
 # The RayQuery G-buffer slim variant coverage over every feature combination (self-contained, no runtime link).
 exe = executable('test_gbuffer_variant_coverage',  files('test_gbuffer_variant_coverage.cpp'),  dependencies : test_unit_deps, win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
 test('test_gbuffer_variant_coverage', exe, env: test_env)
+tests += exe
+
+# Fixed-width v2/v3 boundary and the actual visibility/relative-transform policy, no runtime link.
+exe = executable('test_retained_compat_policy', files('test_retained_compat_policy.cpp'),
+  include_directories : [test_include_path, remix_api_include_path], dependencies : test_unit_deps,
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_retained_compat_policy', exe, env: test_env)
 tests += exe
 
 alias_target('unit_tests', tests)

@@ -361,6 +361,14 @@ struct GeometryPSRResolverState : IBasePayloadState
     set { _encodedFlags = packedFlagAssign(_encodedFlags, 1 << 10, newValue); }
   }
 
+  // Tracks whether the active medium is an animated water volume. Missed water paths need finite
+  // absorption instead of treating the open sea as an infinitely thick medium.
+  property bool waterMedium
+  {
+    get { return packedFlagGet(_encodedFlags, 1 << 11); }
+    set { _encodedFlags = packedFlagAssign(_encodedFlags, 1 << 11, newValue); }
+  }
+
   property bool directionAltered
   {
       get { return false; }
@@ -411,7 +419,7 @@ struct GbufferPSRData
 // geometry flag data.  Only portalSpace (2 bits) and objectMask dynamic bits (4 bits) are
 // needed on unpack, so we compress the full geometry flags into 6 bits above the index.
 GbufferPSRData packPSRData(Ray sampledRay, uint mediumMaterialIndex, f16vec3 attenuation,
-  vec4 accumulatedRotation, uint packedGeometryFlags)
+  vec4 accumulatedRotation, uint packedGeometryFlags, bool waterMedium = false)
 {
   GbufferPSRData psrData = (GbufferPSRData)0;
   psrData.origin = floatBitsToUint(sampledRay.origin);
@@ -422,7 +430,8 @@ GbufferPSRData packPSRData(Ray sampledRay, uint mediumMaterialIndex, f16vec3 att
   psrData.mediumMaterialIndexAndGeometryFlags =
     (mediumMaterialIndex & SURFACE_INDEX_MAX_VALUE) |
     (portalSpaceBits << SURFACE_INDEX_BIT_COUNT) |
-    (objectMaskDynBits << (SURFACE_INDEX_BIT_COUNT + 2));
+    (objectMaskDynBits << (SURFACE_INDEX_BIT_COUNT + 2)) |
+    (uint(waterMedium) << (SURFACE_INDEX_BIT_COUNT + 6));
   psrData.attenuation = colorToR11G11B10(attenuation);
   psrData.encodedAccumulatedRotation = packFloat4x16(accumulatedRotation);
   return psrData;
@@ -440,6 +449,7 @@ void unpackPSRData(GbufferPSRData psrData, inout GeometryPSRResolverState geomet
 
   // Reconstruct portalSpace and objectMask from the compressed geometry flag bits
   const uint packed = psrData.mediumMaterialIndexAndGeometryFlags;
+  geometryPSRResolverState.waterMedium = ((packed >> (SURFACE_INDEX_BIT_COUNT + 6)) & 1u) != 0u;
   geometryPSRResolverState.portalSpace = PortalSpace2BitsType((packed >> SURFACE_INDEX_BIT_COUNT) & 0x3);
   const uint objectMaskDynBits = (packed >> (SURFACE_INDEX_BIT_COUNT + 2)) & 0xF;
   geometryPSRResolverState.rayMask = uint8_t(objectMaskDynBits << OBJECT_MASK_ALL_DYNAMIC_FIRST_ACTIVE_BIT_OFFSET) | OBJECT_MASK_ALL;

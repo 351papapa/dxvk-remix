@@ -737,6 +737,10 @@ namespace dxvk {
         frameTimingScenePrepMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scenePrepStart).count();
       }
       recordGpuStageTiming("ScenePreparation");
+      // Resolve the camera water profile before volumetric resource allocation and constants.
+      m_common->metaWater().updateCameraMedium(getSceneManager());
+      m_common->metaWater().prepareVolumeCaustics(this);
+      m_resetHistory |= m_common->metaWater().cameraMedium().changed;
 
       // Cone map work for the height maps this frame's materials registered, ahead of any ray tracing.
       m_common->metaPomConeMaps().update(*this);
@@ -882,8 +886,6 @@ namespace dxvk {
 
         m_common->metaWater().compositeFoam(this, rtOutput);
         recordGpuStageTiming("WaterFoam");
-        m_common->metaWater().compositeUnderwater(this, rtOutput);
-        recordGpuStageTiming("WaterUnderwater");
 
         RtxDustParticles& dust = m_common->metaDustParticles();
         dust.simulateAndDraw(this, m_state, rtOutput);
@@ -1362,6 +1364,21 @@ namespace dxvk {
       }
       return s;
     };
+    // Uses all sampled frames as the denominator, including frames where a particular stage was absent.
+    const auto stageMsPerSampledFrame = [&](const char* label) -> std::string {
+      if (!w.stageSamples) {
+        return "n/a";
+      }
+      const auto found = std::find_if(w.stages.begin(), w.stages.end(), [&](const PerfWindow::Stage& stage) {
+        return std::strcmp(stage.label, label) == 0;
+      });
+      if (found == w.stages.end()) {
+        return "n/a";
+      }
+      char buffer[32];
+      std::snprintf(buffer, sizeof(buffer), "%.3f", found->ms / samples);
+      return buffer;
+    };
 
     // Scene size and change.
     uint64_t builds[8];
@@ -1426,6 +1443,10 @@ namespace dxvk {
       " | GPU busy ", uint32_t(gpuBusy * 100.0), "% (", f1(gpuBusyMs), " ms/frame)",
       w.stageSamples != 0 ? str::format("; ", w.stageSamples, " sampled frames ", f1(w.stageMeasuredMs / samples), " ms: ", stageList(5))
                           : std::string(),
+      " | acceleration GPU: stageSamples=", w.stageSamples,
+      " blasBuildMsPerSampledFrame=", stageMsPerSampledFrame("BlasBuild"),
+      " tlasBuildMsPerSampledFrame=", stageMsPerSampledFrame("TlasBuild"),
+      " sceneSetupMsPerSampledFrame=", stageMsPerSampledFrame("SceneSetup"),
       " | render thread CPU ", f1(csCpuMs), " ms/frame (injectRTX ", f1(w.injectMs / n), ", scene prep ", f1(w.scenePrepMs / n),
       ", API draws ", f1(w.apiDrawMs / n), " for ", f1(double(w.apiDraws) / n), ", retained replay ", f1(w.retainedMs / n),
       "), CS threads executing ", f1(perFrameMs(DxvkStatCounter::CsExecTicks, w.csExecStart)), " ms",
@@ -1981,7 +2002,10 @@ namespace dxvk {
 
     // Underwater look, see integrator_direct.slangh (after Mochabeanproto/dxvk-remix legacyrt ef6f42f,
     // used with permission).
-    constants.underwaterEnable = RtxOptions::Underwater::enable() ? 1u : 0u;
+    constants.cameraWaterVolumeActive = m_common->metaWater().cameraMedium().active;
+    constants.cameraWaterSurfaceHeight = m_common->metaWater().cameraLightSurface().height;
+    constants.cameraWaterSurfaceValid = m_common->metaWater().cameraLightSurface().valid;
+    constants.underwaterEnable = RtxOptions::Underwater::enable() && !m_common->metaWater().cameraMedium().active ? 1u : 0u;
     {
       // The measurement only, never rtx.atmosphere.worldScale: the water is the game's, not the sky's.
       const float upm = RtxOptions::Underwater::unitsPerMeter() > 0.0f

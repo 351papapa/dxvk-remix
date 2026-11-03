@@ -1,0 +1,144 @@
+#pragma once
+
+float2 waterCausticHash(float2 p) {
+  float3 p3 = frac(float3(p.x, p.y, p.x) * float3(0.1031f, 0.1030f, 0.0973f));
+  p3 += dot(p3, p3.yzx + 33.33f);
+  return frac((p3.xx + p3.yz) * p3.zy);
+}
+
+float2 waterCausticNoise(float2 p) {
+  float2 cell = floor(p);
+  float2 f = frac(p);
+  f = f * f * (3.0f - 2.0f * f);
+  return lerp(lerp(waterCausticHash(cell), waterCausticHash(cell + float2(1, 0)), f.x),
+              lerp(waterCausticHash(cell + float2(0, 1)), waterCausticHash(cell + float2(1, 1)), f.x), f.y) * 2.0f - 1.0f;
+}
+
+float waterCausticTile(Sampler2D pattern, float2 uv, float2 cell, float lod) {
+  float2 random = waterCausticHash(cell);
+  float angle = random.x * 6.2831853f;
+  float s = sin(angle);
+  float c = cos(angle);
+  float2 rotated = float2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
+  return pattern.SampleLevel(rotated + random * 13.0f, lod).r;
+}
+
+void waterCausticStochasticSamples(Sampler2D pattern, float2 uv, float lod,
+                                    out float3 samples, out float3 weights) {
+  float2 grid = float2(uv.x - uv.y * 0.57735027f, uv.y * 1.15470054f);
+  float2 cell = floor(grid);
+  float2 f = frac(grid);
+  float2 v0;
+  float2 v1;
+  float2 v2;
+  if (f.x + f.y < 1.0f) {
+    v0 = cell; v1 = cell + float2(1, 0); v2 = cell + float2(0, 1);
+    weights = float3(1.0f - f.x - f.y, f.x, f.y);
+  } else {
+    v0 = cell + 1.0f; v1 = cell + float2(0, 1); v2 = cell + float2(1, 0);
+    weights = float3(f.x + f.y - 1.0f, 1.0f - f.x, 1.0f - f.y);
+  }
+  weights = weights * weights * weights;
+  weights /= max(dot(weights, float3(1)), 0.0001f);
+  samples = float3(waterCausticTile(pattern, uv, v0, lod), waterCausticTile(pattern, uv, v1, lod), waterCausticTile(pattern, uv, v2, lod));
+}
+
+float waterCausticStochastic(Sampler2D pattern, float2 uv, float lod) {
+  float3 samples;
+  float3 weights;
+  waterCausticStochasticSamples(pattern, uv, lod, samples, weights);
+  // RMS blending retains bright filaments better than a linear crossfade.
+  return sqrt(dot(weights, samples * samples));
+}
+
+// One evaluation of the caustic web at a pattern-space coordinate. `time` and `lod`
+// are hoisted to the caller so the three dispersion taps can share them.
+float waterCausticPatternAt(Sampler2D pattern, float2 uv, float time, float lod, uint randomized) {
+  float2 warp = 0.075f * float2(sin(uv.y * 6.2831853f + time), sin(uv.x * 6.2831853f - time * 0.83f));
+  float a;
+  float b;
+  if (randomized) {
+    warp = 0.28f * waterCausticNoise(uv * 0.7f + float2(time * 0.09f, -time * 0.061f))
+      + 0.09f * waterCausticNoise(uv * 1.73f + float2(-time * 0.13f, time * 0.077f));
+    a = waterCausticStochastic(pattern, uv + warp + float2(time * 0.021f, time * 0.009f), lod);
+    b = waterCausticStochastic(pattern, float2(-uv.y, uv.x) * 1.137f - warp + float2(-time * 0.017f, time * 0.013f), lod);
+  } else {
+    a = pattern.SampleLevel(uv + warp + float2(time * 0.035f, time * 0.021f), lod).r;
+    b = pattern.SampleLevel(float2(-uv.y, uv.x) - warp + float2(-time * 0.027f, time * 0.017f), lod).r;
+  }
+  return 2.0f * min(a * a, b * b);
+}
+
+float waterCausticLinearStochastic(Sampler2D pattern, float2 uv, float lod) {
+  float3 samples;
+  float3 weights;
+  waterCausticStochasticSamples(pattern, uv, lod, samples, weights);
+  return dot(weights, samples);
+}
+
+// The source-normalized focusing field shares its scale and animation across
+// receiver and volume samples. Dynamic UV warps do not preserve area exactly.
+float waterCausticFocusAt(Sampler2D pattern, float2 uv, float time, float lod, float meanLod, uint randomized) {
+  const float mean = pattern.SampleLevel(float2(0.5f), meanLod).r;
+  if (!isfinite(mean) || mean <= 0.00001f) {
+    return 1.0f;
+  }
+  float2 warp;
+  float value;
+  if (randomized) {
+    warp = 0.28f * waterCausticNoise(uv * 0.7f + float2(time * 0.09f, -time * 0.061f))
+      + 0.09f * waterCausticNoise(uv * 1.73f + float2(-time * 0.13f, time * 0.077f));
+    value = waterCausticLinearStochastic(pattern, uv + warp + float2(time * 0.021f, time * 0.009f), lod);
+  } else {
+    warp = 0.075f * float2(sin(uv.y * 6.2831853f + time), sin(uv.x * 6.2831853f - time * 0.83f));
+    value = pattern.SampleLevel(uv + warp + float2(time * 0.035f, time * 0.021f), lod).r;
+  }
+  if (!isfinite(value)) {
+    return 1.0f;
+  }
+  // Retain the conservative half-float allowance used by the source mip mean.
+  const float levels = max(meanLod, 0.0f);
+  const float denominator = mean * (1.0f + 0.001f * levels) + 0.00000006f * levels;
+  const float normalized = max(value, 0.0f) / denominator;
+  const float neutral = mean / denominator;
+  const float contrastGain = exp2(0.5f * min(max(lod, 0.0f), 4.0f));
+  // Artistic mip-contrast recovery keeps a constant source constant.
+  const float recovered = neutral + (normalized - neutral) * contrastGain;
+  return clamp(recovered, 0.0f, min(8.0f, 1.0f / denominator));
+}
+
+// Preserve the middle sample's RGB mean without letting dispersion exceed the
+// scalar field's peak. Saturated peaks lose chroma rather than gain energy.
+float3 waterCausticFocusDispersion(float back, float mid, float front) {
+  const float mean = (back + mid + front) * (1.0f / 3.0f);
+  if (mean <= 0.0001f) {
+    return float3(mid);
+  }
+  const float3 color = mid * float3(back, mid, front) / mean;
+  const float peak = max(color.x, max(color.y, color.z));
+  const float chroma = peak > 8.0f ? saturate((8.0f - mid) / (peak - mid)) : 1.0f;
+  return lerp(float3(mid), color, chroma);
+}
+
+// Projects onto a flat Z-up water plane. toLight is a unit direction toward the source.
+// Both receiver caustics and froxel lighting use this coordinate and grazing fade.
+bool waterCausticProject(float3 position, float3 toLight, float surfaceHeight,
+                         out float3 waterPosition, out float depth, out float angleFade) {
+  waterPosition = position;
+  depth = 0.0f;
+  angleFade = 0.0f;
+  if (!all(isfinite(position)) || !all(isfinite(toLight)) || !isfinite(surfaceHeight)
+      || toLight.z <= 0.02f) {
+    return false;
+  }
+  depth = surfaceHeight - position.z;
+  if (!isfinite(depth) || depth <= 0.0f) {
+    return false;
+  }
+  waterPosition = position + toLight * (depth / toLight.z);
+  if (!all(isfinite(waterPosition))) {
+    return false;
+  }
+  angleFade = smoothstep(0.02f, 0.087f, toLight.z);
+  return true;
+}

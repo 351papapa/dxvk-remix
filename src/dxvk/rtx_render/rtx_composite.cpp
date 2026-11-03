@@ -495,6 +495,9 @@ namespace dxvk {
     compositeArgs.enableReSTIRGI = RtxOptions::useReSTIRGI();
     compositeArgs.sparseRenderingArgs = rtOutput.m_raytraceArgs.sparseRenderingArgs;
     compositeArgs.volumeArgs = rtOutput.m_raytraceArgs.volumeArgs;
+    compositeArgs.cameraWaterSurfaceActive = rtOutput.m_raytraceArgs.cameraWaterVolumeActive
+      && rtOutput.m_raytraceArgs.cameraWaterSurfaceValid && rtOutput.m_raytraceArgs.isZUp ? 1u : 0u;
+    compositeArgs.cameraWaterSurfaceHeight = rtOutput.m_raytraceArgs.cameraWaterSurfaceHeight;
     // Sky provider (NUMOS): active only while it rendered this frame.
     ctx->getCommonObjects()->metaNumos().bindCompositeResources(*ctx, compositeArgs.skyProviderActive,
       compositeArgs.skyWorldUnitsPerKm, compositeArgs.skyRadianceScale, compositeArgs.skyHostSkyOverride,

@@ -493,9 +493,9 @@ void integratePathVertex(
     }
     else
     {
-      // Note: Assume infinite hit distance on miss. This wouldn't be true with things that have a practical tMax
-      // value (such as NEE rays), but for the geometry resolver this is a fine assumption.
-      volumeTransmittance = translucentSurfaceMaterialEvalInfiniteVolumeTransmittance(
+      // A finite thick translucent boundary can miss all geometry behind it. Infinite absorption would make that
+      // background black, so use the authored measurement depth as the fallback.
+      volumeTransmittance = translucentSurfaceMaterialEvalUnresolvedVolumeTransmittance(
         translucentSurfaceMaterial);
     }
 

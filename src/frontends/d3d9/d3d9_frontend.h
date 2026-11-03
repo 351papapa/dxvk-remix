@@ -68,6 +68,7 @@ namespace dxvk {
         // A repeat of a Direct object prepared in full for the change test's self-check: compared with the scene's
         // copy and then handled as an Update.
         VerifyRepeat,
+        CaptureOnly,        // Records capture metadata without committing a draw to the scene
       };
 
       // What a full preparation derived for a draw, kept per object so a skipped draw can repeat its D3D9-thread
@@ -120,6 +121,9 @@ namespace dxvk {
       class D3D9Frontend {
       public:
         D3D9Frontend();
+
+        // Records the draw's original hashes and material state after its geometry hashes are resolved.
+        void capture(const DrawCallState& drawCallState);
 
         // One committed draw. drawCallState may be consumed.
         void commit(RtxContext* ctx, const DrawParameters& params, DrawCallState& drawCallState, CommitMode mode,

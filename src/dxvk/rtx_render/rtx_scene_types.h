@@ -72,6 +72,13 @@ struct SkinningData {
 struct RasterGeometry {
   GeometryHashes hashes;
 
+  // Optional producer contract for index-only topology updates. A nonzero ID
+  // covers ALL immutable vertex bytes (positions, normals, UVs and colors),
+  // independently of indices. The backing buffers/ranges must never be written
+  // in place; rebuilding any vertex data requires new buffers and a new ID.
+  // Zero keeps the ordinary geometry update path for existing producers.
+  uint64_t immutableVertexDataId = 0;
+
   // Actual vertex/index count (when applicable) as calculated by geo-engine
   uint32_t vertexCount = 0;
   uint32_t indexCount = 0;

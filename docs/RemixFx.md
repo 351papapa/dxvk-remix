@@ -690,6 +690,8 @@ exists - in the native `mul(matrix, vector)` convention. Alongside them:
 | `deltaTimeSeconds` | frame delta |
 | `manualFocusDistance`, `autoFocusOffset`, `autoFocusEnabled` | the depth-of-field focus contract. With focus state available, the distance native DoF uses is `RemixFxFocusState[0] + remixFxFrame.autoFocusOffset` |
 | `historyInvalid`, `cameraCut` | section 8 |
+| cameraMediumFlags | Bit 0 identifies a resolved camera water medium. Other bits are reserved. This field occupies the former reserved word at byte 1356; existing non-padding member offsets and the 1376-byte frame size are unchanged. |
+| `gamePostFxTint`, `gamePostFxTintValid` | Game-authored RGB feedback coefficients and availability, supplied through [the live tint convention](../documentation/RemixPostFxAPI.md). Missing or invalid data has validity 0. These appended members require the paired runtime; existing frame members keep their offsets. |
 | `preExposure`, `preExposureHistoryRatio` | the HDR image is radiance x `preExposure`, the renderer's pre-exposure (a power of two that follows the exposure); the display value is `image * RemixFxExposure[0] / preExposure`. `preExposureHistoryRatio` is this frame's `preExposure` over last frame's (1 except on rare step frames): multiply a radiance history by it. Both 1 while pre-exposure is off |
 
 Position helpers: `remixFxScreenUvToNdc`, `remixFxViewDirection`,

@@ -10,26 +10,13 @@ float causticDepthFade(float depth, float limit, float fadeStart) {
     * (1.0f - smoothstep(limit * fadeStart, limit, depth));
 }
 
-// Solve the single planar water interface; geometry rays still validate both legs.
-float3 causticInterfacePoint(float3 receiver, float3 emitter, float3 up, float waterHeight, bool reflected) {
+// Solve the planar reflection; geometry rays still validate both legs.
+float3 causticReflectedInterfacePoint(float3 receiver, float3 emitter, float3 up, float waterHeight) {
   float receiverHeight = dot(receiver, up);
   float depth = abs(receiverHeight - waterHeight);
   float airHeight = max(dot(emitter, up) - waterHeight, 0.001f);
   float3 horizontal = emitter - receiver - up * dot(emitter - receiver, up);
   float span = length(horizontal);
-  float along;
-  if (reflected) {
-    along = span * depth / (depth + airHeight);
-  } else {
-    float low = 0.0f, high = span;
-    for (uint i = 0; i < 16; ++i) {
-      float x = (low + high) * 0.5f;
-      float airSpan = span - x;
-      float waterSin = x / sqrt(x * x + depth * depth + 1e-12f);
-      float airSin = airSpan / sqrt(airSpan * airSpan + airHeight * airHeight);
-      if (1.333f * waterSin > airSin) { high = x; } else { low = x; }
-    }
-    along = (low + high) * 0.5f;
-  }
+  float along = span * depth / (depth + airHeight);
   return receiver + up * (waterHeight - receiverHeight) + horizontal * (along / max(span, 1e-6f));
 }

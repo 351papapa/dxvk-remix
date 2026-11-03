@@ -22,6 +22,30 @@
 namespace dxvk {
 namespace {
 namespace sim = remixapi::water::simulation;
+constexpr uint32_t kWaterLevelSide = 128;
+constexpr uint32_t kWaterLevelHeader = 4;
+constexpr uint32_t kWaterLevelCount = kWaterLevelSide * kWaterLevelSide;
+
+bool sampleWaterLevel(const std::vector<float>& map, const Vector3& position, float& height) {
+  if (map.size() != kWaterLevelHeader + kWaterLevelCount || !std::isfinite(map[0])
+      || !std::isfinite(map[1]) || !std::isfinite(map[2]) || map[2] <= 0.0f) {
+    return false;
+  }
+  const float x = (position.x - map[0]) / map[2];
+  const float y = (position.y - map[1]) / map[2];
+  if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0f || y < 0.0f
+      || x >= float(kWaterLevelSide) || y >= float(kWaterLevelSide)) {
+    return false;
+  }
+  const uint32_t index = uint32_t(y) * kWaterLevelSide + uint32_t(x);
+  const float level = map[kWaterLevelHeader + index];
+  if (!std::isfinite(level) || level <= -10000.0f) {
+    return false;
+  }
+  height = level;
+  return true;
+}
+
 constexpr uint64_t kFoamMesh = 0x574C475055464F41ull;
 constexpr uint64_t kFoamMaterial = 0x574C4649454C4432ull;
 static_assert(sizeof(WaterFlowArgs) == 68 && sizeof(WaterHullArgs) == 60);
@@ -101,6 +125,17 @@ void WaterGpuSimulation::ensureResources() {
   m_foamTarget = create(sim::kFoamVertices * sizeof(sim::Vertex), "Water foam displaced vertices");
   m_foamIndices = create(sim::kFoamIndices * sizeof(uint32_t), "Water foam indices");
 }
+bool WaterGpuSimulation::waterLevelAt(const Vector3& position, float& height) const {
+  return waterLevelBuffer() != nullptr && sampleWaterLevel(m_waterLevelMap, position, height);
+}
+
+Rc<DxvkBuffer> WaterGpuSimulation::waterLevelBuffer() const {
+  if (!m_waterLevelReady || GetTickCount() - m_waterLevelTick >= 500u) {
+    return nullptr;
+  }
+  return m_waterLevelBuffer;
+}
+
 bool WaterGpuSimulation::prepare(const Rc<DxvkContext>& ctx, bool enabled, remixapi::water::gpu::Frame& frame) {
   ScopedCpuProfileZone();
   auto* assets = ctx->getCommonObjects()->getSceneManager().getAssetReplacer().get();
@@ -124,9 +159,14 @@ bool WaterGpuSimulation::prepare(const Rc<DxvkContext>& ctx, bool enabled, remix
         m_shared->ready = enabled ? 1u : 0u;
         m_shared->readyTick = GetTickCount();
         m_shared->flowReady = enabled ? (WaterSystem::localFlow()?sim::kFoamFlow:0) | (WaterSystem::hullWaves()?sim::kHullWater:0) : 0;
-        if (m_shared->flowReady && m_shared->waterMapReady && !m_mapUploaded) {
-          waterMap.assign(m_shared->waterMap, m_shared->waterMap + 128 * 128);
+        // Optical water levels remain available when the interaction solvers are disabled.
+        const bool mapReady = m_shared->waterMapReady && GetTickCount() - m_shared->tick < 500u;
+        if (mapReady && (!m_waterLevelReady || m_waterLevelEpoch != m_shared->epoch)) {
+          waterMap.assign(m_shared->waterMap, m_shared->waterMap + kWaterLevelCount);
         }
+        m_waterLevelReady = mapReady;
+        m_waterLevelTick = m_shared->tick;
+        m_waterLevelEpoch = m_shared->epoch;
         copied = true;
         active = enabled && m_shared->active && GetTickCount()-m_shared->tick < 500;
         epoch = m_shared->epoch;
@@ -143,15 +183,11 @@ bool WaterGpuSimulation::prepare(const Rc<DxvkContext>& ctx, bool enabled, remix
             m_foamSequence = m_shared->foamSequence;
           }
         } else if (count > sim::kQueueSize) { active = false; }
+      } else {
+        m_waterLevelReady = false;
       }
       ReleaseMutex(m_mutex);
     }
-  }
-  if (!enabled || (copied && !active) || (GetTickCount()-m_surface.tick >= 500 && packets.empty())) {
-    m_valid = false;
-    m_flowActive = false;
-    m_hullActive = false;
-    return false;
   }
   if (!waterMap.empty()) {
     DxvkBufferCreateInfo info {};
@@ -161,8 +197,42 @@ bool WaterGpuSimulation::prepare(const Rc<DxvkContext>& ctx, bool enabled, remix
     info.size = waterMap.size() * sizeof(float);
     m_waterMap = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, DxvkMemoryStats::Category::RTXBuffer, "Local flow native water map");
     ctx->uploadBuffer(m_waterMap, waterMap.data(), uint32_t(info.size));
+    m_waterLevelMap.resize(kWaterLevelHeader + kWaterLevelCount);
+    std::copy(waterMap.begin(), waterMap.end(), m_waterLevelMap.begin() + kWaterLevelHeader);
+    m_waterMin = 0.0f;
+    m_waterMax = 0.0f;
     for (float z : waterMap) { if (std::isfinite(z) && z > -10000) { m_waterMin = (std::min)(m_waterMin,z); m_waterMax = (std::max)(m_waterMax,z); } }
     m_mapUploaded = true;
+  }
+  const auto mapOrigin = WaterSystem::waterMapOrigin();
+  const float mapSpacing = WaterSystem::waterMapCellSize();
+  const float edgeFade = (std::min)(frame.data[3] * 0.5f, mapSpacing * 0.5f);
+  if (!std::isfinite(mapOrigin.x) || !std::isfinite(mapOrigin.y) || !std::isfinite(mapSpacing)
+      || mapSpacing <= 0.0f || !std::isfinite(edgeFade) || edgeFade <= 0.0f) {
+    m_waterLevelBuffer = nullptr;
+  } else if (m_waterLevelReady && m_waterLevelMap.size() == kWaterLevelHeader + kWaterLevelCount) {
+    const bool changed = !waterMap.empty() || m_waterLevelBuffer == nullptr || m_waterLevelMap[0] != mapOrigin.x
+      || m_waterLevelMap[1] != mapOrigin.y || m_waterLevelMap[2] != mapSpacing || m_waterLevelMap[3] != edgeFade;
+    if (changed) {
+      m_waterLevelMap[0] = mapOrigin.x;
+      m_waterLevelMap[1] = mapOrigin.y;
+      m_waterLevelMap[2] = mapSpacing;
+      m_waterLevelMap[3] = edgeFade;
+      DxvkBufferCreateInfo info {};
+      info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+      info.access = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+      info.size = m_waterLevelMap.size() * sizeof(float);
+      m_waterLevelBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        DxvkMemoryStats::Category::RTXBuffer, "Water optical level map");
+      ctx->uploadBuffer(m_waterLevelBuffer, m_waterLevelMap.data(), uint32_t(info.size));
+    }
+  }
+  if (!enabled || (copied && !active) || (GetTickCount()-m_surface.tick >= 500 && packets.empty())) {
+    m_valid = false;
+    m_flowActive = false;
+    m_hullActive = false;
+    return false;
   }
   if (!WaterSystem::localFlow()) { m_flowActive = false; }
   if (!WaterSystem::hullWaves()) { m_hullActive = false; }

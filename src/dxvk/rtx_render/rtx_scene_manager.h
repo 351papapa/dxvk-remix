@@ -218,6 +218,12 @@ class SceneManager : public CommonDeviceObject, public ResourceCache {
   std::unique_ptr<GrassSystem> m_grass;
   WindowLightState m_windowLights;
   bool m_windowLightsWereEnabled = false;
+  uint64_t m_classificationInputs = 0;
+  uint64_t m_classificationHidden = 0;
+  uint32_t m_classificationFrames = 0;
+  uint32_t m_classificationLogFrame = 0;
+  double m_classificationMs = 0.0;
+  double m_classificationMaxMs = 0.0;
   friend class ImGUI;
   // The scene's own retained instances build and keep RT instances themselves.
   friend class RetainedScene;
@@ -323,7 +329,7 @@ public:
   // DXVK chunks (see REMIX-5845) because an API client may never present again.
   void destroyExternalMesh(const Rc<DxvkContext>& ctx, remixapi_MeshHandle handle);
   
-  void setExternalStartInMediumMaterial(const MaterialData& translucentMaterial);
+  void setExternalStartInMediumMaterial(const MaterialData& translucentMaterial, uint64_t sourceHash);
   void clearExternalStartInMediumMaterial();
   
   bool hasAnyMods() const;
@@ -336,6 +342,7 @@ public:
   Rc<DxvkBuffer> getVolumeMaterialBuffer() { return m_volumeMaterialBuffer; }
   GrassSystem& getGrass() { return *m_grass; }
   const std::string* getOriginalTextureName(uint64_t hash) const { return m_wetnessDffRules.originalTextureName(hash); }
+  WetnessDffRules::Rule getWetnessMeshRule(uint64_t hash) const { return m_wetnessDffRules.rule(hash); }
   bool submitGrass(const Rc<DxvkContext>& ctx, const std::shared_ptr<const ReplacementBucket>& asset, uint64_t identity, const Matrix4& transform);
   void retireGrass();
   WindowLightState& getWindowLights() { return m_windowLights; }
@@ -409,6 +416,9 @@ public:
   const fast_unordered_cache<FogState>& getFogStates() const { return m_fogStates; }
 
   uint32_t getStartInMediumMaterialIndex() { return m_startInMediumMaterialIndex; }
+  uint64_t getStartInMediumMaterialSourceHash() const {
+    return m_startInMediumMaterialIndex != SURFACE_INDEX_INVALID ? m_startInMediumMaterialSourceHash : 0;
+  }
   
   uint32_t getActivePOMCount() {return m_activePOMCount;}
 
@@ -593,10 +603,15 @@ private:
   ObjectCacheState onSceneObjectAdded(Rc<DxvkContext> ctx, const SceneDraw& drawCallState, BlasEntry* pBlas);
   // Called whenever a BLAS scene object is updated
   // rebuildTopologyInPlace (RetainedScene's owner-keyed geometry): the entry is rebuilt in place when the draw's
-  // topology differs from the one it holds, or when dropHistory is set. A rebuilt entry has no previous positions, and
-  // its instances lose their opacity micromap data (OpacityMicromapManager::onInstanceTopologyChanged).
+  // topology differs from the one it holds, or when dropHistory is set. Normally it drops vertex history; proven
+  // immutable vertices can instead reuse their buffers (reported by vertexDataReused). Both paths rebuild the full
+  // BLAS and discard opacity micromap data (OpacityMicromapManager::onInstanceTopologyChanged).
   ObjectCacheState onSceneObjectUpdated(Rc<DxvkContext> ctx, const SceneDraw& drawCallState, BlasEntry* pBlas,
-                                        bool rebuildTopologyInPlace = false, bool dropHistory = false);
+                                        bool rebuildTopologyInPlace = false, bool dropHistory = false,
+                                        bool* vertexDataReused = nullptr);
+  // Generic immutable-vertex fast path: only the index cache is replaced, while
+  // the owner still requests a full topology/BLAS rebuild and OMM invalidation.
+  bool updateIndexOnlyGeometry(const Rc<DxvkContext>& ctx, const SceneDraw& drawCallState, BlasEntry& blas);
   // Called whenever a new instance has been added to the database
   void onInstanceAdded(RtInstance& instance);
   // Called whenever instance metadata is updated
@@ -708,6 +723,8 @@ private:
   uint32_t m_startInMediumMaterialIndex = SURFACE_INDEX_INVALID;
   uint32_t m_fogStartInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
   uint32_t m_externalStartInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
+  uint64_t m_externalStartInMediumMaterialSourceHash = 0;
+  uint64_t m_startInMediumMaterialSourceHash = 0;
   uint32_t m_startInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
   uint32_t m_lastResolvedStartInMediumMaterialIndexInCache = kInvalidMaterialCacheIndex;
   uint32_t m_lastUploadedStartInMediumMaterialIndexInCache = kInvalidMaterialCacheIndex;

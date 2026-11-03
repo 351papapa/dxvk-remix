@@ -200,6 +200,15 @@ bool evalMediumChange(
       translucentSurfaceMaterialInteractionCreate(polymorphicSurfaceMaterialInteraction);
 
     mediumMaterialIndex = translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex;
+    if (cb.cameraWaterVolumeActive && cb.startInMediumMaterialIndex != SURFACE_INDEX_INVALID &&
+        mediumMaterialIndex < cb.surfaceCount)
+    {
+      // The camera-global water volume owns extinction after water re-entry.
+      if (surfaces[mediumMaterialIndex].isAnimatedWater)
+      {
+        mediumMaterialIndex = cb.startInMediumMaterialIndex;
+      }
+    }
 
     return true;
   }

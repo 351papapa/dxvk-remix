@@ -1690,19 +1690,19 @@ namespace dxvk {
 
     // Replacement options
     RTX_OPTION_ARGS("rtx", bool, enableReplacementAssets, true, "Globally enables or disables all enhanced asset replacement (materials, meshes, lights) functionality.",
-                    args.flags = RtxOptionFlags::UserSetting);
+                    args.flags = RtxOptionFlags::UserSetting | RtxOptionFlags::InvalidatesDrawcallTranslation);
     RTX_OPTION_ARGS("rtx", bool, enableReplacementLights, true,
                "Enables or disables enhanced light replacements.\n"
                "Requires replacement assets in general to be enabled to have any effect.",
-               args.flags = RtxOptionFlags::UserSetting);
+               args.flags = RtxOptionFlags::UserSetting | RtxOptionFlags::InvalidatesDrawcallTranslation);
     RTX_OPTION_ARGS("rtx", bool, enableReplacementMeshes, true,
                "Enables or disables enhanced mesh replacements.\n"
                "Requires replacement assets in general to be enabled to have any effect.",
-               args.flags = RtxOptionFlags::UserSetting);
+               args.flags = RtxOptionFlags::UserSetting | RtxOptionFlags::InvalidatesDrawcallTranslation);
     RTX_OPTION_ARGS("rtx", bool, enableReplacementMaterials, true,
                "Enables or disables enhanced material replacements.\n"
                "Requires replacement assets in general to be enabled to have any effect.",
-               args.flags = RtxOptionFlags::UserSetting);
+               args.flags = RtxOptionFlags::UserSetting | RtxOptionFlags::InvalidatesDrawcallTranslation);
     RTX_OPTION("rtx", bool, enableReplacementInstancerMeshRendering, true,
                "Enables or disables rendering GeomPointInstancer meshes using an optimized path.\n"
                "Requires reloading replacement assets.");

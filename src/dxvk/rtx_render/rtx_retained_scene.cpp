@@ -21,11 +21,14 @@
 */
 #include "rtx_retained_scene.h"
 #include "rtx_retained_compat.h"
+#include "rtx_retained_compat_policy.h"
+#include "rtx_retained_batch_policy.h"
 #include "rtx_scene_transient.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <optional>
 #include <unordered_set>
 
@@ -33,6 +36,7 @@
 #include "graph/rtx_graph_instance.h"
 #include "rtx_asset_replacer.h"
 #include "rtx_fork_hooks.h"
+#include "rtx_fork_material_derivation.h"
 #include "rtx_game_capturer.h"
 #include "rtx_objectpicking.h"
 #include "rtx_opacity_micromap_manager.h"
@@ -159,7 +163,7 @@ namespace dxvk {
 
     Matrix4 submeshTransform(const ExternalDrawState& desc, size_t i, const Matrix4& objectToWorld) {
       const ExternalDrawState::SubmeshPart* part = submeshPart(desc, i);
-      return part != nullptr ? objectToWorld * part->submeshToObject : objectToWorld;
+      return retained_compat::childTransform(objectToWorld, part != nullptr ? &part->submeshToObject : nullptr);
     }
   }
 
@@ -430,6 +434,126 @@ namespace dxvk {
     return result.kind == frontend::InstanceFeedback::Kind::Accepted;
   }
 
+  bool RetainedScene::resolveStaticParts(const ExternalDrawState& canonical, std::vector<ExternalDrawState>& out) const {
+    // Match buildNow/buildDirect's frontend-resolved path. Unsupported services keep the complete canonical
+    // description on its ordinary path; this routine never creates instances, lights, graphs or GPU buffers.
+    const auto& sourceTransforms = canonical.drawCall.getTransformData();
+    if (!canonical.frontendResolved || !canonical.inlineSubmeshes || canonical.inlineSubmeshes->size() != 1 ||
+        !canonical.resolvedMaterial || canonical.inlineSubmeshParts || canonical.deforming ||
+        canonical.optionalParticleDesc || canonical.materialOverride || !canonical.gpuInstancingTransforms.empty() ||
+        canonical.sortOrder || canonical.cameraType != CameraType::Main || canonical.drawCall.cameraType != CameraType::Main ||
+        canonical.drawCall.usesVertexShader || canonical.drawCall.newGeometryEveryFrame ||
+        canonical.drawCall.isUsingRaytracedRenderTarget || canonical.drawCall.getSkinningState().numBones ||
+        canonical.drawCall.getSkinningState().numBonesPerVertex || !canonical.drawCall.getSkinningState().pBoneMatrices.empty() ||
+        sourceTransforms.instancesToObject || sourceTransforms.instancesFromHost || sourceTransforms.enableClipPlane ||
+        sourceTransforms.texgenMode != TexGenMode::None) {
+      return false;
+    }
+    try {
+      ExternalDrawState resolved = canonical;
+      bool expanded = false;
+      if (canonical.assetKeys.has_value()) {
+        uint32_t matchedKey = 0;
+        if (const auto bucket = m_scene.findMeshReplacements(*canonical.assetKeys, &matchedKey)) {
+          // expandReplacement also understands services. Do not create a partial static rendering view of one.
+          for (const AssetReplacement& replacement : bucket->replacements) {
+            const bool originalToken = replacement.type == AssetReplacement::eNone && replacement.includeOriginal;
+            if ((replacement.type != AssetReplacement::eMesh && !originalToken) || replacement.particleSystem ||
+                (replacement.instancesToObject && !replacement.instancesToObject->empty()) ||
+                replacement.pointInstanceIndex != kInvalidPointInstanceIndex) {
+              return false;
+            }
+          }
+          Entry::Expansion expansion;
+          AxisAlignedBoundingBox bounds, lightBounds;
+          if (expandReplacement(resolved, *bucket, expansion, bounds, lightBounds) != nullptr ||
+              !expansion.lightTemplates.empty() || !expansion.graphTemplates.empty()) {
+            return false;
+          }
+          expanded = true;
+        }
+      }
+      CategoryFlags allowed;
+      allowed.set(InstanceCategories::IgnoreLights);
+      allowed.set(InstanceCategories::IgnoreAntiCulling);
+      allowed.set(InstanceCategories::IgnoreMotionBlur);
+      allowed.set(InstanceCategories::IgnoreOpacityMicromap);
+      allowed.set(InstanceCategories::IgnoreAlphaChannel);
+      allowed.set(InstanceCategories::IgnoreBakedLighting);
+      std::vector<ExternalDrawState> flattened;
+      flattened.reserve(resolved.inlineSubmeshes->size());
+      for (size_t i = 0; i < resolved.inlineSubmeshes->size(); ++i) {
+        const RasterGeometry& geometry = (*resolved.inlineSubmeshes)[i];
+        if (!geometry.positionBuffer.defined() || !geometry.vertexCount || !geometry.indexBuffer.defined() ||
+            !geometry.indexCount || geometry.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST ||
+            !geometry.getHashForRule<rules::FullGeometryHash>() || geometry.numBonesPerVertex || geometry.skinningRetarget ||
+            geometry.blendWeightBuffer.defined() || geometry.blendIndicesBuffer.defined()) {
+          return false;
+        }
+        ExternalDrawState flat = resolved;
+        const ExternalDrawState::SubmeshPart* part = submeshPart(resolved, i);
+        if (part != nullptr) {
+          if (part->particleSystem || (part->instancesToObject && !part->instancesToObject->empty())) {
+            return false;
+          }
+          DrawCallTransforms& transforms = flat.drawCall.modifyTransformData();
+          transforms = sourceTransforms;
+          transforms.objectToWorld = retained_compat::childTransform(sourceTransforms.objectToWorld, &part->submeshToObject);
+          transforms.objectToView = transforms.worldToView * transforms.objectToWorld;
+          if (part->meshReplacement) {
+            transforms.textureTransform = Matrix4();
+            transforms.texgenMode = TexGenMode::None;
+            transforms.instancesToObject = nullptr;
+            transforms.instancesFromHost = false;
+          }
+          flat.drawCall.modifyCategoryFlags() = part->categories;
+          if (part->material != nullptr) {
+            flat.resolvedMaterial = part->material;
+          }
+        }
+        const MaterialData& material = *flat.resolvedMaterial;
+        if (material.getType() != MaterialDataType::Opaque || material.getIgnored() || material.getParticleSystemDesc() ||
+            (flat.drawCall.getCategoryFlags().raw() & ~allowed.raw()) ||
+            RtxOptions::shouldConvertToLight(flat.drawCall.getMaterialData().getHash())) {
+          return false;
+        }
+        const auto& opaque = material.getOpaqueMaterialData();
+        if (!retained_batch_policy::hasNoEffectiveAuthoredEmission(opaque.getEnableEmission(), opaque.getEmissiveIntensity()) || opaque.getSpriteSheetFPS() ||
+            opaque.getSpriteSheetRows() > 1 || opaque.getSpriteSheetCols() > 1 || opaque.getHeightTexture().isValid()) {
+          return false;
+        }
+        // Expanded parts ignore the original frontend alpha/legacy overrides in buildDirect. Derive them with
+        // the part's actual material/categories and its effective texture transform, including includeOriginal parts.
+        const RtSurface::AlphaState alpha = !expanded && flat.alphaState.has_value() ? *flat.alphaState
+          : InstanceManager::predictAlphaState(flat.drawCall, material);
+        if (!alpha.isBlendingDisabled || !alpha.isFullyOpaque || alpha.alphaTestType != AlphaTestType::kAlways ||
+            alpha.isDecal || alpha.isParticle || alpha.emissiveBlend) {
+          return false;
+        }
+        flat.alphaState = alpha;
+        if (expanded || !flat.legacySurface.has_value()) {
+          flat.legacySurface = deriveLegacySurface(flat.drawCall.getMaterialData(), flat.drawCall.getTransformData());
+        }
+        flat.categories = flat.drawCall.getCategoryFlags();
+        flat.inlineSubmeshes = std::make_shared<const std::vector<RasterGeometry>>(1, geometry);
+        flat.drawCall.overrideGeometryData(std::shared_ptr<const RasterGeometry>(flat.inlineSubmeshes, &flat.inlineSubmeshes->front()));
+        flat.inlineSubmeshParts.reset();
+        flat.assetKeys.reset();
+        flat.drawCall.materialIndependentGeometry = false;
+        flat.drawCall.geometryShareKey = kEmptyHash;
+        // Each standalone part has submesh zero, so its geometry identity must distinguish different prims.
+        const uint64_t identity[] = {geometry.getHashForRule<rules::FullGeometryHash>(), geometry.vertexCount,
+          geometry.indexCount, uint64_t(geometry.topology), geometry.cullMode, uint64_t(geometry.frontFace), geometry.forceCullBit};
+        flat.mesh = reinterpret_cast<remixapi_MeshHandle>(XXH3_64bits_withSeed(identity, sizeof(identity), 0x5354415443504152ull) | 1ull);
+        flattened.push_back(std::move(flat));
+      }
+      out = std::move(flattened);
+      return true;
+    } catch (const std::exception&) {
+      return false;
+    }
+  }
+
   bool RetainedScene::inheritHistory(const Rc<DxvkContext>& ctx, uint64_t handle, uint64_t from) {
     const auto to = m_entries.find(handle);
     const auto source = m_entries.find(from);
@@ -569,7 +693,8 @@ namespace dxvk {
     if (previous != nullptr) {
       // An update of the same light set keeps its lights. The graphs keep their state through an update of the same
       // replacement: their owners point at the carried lights and resolve the rebuilt submeshes through the scene.
-      if (expansion != nullptr && previous->lights.size() == expansion->lightTemplates.size()) {
+      if (entry.visible && expansion != nullptr && previous->lightsCreated &&
+          previous->lights.size() == expansion->lightTemplates.size()) {
         expansion->lights = std::move(previous->lights);
         expansion->lightsCreated = true;
         moveExpansionLights(entry, *expansion);
@@ -588,7 +713,7 @@ namespace dxvk {
       return;
     }
     Entry::Expansion& adopted = *entry.expansion;
-    if (!adopted.lightsCreated) {
+    if (entry.visible && !adopted.lightsCreated) {
       // As SceneManager::processReplacementLights places them: at the object's transform.
       LightManager& lightManager = m_scene.getLightManager();
       const Matrix4& objectToWorld = entry.desc.drawCall.getTransformData().objectToWorld;
@@ -601,7 +726,9 @@ namespace dxvk {
       result.lightsCreated = uint32_t(adopted.lights.size());
     }
     result.lights = uint32_t(adopted.lights.size());
-    ensureGraphs(ctx, entry.handle, adopted);
+    if (entry.visible) {
+      ensureGraphs(ctx, entry.handle, adopted);
+    }
   }
 
   void RetainedScene::moveExpansionLights(const Entry& entry, Entry::Expansion& expansion) {
@@ -626,6 +753,10 @@ namespace dxvk {
   // off and on), as drawReplacements makes them again.
   void RetainedScene::ensureGraphs(const Rc<DxvkContext>& ctx, uint64_t handle, Entry::Expansion& expansion) {
     if (expansion.graphTemplates.empty() || !expansion.lightsCreated) {
+      return;
+    }
+    const auto entry = m_entries.find(handle);
+    if (entry == m_entries.end() || !entry->second.visible) {
       return;
     }
     GraphManager& graphManager = m_scene.getGraphManager();
@@ -721,8 +852,39 @@ namespace dxvk {
       return;
     }
     const bool hide = !entry.visible && policy == 2;
+    const bool replacementDeactivated = entry.replacement != nullptr && entry.replacement->prims.empty();
+    const bool effectsDeactivated =
+      (entry.expansion != nullptr && !entry.expansion->lightsCreated) || replacementDeactivated;
+    if (!m_buildingNow && entry.visible && effectsDeactivated) {
+      // Hiding stops replacement lights and graphs. A visible entry builds new ones from its templates.
+      queueBuild(entry);
+    }
     if (hide == entry.hiddenApplied) {
+      if (!hide && effectsDeactivated) {
+        InstanceManager& instances = m_scene.m_instanceManager;
+        for (const Submesh& sub : entry.subs) {
+          if (sub.instance != nullptr && !sub.instance->testCategoryFlags(InstanceCategories::Hidden)) {
+            instances.setInstanceHiddenExternally(*sub.instance, sub.instance->hiddenByAlphaToggles());
+          }
+        }
+        if (entry.replacement != nullptr) {
+          for (const PrimInstance& prim : entry.replacement->prims) {
+            RtInstance* instance = prim.getInstance();
+            if (instance != nullptr && !instance->testCategoryFlags(InstanceCategories::Hidden)) {
+              instances.setInstanceHiddenExternally(*instance, instance->hiddenByAlphaToggles());
+            }
+          }
+        }
+      }
       return;
+    }
+    if (hide && entry.expansion != nullptr) {
+      destroyGraphs(*entry.expansion);
+      destroyLights(*entry.expansion);
+      entry.expansion->lightsCreated = false;
+    }
+    if (hide && entry.replacement != nullptr) {
+      entry.replacement->clear();
     }
     entry.hiddenApplied = hide;
     InstanceManager& instances = m_scene.m_instanceManager;
@@ -744,6 +906,11 @@ namespace dxvk {
 
   void RetainedScene::releaseDirect(Entry& entry) {
     releaseReplacement(entry);
+    if (entry.expansion != nullptr) {
+      destroyGraphs(*entry.expansion);
+      destroyLights(*entry.expansion);
+      entry.expansion.reset();
+    }
     for (Submesh& sub : entry.subs) {
       if (sub.instance != nullptr) {
         sub.instance->setSceneOwnedHandle(0);
@@ -1243,11 +1410,14 @@ namespace dxvk {
         // Geometry the entry owns (skinned or deforming) with a new topology, or after a jump: rebuilt in place
         // (SceneManager::onSceneObjectUpdated, rebuildTopologyInPlace), so the instance keeps its BLAS entry and nothing
         // is reallocated per change.
-        const SceneManager::ObjectCacheState result = m_scene.onSceneObjectUpdated(ctx, drawCall, &blas, true, jump.jumped);
+        bool vertexDataReused = false;
+        const SceneManager::ObjectCacheState result = m_scene.onSceneObjectUpdated(ctx, drawCall, &blas, true, jump.jumped, &vertexDataReused);
         if (result == SceneManager::ObjectCacheState::KBuildBVH && !jump.jumped) {
           // A draw that continues the geometry's last one with another topology (a level of detail, a batch with
           // another vertex count): its new positions are its previous ones, so its motion is its instance's only.
-          m_scene.inheritPreviousPositions(ctx, blas, blas);
+          if (!vertexDataReused) {
+            m_scene.inheritPreviousPositions(ctx, blas, blas);
+          }
           ++m_history.topologyRebuilds;
         }
         if (result == SceneManager::ObjectCacheState::kUpdateBVH || result == SceneManager::ObjectCacheState::KBuildBVH) {

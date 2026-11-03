@@ -2014,12 +2014,12 @@ namespace {
         return;
       }
 
-      sceneManager.setExternalStartInMediumMaterial(*material);
+      sceneManager.setExternalStartInMediumMaterial(*material, reinterpret_cast<uint64_t>(handle));
     });
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+  remixapi_ErrorCode retainedBatchUpsertVersion(uint32_t version, uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
     auto* device = tryAsDxvk();
     if (!device) {
       return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
@@ -2028,7 +2028,7 @@ namespace {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
     for (uint32_t i = 0; i < count; ++i) {
-      if (!remixapi_retained::valid(instances[i])) {
+      if (!remixapi_retained::valid(instances[i], version)) {
         return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
       }
     }
@@ -2087,6 +2087,14 @@ namespace {
       ctx->getCommonObjects()->getSceneManager().retainedScene().compat().upsert(epoch, std::move(records), std::move(states));
     });
     return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+    return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION_2, epoch, count, instances);
+  }
+
+  remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsertV3(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+    return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION, epoch, count, instances);
   }
 
   remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
@@ -3044,10 +3052,10 @@ extern "C"
 {
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
-    if (!outInterface || version != REMIXAPI_RETAINED_VERSION || structSize != sizeof(*outInterface)) {
+    if (!outInterface || !remixapi_retained::supportedVersion(version) || structSize != sizeof(*outInterface)) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-    *outInterface = { REMIXAPI_RETAINED_VERSION, sizeof(*outInterface), retainedBatchUpsert,
+    *outInterface = { version, sizeof(*outInterface), version == REMIXAPI_RETAINED_VERSION_2 ? retainedBatchUpsert : retainedBatchUpsertV3,
       retainedBatchRemove, retainedClear, retainedCommitFrame, retainedGetStatus, retainedDrawOrdered };
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
@@ -3267,6 +3275,8 @@ extern "C"
         std::strcmp(key, "vc.api.retainedOrderedVersion") == 0 ||
         std::strcmp(key, "__remix.lightDefinitions.version") == 0) {
       value = "1";
+    } else if (std::strcmp(key, remixapi_retained::runtimeVisibilityKey) == 0) {
+      value = "3";
     } else if (std::strcmp(key, "vc.api.legacySurfaceRule") == 0) {
       value = dxvk::str::format(std::hex, legacySurfaceRuleFingerprint());
     } else if (!dxvk::fork_game_state::GameStateStore::get().tryGet(std::string{ key }, value)) {

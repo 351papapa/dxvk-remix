@@ -3,6 +3,7 @@
 #include "rtx_imgui.h"
 #include "rtx_context.h"
 #include "rtx_scene_manager.h"
+#include "rtx_options.h"
 #include "rtx_asset_replacer.h"
 #include "rtx_water_foam_geometry.h"
 #include "../../util/util_global_time.h"
@@ -17,6 +18,36 @@
 #include <system_error>
 
 namespace dxvk {
+WaterOpticalProperties WaterSystem::opticalProperties() {
+  const float requestedParticles = particleExtinctionPerMeter();
+  const float particlesPerMeter = std::isfinite(requestedParticles) ? std::clamp(requestedParticles, 0.0f, 1.0f) : 0.0f;
+  const float worldUnitsPerMeter = RtxOptions::getMeterToWorldUnitScale();
+  // Invalid scene scales must not turn clear water into an infinitely dense medium.
+  const float particlesPerWorldUnit = std::isfinite(worldUnitsPerMeter) && worldUnitsPerMeter > 0.0f
+    ? particlesPerMeter / (std::max)(worldUnitsPerMeter, 0.000001f) : 0.0f;
+  return waterOpticalProperties(transmittanceColor(), transmittanceDistance(), particlesPerWorldUnit);
+}
+
+void WaterSystem::updateCameraMedium(const SceneManager& scene) {
+  // Latched after scene preparation: no option writes and no glass-as-water heuristic.
+  m_cameraMedium = makeWaterMediumState(enabled() && underwaterEnabled() && overrideMaterial(),
+    parseWaterMediumHash(cameraMediumMaterialHash()), scene.getStartInMediumMaterialSourceHash(),
+    opticalProperties(),
+    underwaterScattering(), underwaterAnisotropy(), m_cameraMedium);
+  WaterLightSurface surface;
+  surface.valid = m_cameraMedium.active && RtxOptions::zUp() && gpuSurface() && m_gpuSurface != nullptr
+    && m_gpuSurface->surfaceHeightAt(scene.getCamera().getPosition(), surface.height);
+  m_cameraMedium.changed |= surface.valid != m_cameraLightSurface.valid
+    || (surface.valid && surface.height != m_cameraLightSurface.height);
+  m_cameraLightSurface = surface;
+  if (m_cameraMedium.changed) {
+    Logger::info(str::format("[Water medium] active=", m_cameraMedium.active,
+      " extinction=", m_cameraMedium.extinction.x, ",", m_cameraMedium.extinction.y, ",", m_cameraMedium.extinction.z,
+      " scattering=", m_cameraMedium.scattering.x, " g=", m_cameraMedium.anisotropy,
+      " surfaceValid=", m_cameraLightSurface.valid, " surfaceHeight=", m_cameraLightSurface.height));
+  }
+}
+
 std::string WaterSystem::resolveAssetPath(const std::string& path) {
   if (path.empty()) { return {}; }
   std::filesystem::path asset = std::filesystem::u8path(path);
@@ -395,129 +426,123 @@ void WaterSystem::submitFoamSurface(Rc<DxvkContext> ctx) {
   ctx->getCommonObjects()->getSceneManager().submitExternalDraw(ctx, std::move(state));
 }
 
-void WaterSystem::showImguiSettings() {  constexpr auto flags = ImGuiSliderFlags_AlwaysClamp;
+void WaterSystem::showImguiSettings() {
+  constexpr auto flags = ImGuiSliderFlags_AlwaysClamp;
   RemixGui::Checkbox("Enable new water system", &enabledObject());
-  ImGui::TextWrapped("Off: use original water with existing water texture and weather effects. Disables geometric waves, wakes, interactions and the water material override.");
   ImGui::BeginDisabled(!enabled());
-  RemixGui::Checkbox("GPU flow diagnostics", &localFlowDiagnosticsObject());
-  WaterFoamGpuGeometry::showImguiSettings();
-  RemixGui::InputText("Beach eligibility mask", &beachMaskPathObject());
-  RemixGui::InputText("Foam material color texture", &foamColorTextureObject());
-  RemixGui::InputText("Foam material normal texture", &foamNormalTextureObject());
-  RemixGui::InputText("Foam composite pattern", &foamCompositeTextureObject());
-  RemixGui::InputText("Caustic pattern", &causticsTextureObject());
-  RemixGui::Checkbox("Contact foam", &contactFoamObject());
-  RemixGui::Checkbox("Exclude player from contact foam", &contactFoamPlayerExclusionObject());
-  RemixGui::Checkbox("GPU water surface", &gpuSurfaceObject());
-  RemixGui::DragFloat2("Water map world origin", &waterMapOriginObject(), 1.0f);
-  RemixGui::SliderFloat("Water map cell size", &waterMapCellSizeObject(), 0.01f, 1024.0f, "%.2f", flags);
-  RemixGui::Checkbox("GPU interaction waves and foam following (experimental)", &gpuSimulationObject());
-  RemixGui::Checkbox("GPU boat waves: surface height and normals", &hullWavesObject());
-  RemixGui::SliderFloat("Boat wave strength", &hullWaveStrengthObject(), 0.f, 3.f);
-  RemixGui::SliderFloat("Boat wave propagation", &hullWaveSpeedObject(), 2.f, 8.f);
-  RemixGui::SliderFloat("Boat wave damping", &hullWaveDampingObject(), .05f, 2.f);
-  RemixGui::Checkbox("GPU local wake flow", &localFlowObject());
-  RemixGui::SliderFloat("Boat flow strength", &localFlowStrengthObject(), 0.f, 4.f);
-  RemixGui::SliderFloat("Boat wake swirl", &localFlowSwirlObject(), 0.f, 4.f);
-  RemixGui::SliderFloat("Wake flow drag", &localFlowDragObject(), .05f, 2.f);
-  RemixGui::Checkbox("Override water material", &overrideMaterialObject());
-  RemixGui::ColorEdit3("Transmittance color", &transmittanceColorObject());
-  RemixGui::SliderFloat("Transmittance distance", &transmittanceDistanceObject(), 0.1f, 100.0f, "%.2f", flags);
-  ImGui::TextUnformatted("Water volume: thin_walled = 0");
-  ImGui::Separator();
-  RemixGui::SliderFloat("Simulation radius", &simulationRadiusObject(), 16.0f, 96.0f, "%.0f world units", flags);
-  ImGui::TextWrapped("Circular coverage around the player, including behind you. A larger radius spreads the same grid over a larger area, reducing wave detail. Distant water remains visible.");
-  RemixGui::SliderFloat("Wave amplitude", &amplitudeObject(), 0.0f, 2.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Ocean wave size", &oceanWaveStrengthObject(), 0.0f, 3.0f, "%.2fx", flags);
-  RemixGui::SliderFloat("Rainy wave multiplier", &rainWaveMultiplierObject(), 1.0f, 3.0f, "%.2fx", flags);
-  RemixGui::SliderFloat("Stormy wave multiplier", &stormWaveMultiplierObject(), 1.0f, 3.0f, "%.2fx", flags);
-  RemixGui::SliderFloat("Wavelength", &wavelengthObject(), 6.0f, 40.0f, "%.1f", flags);
-  RemixGui::SliderFloat("Wave speed", &speedObject(), 0.0f, 3.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Wave steepness", &steepnessObject(), 0.0f, 0.9f, "%.2f", flags);
-  RemixGui::Checkbox("GPU beach waves", &beachWavesObject());
-  RemixGui::SliderFloat("Beach wave height", &beachWaveHeightObject(), 0.0f, 1.5f, "%.2f", flags);
-  RemixGui::SliderFloat("Beach wavelength", &beachWaveLengthObject(), 4.0f, 30.0f, "%.1f", flags);
-  RemixGui::SliderFloat("Beach wave period", &beachWavePeriodObject(), 2.0f, 15.0f, "%.1f sec", flags);
-  RemixGui::SliderFloat("Beach wave depth", &beachWaveDepthObject(), 0.5f, 8.0f, "%.2f", flags);
-  ImGui::TextWrapped("Beach waves use terrain depth measured on the GPU. Their height is independent of Wave amplitude.");
-  RemixGui::SliderFloat("Detail wave strength", &detailStrengthObject(), 0.0f, 3.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Detail wave scale", &detailScaleObject(), 0.25f, 4.0f, "%.2f", flags);
-  ImGui::Separator();
-  RemixGui::SliderFloat("Interaction strength", &interactionStrengthObject(), 0.0f, 5.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Interaction radius", &interactionRadiusObject(), 0.5f, 3.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Wave propagation speed", &propagationSpeedObject(), 1.0f, 8.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Wave damping", &dampingObject(), 0.05f, 3.0f, "%.2f", flags);
-  RemixGui::Checkbox("Reduce offscreen simulation", &reduceOffscreenObject());
-  ImGui::Separator();
-  RemixGui::Checkbox("GPU crest and contact foam", &shoreFoamEnabledObject());
-  RemixGui::Checkbox("Foam through scene materials", &foamLineMaterialPathObject());
-  RemixGui::Checkbox("Cull offscreen shore foam", &shoreFoamFrustumCullingObject());
-  RemixGui::Checkbox("Ocean foam only", &shoreFoamOceanOnlyObject());
-  RemixGui::SliderFloat("Shore foam width", &shoreFoamWidthObject(), 0.1f, 2.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Shore foam coverage", &shoreFoamStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Beach foam width", &shoreFoamRunupWidthObject(), 0.0f, 6.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Foam wave response", &shoreFoamWaveResponseObject(), 0.0f, 8.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Water foam lifetime", &shoreFoamLifetimeObject(), 0.5f, 15.0f, "%.1f sec", flags);
-  RemixGui::SliderFloat("Crest foam strength", &crestFoamStrengthObject(), 0.0f, 6.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Crest foam curvature threshold", &crestFoamThresholdObject(), 0.01f, 0.4f, "%.3f", flags);
-  RemixGui::SliderFloat("Beach wetness", &shoreWetnessStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Beach drying time", &shoreWetnessLifetimeObject(), 1.0f, 120.0f, "%.1f sec", flags);
-  RemixGui::SliderFloat("Foam texture scale", &shoreFoamTextureScaleObject(), 0.25f, 12.0f, "%.2f", flags);
-  ImGui::TextWrapped("Whitecaps follow the continuous ocean wave crests. Foam stays on water; exposed beach terrain retains only a drying wet sheen.");
-  RemixGui::SliderFloat("Shore foam sky ambient", &shoreFoamSkyAmbientObject(), 0.0f, 2.0f, "%.2f", flags);
-  ImGui::TextWrapped("Sky ambient applies to the composite display. 0 removes its ambient light.");
-  ImGui::Separator();
-  RemixGui::Checkbox("Underwater receiver caustics", &causticsEnabledObject());
-  RemixGui::Checkbox("Randomized caustic pattern", &causticsRandomizedObject());
-  RemixGui::SliderFloat("Caustic strength", &causticsStrengthObject(), 0.0f, 8.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Caustic scale", &causticsScaleObject(), 0.5f, 16.0f, "%.2f", flags);
-  // Ocean and authored pools are separate art domains, so the pool tiling gets its
-  // own control. Both are world units per caustic texture repeat: a smaller number
-  // packs more of the pattern into the same distance, so a 1.6 m pool tile reads as
-  // a much finer web than the 4 m ocean tile at the same camera distance.
-  RemixGui::Checkbox("Separate scale for pools and fountains", &causticsScalePerDomainObject());
-  ImGui::BeginDisabled(!causticsScalePerDomain());
-  RemixGui::SliderFloat("Caustic scale (non-ocean water)", &causticsPoolScaleObject(), 0.2f, 16.0f, "%.2f", flags);
-  ImGui::EndDisabled();
-  ImGui::TextWrapped(
-    "The split comes from the water surface the refracted sun ray actually hit: the shared-protocol ocean "
-    "material uses the ocean scale, every other animated water surface (pools, fountains) uses the "
-    "pool scale. Both can appear in the same shot.");
-  RemixGui::SliderFloat("Caustic speed", &causticsSpeedObject(), 0.0f, 3.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Caustic dispersion", &causticsDispersionObject(), 0.0f, 2.0f, "%.2f", flags);
-  ImGui::TextWrapped(
-    "Splits the caustic filaments into colour fringes by evaluating the pattern "
-    "three times along the surface normal and feeding the results to R, G and B "
-    "separately. Only visible from above the water: the fringes come from colour "
-    "splitting as light crosses the surface, so they are a transmission effect and "
-    "switch off once the camera is underwater. 0 disables it and restores the "
-    "single-tap cost, which matters because three taps cost three times the "
-    "pattern work.");
-  RemixGui::SliderFloat("Caustic depth", &causticsMaxDepthObject(), 0.5f, 30.0f, "%.2f", flags);
-  RemixGui::SliderInt("Caustic local lights", &causticsLocalLightsObject(), 0, 8);
-  RemixGui::SliderFloat("Caustic local light range", &causticsLocalLightRangeObject(), 5.0f, 200.0f, "%.1f", flags);
-  RemixGui::SliderFloat("Caustic fade start", &causticsFadeStartObject(), 0.0f, 0.9f, "%.2f", flags);
-  RemixGui::Checkbox("Reflected caustics above water", &reflectedCausticsEnabledObject());
-  RemixGui::SliderFloat("Reflected caustic strength", &reflectedCausticsStrengthObject(), 0.0f, 8.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Reflected caustic height", &reflectedCausticsHeightObject(), 0.5f, 15.0f, "%.2f", flags);
-  ImGui::Separator();
-  RemixGui::Checkbox("Underwater color and haze", &underwaterEnabledObject());
-  RemixGui::Checkbox("GPU underwater light shafts", &underwaterLightShaftsObject());
-  RemixGui::Checkbox("Underwater shafts from RTX scene lights", &underwaterSceneLightsObject());
-  RemixGui::SliderInt("Underwater light candidates per tile", &underwaterSceneLightCandidatesObject(), 1, 32);
-  RemixGui::SliderFloat("Underwater RTX light strength", &underwaterSceneLightStrengthObject(), 0.0f, 4.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Underwater shaft strength", &underwaterShaftStrengthObject(), 0.0f, 1.5f, "%.3f", flags);
-  RemixGui::SliderFloat("Underwater shaft scale", &underwaterShaftScaleObject(), 1.0f, 24.0f, "%.2f", flags);
-  RemixGui::SliderFloat("Underwater shaft distance", &underwaterShaftMaxDistanceObject(), 5.0f, 80.0f, "%.1f", flags);
-  RemixGui::SliderFloat("Underwater forward scattering", &underwaterShaftAnisotropyObject(), 0.0f, 0.8f, "%.2f", flags);
-  RemixGui::SliderInt("Underwater shaft samples", &underwaterShaftSamplesObject(), 4, 256);
-  RemixGui::SliderFloat("Underwater density", &underwaterDensityObject(), 0.0f, 0.3f, "%.3f", flags);
-  RemixGui::ColorEdit3("Underwater haze color", &underwaterFogColorObject());
-  RemixGui::SliderInt("Underwater debug view", &underwaterDebugViewObject(), 0, 4);
-  ImGui::TextWrapped("0: Normal. 1: Water depth (red: not submerged, green to blue: 0-10 units). "
-    "2: Water entry hits (red: none, green: all). 3: Light visibility (red: blocked, green: visible, blue: no entry). "
-    "4: Shafts only. Views 2 and 3 require daytime with Numos sky. Magenta in 2-4 means the focusing texture is unavailable. Return to 0 for normal rendering.");
-  ImGui::TextWrapped("Geometric waves and interactions use the local water integration. Distant water keeps animated shading. Native game buoyancy is unchanged.");
+  if (ImGui::CollapsingHeader("Water appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+    RemixGui::Checkbox("Override water material", &overrideMaterialObject());
+    RemixGui::ColorEdit3("Transmittance color", &transmittanceColorObject());
+    RemixGui::SliderFloat("Transmittance distance", &transmittanceDistanceObject(), 0.1f, 100.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Detail wave strength", &detailStrengthObject(), 0.0f, 3.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Detail wave scale", &detailScaleObject(), 0.25f, 4.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Added particle extinction / m", &particleExtinctionPerMeterObject(), 0.0f, 1.0f, "%.4f", flags);
+    ImGui::TextWrapped("Detail waves control surface distortion and reflections. Refraction also follows the water material index of refraction.");
+    ImGui::TextWrapped("Transmittance and suspended particles are shared by the water surface, underwater lighting and caustics.");
+  }
+  if (ImGui::CollapsingHeader("Waves and interactions")) {
+    RemixGui::SliderFloat("Wave amplitude", &amplitudeObject(), 0.0f, 2.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Ocean wave size", &oceanWaveStrengthObject(), 0.0f, 3.0f, "%.2fx", flags);
+    RemixGui::SliderFloat("Wavelength", &wavelengthObject(), 6.0f, 40.0f, "%.1f", flags);
+    RemixGui::SliderFloat("Wave speed", &speedObject(), 0.0f, 3.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Wave steepness", &steepnessObject(), 0.0f, 0.9f, "%.2f", flags);
+    RemixGui::SliderFloat("Rainy wave multiplier", &rainWaveMultiplierObject(), 1.0f, 3.0f, "%.2fx", flags);
+    RemixGui::SliderFloat("Stormy wave multiplier", &stormWaveMultiplierObject(), 1.0f, 3.0f, "%.2fx", flags);
+    RemixGui::Checkbox("GPU beach waves", &beachWavesObject());
+    RemixGui::SliderFloat("Beach wave height", &beachWaveHeightObject(), 0.0f, 1.5f, "%.2f", flags);
+    RemixGui::SliderFloat("Beach wavelength", &beachWaveLengthObject(), 4.0f, 30.0f, "%.1f", flags);
+    RemixGui::SliderFloat("Beach wave period", &beachWavePeriodObject(), 2.0f, 15.0f, "%.1f sec", flags);
+    RemixGui::SliderFloat("Beach wave depth", &beachWaveDepthObject(), 0.5f, 8.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Interaction strength", &interactionStrengthObject(), 0.0f, 5.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Interaction radius", &interactionRadiusObject(), 0.5f, 3.0f, "%.2f", flags);
+    RemixGui::Checkbox("GPU boat waves: surface height and normals", &hullWavesObject());
+    RemixGui::SliderFloat("Boat wave strength", &hullWaveStrengthObject(), 0.f, 3.f);
+    RemixGui::Checkbox("GPU local wake flow", &localFlowObject());
+    RemixGui::SliderFloat("Boat flow strength", &localFlowStrengthObject(), 0.f, 4.f);
+    RemixGui::SliderFloat("Boat wake swirl", &localFlowSwirlObject(), 0.f, 4.f);
+    ImGui::TextWrapped("Beach waves follow terrain depth. Their height is independent of the local wave amplitude.");
+  }
+  if (ImGui::CollapsingHeader("Foam and wet shore")) {
+    RemixGui::Checkbox("GPU crest and contact foam", &shoreFoamEnabledObject());
+    RemixGui::Checkbox("Contact foam", &contactFoamObject());
+    RemixGui::SliderFloat("Shore foam width", &shoreFoamWidthObject(), 0.1f, 2.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Shore foam coverage", &shoreFoamStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Beach foam width", &shoreFoamRunupWidthObject(), 0.0f, 6.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Foam wave response", &shoreFoamWaveResponseObject(), 0.0f, 8.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Water foam lifetime", &shoreFoamLifetimeObject(), 0.5f, 15.0f, "%.1f sec", flags);
+    RemixGui::SliderFloat("Crest foam strength", &crestFoamStrengthObject(), 0.0f, 6.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Foam texture scale", &shoreFoamTextureScaleObject(), 0.25f, 12.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Beach wetness", &shoreWetnessStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Beach drying time", &shoreWetnessLifetimeObject(), 1.0f, 120.0f, "%.1f sec", flags);
+    ImGui::TextWrapped("Whitecaps follow ocean wave crests. Foam stays on water; exposed beach terrain retains a drying wet sheen.");
+  }
+  if (ImGui::CollapsingHeader("Caustics and underwater lighting")) {
+    RemixGui::Checkbox("Underwater receiver caustics", &causticsEnabledObject());
+    RemixGui::SliderFloat("Caustic strength", &causticsStrengthObject(), 0.0f, 8.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Caustic scale", &causticsScaleObject(), 0.5f, 16.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Caustic speed", &causticsSpeedObject(), 0.0f, 3.0f, "%.2f", flags);
+    RemixGui::Checkbox("Underwater volumetric lighting", &underwaterEnabledObject());
+    RemixGui::SliderFloat("Underwater caustic shaft contrast", &volumetricCausticsStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Particle scattering fraction", &underwaterScatteringObject(), 0.0f, 1.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Water forward scattering", &underwaterAnisotropyObject(), 0.0f, 0.8f, "%.2f", flags);
+    RemixGui::Checkbox("Reflected caustics above water", &reflectedCausticsEnabledObject());
+    RemixGui::SliderFloat("Reflected caustic strength", &reflectedCausticsStrengthObject(), 0.0f, 8.0f, "%.2f", flags);
+    ImGui::TextWrapped("Caustic scale and speed also control underwater shafts and reflected caustics.");
+    ImGui::TextWrapped("Underwater lighting follows the camera water medium. It uses the same water transmittance; overall volumetric quality controls also apply.");
+  }
+  if (ImGui::CollapsingHeader("Advanced water settings")) {
+    if (ImGui::TreeNode("Integration and resources")) {
+      RemixGui::Checkbox("GPU water surface", &gpuSurfaceObject());
+      RemixGui::Checkbox("GPU interaction waves and foam following (experimental)", &gpuSimulationObject());
+      RemixGui::Checkbox("Foam through scene materials", &foamLineMaterialPathObject());
+      RemixGui::DragFloat2("Water map world origin", &waterMapOriginObject(), 1.0f);
+      RemixGui::SliderFloat("Water map cell size", &waterMapCellSizeObject(), 0.01f, 1024.0f, "%.2f", flags);
+      RemixGui::InputText("Camera water material hash", &cameraMediumMaterialHashObject());
+      RemixGui::InputText("Beach eligibility mask", &beachMaskPathObject());
+      RemixGui::InputText("Foam material color texture", &foamColorTextureObject());
+      RemixGui::InputText("Foam material normal texture", &foamNormalTextureObject());
+      RemixGui::InputText("Foam composite pattern", &foamCompositeTextureObject());
+      RemixGui::InputText("Caustic pattern", &causticsTextureObject());
+      ImGui::TextWrapped("These values describe the game integration and its authored resources. Keep them unchanged for an installed water setup.");
+      ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Simulation and foam tuning")) {
+      RemixGui::SliderFloat("Simulation radius", &simulationRadiusObject(), 16.0f, 96.0f, "%.0f world units", flags);
+      RemixGui::Checkbox("Reduce offscreen simulation", &reduceOffscreenObject());
+      RemixGui::SliderFloat("Wave propagation speed", &propagationSpeedObject(), 1.0f, 8.0f, "%.2f", flags);
+      RemixGui::SliderFloat("Wave damping", &dampingObject(), 0.05f, 3.0f, "%.2f", flags);
+      RemixGui::SliderFloat("Boat wave propagation", &hullWaveSpeedObject(), 2.f, 8.f);
+      RemixGui::SliderFloat("Boat wave damping", &hullWaveDampingObject(), .05f, 2.f);
+      RemixGui::SliderFloat("Wake flow drag", &localFlowDragObject(), .05f, 2.f);
+      RemixGui::Checkbox("Cull offscreen shore foam", &shoreFoamFrustumCullingObject());
+      RemixGui::Checkbox("Ocean foam only", &shoreFoamOceanOnlyObject());
+      RemixGui::Checkbox("Exclude player from contact foam", &contactFoamPlayerExclusionObject());
+      RemixGui::SliderFloat("Crest foam curvature threshold", &crestFoamThresholdObject(), 0.01f, 0.4f, "%.3f", flags);
+      RemixGui::SliderFloat("Shore foam sky ambient", &shoreFoamSkyAmbientObject(), 0.0f, 2.0f, "%.2f", flags);
+      ImGui::TextWrapped("The simulation radius follows the player. A larger radius spreads the fixed grid over a larger area and reduces wave detail.");
+      ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Caustic tuning")) {
+      RemixGui::Checkbox("Randomized caustic pattern", &causticsRandomizedObject());
+      RemixGui::Checkbox("Separate scale for pools and fountains", &causticsScalePerDomainObject());
+      ImGui::BeginDisabled(!causticsScalePerDomain());
+      RemixGui::SliderFloat("Caustic scale (non-ocean water)", &causticsPoolScaleObject(), 0.2f, 16.0f, "%.2f", flags);
+      ImGui::EndDisabled();
+      RemixGui::SliderFloat("Caustic dispersion", &causticsDispersionObject(), 0.0f, 2.0f, "%.2f", flags);
+      RemixGui::SliderFloat("Caustic depth", &causticsMaxDepthObject(), 0.5f, 30.0f, "%.2f", flags);
+      RemixGui::SliderInt("Caustic local lights", &causticsLocalLightsObject(), 0, 8);
+      RemixGui::SliderFloat("Caustic local light range", &causticsLocalLightRangeObject(), 5.0f, 200.0f, "%.1f", flags);
+      RemixGui::SliderFloat("Caustic fade start", &causticsFadeStartObject(), 0.0f, 0.9f, "%.2f", flags);
+      RemixGui::SliderFloat("Reflected caustic height", &reflectedCausticsHeightObject(), 0.5f, 15.0f, "%.2f", flags);
+      ImGui::TextWrapped("Pools and fountains can use a separate authored scale. Zero dispersion uses one pattern sample; positive values use three.");
+      ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Diagnostics")) {
+      RemixGui::Checkbox("GPU flow diagnostics", &localFlowDiagnosticsObject());
+      WaterFoamGpuGeometry::showImguiSettings();
+      ImGui::TreePop();
+    }
+  }
   ImGui::EndDisabled();
 }
 }

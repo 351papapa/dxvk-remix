@@ -32,6 +32,7 @@
 #include "rtx/pass/ntsc/ntsc_vhs.h"
 #include "rtx/pass/post_fx/lens_rain.h"
 #include "rtx_numos_weather.h"
+#include "rtx_water.h"
 #include "rtx_fork_game_state.h"
 #include <rtx_shaders/lens_rain.h>
 #include <rtx_shaders/lens_rain_tiles.h>
@@ -376,7 +377,10 @@ namespace dxvk {
   }
 
   void DxvkPostFx::dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput) {
-    if (!enable() || !lensRainEnable()) {
+    const uint64_t waterHash = parseWaterMediumHash(WaterSystem::cameraMediumMaterialHash());
+    const bool cameraInWater = waterHash != 0
+      && waterHash == ctx->getSceneManager().getStartInMediumMaterialSourceHash();
+    if (!enable() || !lensRainEnable() || cameraInWater) {
       m_lensRainInitialized = false;
       m_lensRainStateBuffer = nullptr;
       m_lensRainDropBuffer = nullptr;

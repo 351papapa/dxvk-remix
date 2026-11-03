@@ -32,6 +32,15 @@
 
 
 
+//!variant volume_restir_initial_water.comp
+//!>       VOLUME_RESTIR_MODE=INITIAL VOLUME_WATER_SURFACE_LIGHTING=1
+//!variant volume_restir_visibility_water.comp
+//!>       VOLUME_RESTIR_MODE=VISIBILITY VOLUME_WATER_SURFACE_LIGHTING=1
+//!variant volume_restir_temporal_water.comp
+//!>       VOLUME_RESTIR_MODE=TEMPORAL VOLUME_WATER_SURFACE_LIGHTING=1
+//!variant volume_restir_spatial_resampling_water.comp
+//!>       VOLUME_RESTIR_MODE=SPATIAL_REUSE VOLUME_WATER_SURFACE_LIGHTING=1
+
 //!end-variants
 #define ATMOSPHERE_AVAILABLE
 

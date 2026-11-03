@@ -33,9 +33,11 @@
 #include "rtx_fork_core_material.h"
 #include "rtx_scene_manager.h"
 #include "rtx_water.h"
+#include "rtx_water_medium.h"
 #include "rtx/pass/wetness_args.h"
 #include "rtx_game_lights.h"
 #include "rtx_retained_scene.h"
+#include "rtx_retained_compat.h"
 #include "rtx_scene_transient.h"
 #include "rtx_opacity_micromap_manager.h"
 #include "rtx_vram_budget.h"
@@ -60,6 +62,7 @@
 #include "rtx_lights_data.h"
 #include "rtx_light_utils.h"
 #include "rtx_fork_sccr_shell.h"
+#include "rtx_index_only_geometry.h"
 
 #include "../util/util_global_time.h"
 #include "../util/util_struct_hash.h"
@@ -409,6 +412,8 @@ namespace dxvk {
     m_startInMediumMaterialIndex = SURFACE_INDEX_INVALID;
     m_fogStartInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
     m_externalStartInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
+    m_externalStartInMediumMaterialSourceHash = 0;
+    m_startInMediumMaterialSourceHash = 0;
     m_startInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
     m_lastResolvedStartInMediumMaterialIndexInCache = kInvalidMaterialCacheIndex;
     m_lastUploadedStartInMediumMaterialIndexInCache = kInvalidMaterialCacheIndex;
@@ -761,9 +766,10 @@ namespace dxvk {
           std::swap(output.historyBuffer[0], output.historyBuffer[1]);
         }
 
-        // A buffer aliased from the API mesh (rtx.hostImport.deviceLocalStaticMeshes) is never
-        // written: it stays as history only, and a buffer of our own takes the write.
-        if (output.historyBuffer[0].ptr() == nullptr || isAliasableGeometryBuffer(*output.historyBuffer[0])) {
+          // A buffer aliased from the API mesh, or shared with unchanged previous
+          // positions after an index-only update, is never overwritten as history.
+        if (index_only_geometry::needsDetachedVertexWrite(output.historyBuffer[0], output.historyBuffer[1],
+              output.historyBuffer[0] != nullptr && isAliasableGeometryBuffer(*output.historyBuffer[0]))) {
           // First frame this object has been dynamic need to allocate a 2nd frame of data to preserve history.
           const Rc<DxvkBuffer>& model = output.historyBuffer[0] != nullptr ? output.historyBuffer[0] : output.historyBuffer[1];
           DxvkBufferCreateInfo desc = model->info();
@@ -917,6 +923,7 @@ namespace dxvk {
     }
 
     m_startInMediumMaterialIndex = SURFACE_INDEX_INVALID;
+    m_startInMediumMaterialSourceHash = 0;
     m_fogStartInMediumMaterialIndex_inCache = UINT32_MAX;
     m_startInMediumMaterialIndex_inCache = UINT32_MAX;
 
@@ -1852,8 +1859,75 @@ namespace dxvk {
     return result;
   }
   
+  bool SceneManager::updateIndexOnlyGeometry(const Rc<DxvkContext>& ctx, const SceneDraw& drawCallState, BlasEntry& blas) {
+    const RasterGeometry& now = drawCallState.getGeometryData();
+    const RasterGeometry& last = blas.input.getGeometryData();
+    const auto& skinning = drawCallState.getSkinningState();
+    const auto& oldSkinning = blas.input.getSkinningState();
+    const RaytraceGeometry& cached = blas.modifiedGeometryData;
+    if (!index_only_geometry::sameImmutableVertexData(now, last) ||
+        now.getHashForRule<rules::VertexDataHash>() != last.getHashForRule<rules::VertexDataHash>() ||
+        now.getHashForRule<rules::VertexDataHash>() != cached.hashes.getHashForRule<rules::VertexDataHash>() ||
+        drawCallState.usesVertexShader || blas.input.usesVertexShader ||
+        drawCallState.newGeometryEveryFrame || blas.input.newGeometryEveryFrame ||
+        skinning.numBones || skinning.numBonesPerVertex || !skinning.pBoneMatrices.empty() ||
+        oldSkinning.numBones || oldSkinning.numBonesPerVertex || !oldSkinning.pBoneMatrices.empty() ||
+        skinning.boneHash != oldSkinning.boneHash || cached.lastBoneHash != skinning.boneHash ||
+        now.numBonesPerVertex || last.numBonesPerVertex || now.skinningRetarget || last.skinningRetarget ||
+        now.blendWeightBuffer.defined() || now.blendIndicesBuffer.defined() ||
+        drawCallState.getCategoryFlags().test(InstanceCategories::SmoothNormals) ||
+        blas.input.getCategoryFlags().test(InstanceCategories::SmoothNormals) || cached.smoothNormalsApplied ||
+        cached.historyBuffer[0] == nullptr || !cached.positionBuffer.defined() || cached.vertexCount != now.vertexCount ||
+        now.topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST || last.topology != now.topology ||
+        !now.indexBuffer.defined() || !now.indexCount || now.indexCount % 3 ||
+        (now.indexBuffer.indexType() != VK_INDEX_TYPE_UINT16 && now.indexBuffer.indexType() != VK_INDEX_TYPE_UINT32)) {
+      return false;
+    }
+    const auto pendingWrite = [](const RasterBuffer& buffer) {
+      return buffer.defined() && buffer.isPendingGpuWrite();
+    };
+    if (pendingWrite(now.positionBuffer) || pendingWrite(now.normalBuffer) ||
+        pendingWrite(now.texcoordBuffer) || pendingWrite(now.color0Buffer)) {
+      return false;
+    }
+    const size_t indexStride = now.indexBuffer.indexType() == VK_INDEX_TYPE_UINT16 ? 2 : 4;
+    if (now.indexBuffer.stride() != indexStride || now.indexBuffer.offsetFromSlice() > now.indexBuffer.length() ||
+        uint64_t(now.indexCount) * indexStride > now.indexBuffer.length() - now.indexBuffer.offsetFromSlice()) {
+      return false;
+    }
+
+    // Work on a shallow buffer-owning copy until allocation/copy validation has
+    // succeeded; unchanged vertex buffers and all their cache slots survive.
+    RaytraceGeometry updated = cached;
+    DxvkBufferCreateInfo info;
+    info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+    info.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+    info.size = align(size_t(now.indexCount) * indexStride, CACHE_LINE_SIZE);
+    updated.indexCacheBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      DxvkMemoryStats::Category::RTXSceneGeometry, "Index Cache Buffer");
+    if (!RtxGeometryUtils::cacheIndexDataOnGPU(ctx, now, updated)) {
+      return false;
+    }
+    updated.indexBuffer = RaytraceBuffer(DxvkBufferSlice(updated.indexCacheBuffer), 0, indexStride, now.indexBuffer.indexType());
+    updated.indexCount = now.indexCount;
+    updated.hashes = now.hashes;
+    updated.lastBoneHash = skinning.boneHash;
+    updated.cullMode = drawCallState.getCullMode();
+    updated.frontFace = now.frontFace;
+    index_only_geometry::preserveUnchangedPositions(updated, blas.frameLastUpdated == m_device->getCurrentFrameId());
+    blas.modifiedGeometryData = std::move(updated);
+    updateBufferCache(&blas);
+    return true;
+  }
+
   SceneManager::ObjectCacheState SceneManager::onSceneObjectUpdated(Rc<DxvkContext> ctx, const SceneDraw& drawCallState, BlasEntry* pBlas,
-                                                                    bool rebuildTopologyInPlace, bool dropHistory) {
+                                                                    bool rebuildTopologyInPlace, bool dropHistory, bool* vertexDataReused) {
+    if (vertexDataReused != nullptr) {
+      *vertexDataReused = false;
+    }
     // A second draw of the entry this frame. RetainedScene (rebuildTopologyInPlace) tracks that per geometry itself,
     // since preserve stamps also set frameLastTouched.
     if (!rebuildTopologyInPlace && pBlas->frameLastTouched == m_device->getCurrentFrameId()) {
@@ -1878,18 +1952,26 @@ namespace dxvk {
         now.hashes[HashComponents::Indices] != pBlas->modifiedGeometryData.hashes[HashComponents::Indices] ||
         now.hashes[HashComponents::GeometryDescriptor] != pBlas->modifiedGeometryData.hashes[HashComponents::GeometryDescriptor];
       if (topologyChanged || dropHistory) {
-        // Start from a default RaytraceGeometry, as a new entry does, keeping only the buffer-cache slots so
-        // updateBufferCache (run by processGeometryInfo) releases or re-registers them.
-        RaytraceGeometry& geometry = pBlas->modifiedGeometryData;
-        RaytraceGeometry fresh;
-        fresh.positionBufferIndex = geometry.positionBufferIndex;
-        fresh.previousPositionBufferIndex = geometry.previousPositionBufferIndex;
-        fresh.normalBufferIndex = geometry.normalBufferIndex;
-        fresh.texcoordBufferIndex = geometry.texcoordBufferIndex;
-        fresh.color0BufferIndex = geometry.color0BufferIndex;
-        fresh.indexBufferIndex = geometry.indexBufferIndex;
-        geometry = std::move(fresh);
-        result = processGeometryInfo<true>(ctx, drawCallState, pBlas);
+        const bool reusedVertices = topologyChanged && !dropHistory && updateIndexOnlyGeometry(ctx, drawCallState, *pBlas);
+        if (reusedVertices) {
+          result = ObjectCacheState::KBuildBVH;
+          if (vertexDataReused != nullptr) {
+            *vertexDataReused = true;
+          }
+        } else {
+          // Start from a default RaytraceGeometry, as a new entry does, keeping only the buffer-cache slots so
+          // updateBufferCache (run by processGeometryInfo) releases or re-registers them.
+          RaytraceGeometry& geometry = pBlas->modifiedGeometryData;
+          RaytraceGeometry fresh;
+          fresh.positionBufferIndex = geometry.positionBufferIndex;
+          fresh.previousPositionBufferIndex = geometry.previousPositionBufferIndex;
+          fresh.normalBufferIndex = geometry.normalBufferIndex;
+          fresh.texcoordBufferIndex = geometry.texcoordBufferIndex;
+          fresh.color0BufferIndex = geometry.color0BufferIndex;
+          fresh.indexBufferIndex = geometry.indexBufferIndex;
+          geometry = std::move(fresh);
+          result = processGeometryInfo<true>(ctx, drawCallState, pBlas);
+        }
         rebuiltInPlace = true;
         if (m_opacityMicromapManager != nullptr) {
           for (const RtInstance* linked : pBlas->getLinkedInstances()) {
@@ -2303,10 +2385,9 @@ namespace dxvk {
     XXH64_hash_t preCreationHash = renderMaterialData.getHash();
     preCreationHash = XXH64(&overrideWater, sizeof(overrideWater), preCreationHash);
     if (overrideWater) {
-      const Vector3 color = WaterSystem::transmittanceColor();
-      const float distance = WaterSystem::transmittanceDistance();
-      preCreationHash = XXH64(&color, sizeof(color), preCreationHash);
-      preCreationHash = XXH64(&distance, sizeof(distance), preCreationHash);
+      const auto optics = WaterSystem::opticalProperties();
+      preCreationHash = XXH64(&optics.transmittance, sizeof(optics.transmittance), preCreationHash);
+      preCreationHash = XXH64(&optics.materialDistance, sizeof(optics.materialDistance), preCreationHash);
     }
     preCreationHash = XXH64(&samplerIndex, sizeof(samplerIndex), preCreationHash);
     preCreationHash = XXH64(&samplerIndex2, sizeof(samplerIndex2), preCreationHash);
@@ -2657,8 +2738,9 @@ namespace dxvk {
     } else if (renderMaterialDataType == MaterialDataType::Translucent) {
       auto waterMaterial = renderMaterialData.getTranslucentMaterialData();
       if (overrideWater) {
-        waterMaterial.setTransmittanceColor(WaterSystem::transmittanceColor());
-        waterMaterial.setTransmittanceMeasurementDistance(std::clamp(WaterSystem::transmittanceDistance(), 0.1f, 100.0f));
+        const auto optics = WaterSystem::opticalProperties();
+        waterMaterial.setTransmittanceColor(optics.transmittance);
+        waterMaterial.setTransmittanceMeasurementDistance(optics.materialDistance);
         waterMaterial.setEnableThinWalled(false);
       }
       surfaceMaterial.emplace(createTranslucentSurfaceMaterial(waterMaterial, samplerIndex, hasTexcoords));
@@ -2754,7 +2836,7 @@ namespace dxvk {
     return m_externalSampler;
   }
 
-  void SceneManager::setExternalStartInMediumMaterial(const MaterialData& translucentMaterial) {
+  void SceneManager::setExternalStartInMediumMaterial(const MaterialData& translucentMaterial, uint64_t sourceHash) {
     assert(translucentMaterial.getType() == MaterialDataType::Translucent);
 
     const auto samplerIndex = trackSampler(getOrCreateExternalSampler());
@@ -2762,10 +2844,13 @@ namespace dxvk {
       createTranslucentSurfaceMaterial(translucentMaterial.getTranslucentMaterialData(), samplerIndex, true));
 
     m_externalStartInMediumMaterialIndex_inCache = m_surfaceMaterialCache.track(surfaceMaterial);
+    m_externalStartInMediumMaterialSourceHash = sourceHash;
   }
 
   void SceneManager::clearExternalStartInMediumMaterial() {
     m_externalStartInMediumMaterialIndex_inCache = UINT32_MAX;
+    m_externalStartInMediumMaterialSourceHash = 0;
+    m_startInMediumMaterialSourceHash = 0;
   }
 
   void SceneManager::setStartInMediumMaterial(const MaterialData& translucentMaterial) {
@@ -3061,6 +3146,7 @@ namespace dxvk {
     m_graphManager.applySceneOverrides(ctx);
     const bool wetnessEnabled = WetnessOptions::enabled();
     const bool windowsEnabled = WindowLightOptions::enabled();
+    bool wetnessRulesChanged = false;
     if (wetnessEnabled || windowsEnabled || GrassSystem::enabled() || WaterSystem::enabled()) {
       // The executable directory is fixed for the process lifetime. Resolving it
       // through the bridge queries the parent process.
@@ -3071,9 +3157,13 @@ namespace dxvk {
         }
         return folder / L"logs" / L"DffDrawCalls";
       }();
-      m_wetnessDffRules.refresh(captureFolder,
+      wetnessRulesChanged = m_wetnessDffRules.refresh(captureFolder,
         WetnessOptions::forceEnableDff(), WetnessOptions::forceDisableDff());
     }
+
+    // Rules and identity-tool requests can change after CommitFrame. Restore/regroup before upload,
+    // in the same frame; a missing commit must still leave every unordered parent hidden.
+    m_retainedScene->compat().refreshBatches(ctx, wetnessRulesChanged);
 
     m_grass->update(ctx, *this);
     retireGrass();
@@ -3156,6 +3246,11 @@ namespace dxvk {
           "; surfaceMaterialCacheSize=", m_surfaceMaterialCache.getObjectTable().size()));
         m_startInMediumMaterialIndex_inCache = kInvalidMaterialCacheIndex;
       }
+
+      m_startInMediumMaterialSourceHash = m_startInMediumMaterialIndex_inCache != kInvalidMaterialCacheIndex
+        && m_externalStartInMediumMaterialIndex_inCache != kInvalidMaterialCacheIndex
+        && m_startInMediumMaterialIndex_inCache == m_externalStartInMediumMaterialIndex_inCache
+        ? m_externalStartInMediumMaterialSourceHash : 0;
 
       if (m_startInMediumMaterialIndex_inCache != previousStartInMediumMaterialIndexInCache) {
         Logger::debug(str::format(
@@ -3241,6 +3336,71 @@ namespace dxvk {
     m_instanceManager.createViewModelInstances(ctx, m_cameraManager, m_rayPortalManager);
     m_instanceManager.createPlayerModelVirtualInstances(ctx, m_cameraManager, m_rayPortalManager);
 
+    // Classify surfaces before mergeInstancesIntoBlas(). That pass uploads the
+    // surface records, so classifying afterwards leaves the first submitted
+    // window record at class 0 and lets the authored emissive through until a
+    // later scene upload.
+    if (windowsEnabled) {
+      m_windowLights.beginFrame();
+    }
+    if (wetnessEnabled || WaterSystem::enabled() || windowsEnabled || m_windowLightsWereEnabled) {
+      const auto classificationStart = std::chrono::steady_clock::now();
+      const auto& instances = m_instanceManager.getInstanceTable();
+      const auto& textures = textureManager.getTextureTable();
+      uint32_t hidden = 0;
+      for (RtInstance* instance : instances) {
+        auto& surface = instance->surface;
+        // The final window-disable pass clears hidden surfaces even if every classification feature is then off.
+        surface.windowLightClass = 0;
+        if (instance->isHidden()) {
+          ++hidden;
+          continue;
+        }
+        // Revealed surfaces are classified before the same frame's acceleration/surface upload.
+        if (wetnessEnabled || WaterSystem::enabled()) {
+          surface.wetnessTag = surface.sourceWetnessTag;
+          const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
+          if (rule == WetnessDffRules::Rule::Disable) {
+            surface.wetnessTag |= 0x800u;
+          } else if (rule == WetnessDffRules::Rule::Enable) {
+            surface.wetnessTag |= 0x400u;
+          }
+        }
+        const auto* material = getSurfaceMaterialOrNull(surface.surfaceMaterialIndex);
+        if (windowsEnabled && !surface.eyeParams && material && material->getType() == RtSurfaceMaterialType::Opaque) {
+          const uint32_t textureIndex = material->getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
+          const char* replacementName = nullptr;
+          if (textureIndex < textures.size()) {
+            const auto& texture = textures[textureIndex].getManagedTexture();
+            if (texture.ptr() && texture->m_assetData.ptr()) {
+              replacementName = texture->m_assetData->info().filename;
+            }
+          }
+          surface.windowLightClass = m_windowLights.classify(surface.originalTextureHash,
+            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.originalTextureHash), replacementName);
+        }
+      }
+      const double classificationMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - classificationStart).count();
+      m_classificationInputs += instances.size();
+      m_classificationHidden += hidden;
+      ++m_classificationFrames;
+      m_classificationMs += classificationMs;
+      m_classificationMaxMs = std::max(m_classificationMaxMs, classificationMs);
+      const uint32_t frame = m_device->getCurrentFrameId();
+      if (frame - m_classificationLogFrame >= 300) {
+        Logger::info(str::format("[SurfaceClassify] frame=", frame, " frames=", m_classificationFrames,
+          " inputs=", m_classificationInputs, " hiddenSkipped=", m_classificationHidden,
+          " classified=", m_classificationInputs - m_classificationHidden,
+          " avgMs=", m_classificationMs / m_classificationFrames, " maxMs=", m_classificationMaxMs));
+        m_classificationLogFrame = frame;
+        m_classificationInputs = m_classificationHidden = 0;
+        m_classificationFrames = 0;
+        m_classificationMs = m_classificationMaxMs = 0.0;
+      }
+    }
+    m_windowLightsWereEnabled = windowsEnabled;
+
     prepPhase(2);
     ctx->recordGpuStageTiming("SceneSetup");
     m_accelManager.mergeInstancesIntoBlas(ctx, execBarriers, textureManager.getTextureTable(), m_cameraManager, m_instanceManager, m_opacityMicromapManager.get());
@@ -3264,39 +3424,6 @@ namespace dxvk {
     }
 
     // Call on the other managers to prepare their GPU data for the current scene
-    if (windowsEnabled) {
-      m_windowLights.beginFrame();
-    }
-    if (wetnessEnabled || WaterSystem::enabled() || windowsEnabled || m_windowLightsWereEnabled) {
-      const auto& textures = textureManager.getTextureTable();
-      for (RtInstance* instance : m_instanceManager.getInstanceTable()) {
-        auto& surface = instance->surface;
-        if (wetnessEnabled || WaterSystem::enabled()) {
-          surface.wetnessTag = surface.sourceWetnessTag;
-          const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
-          if (rule == WetnessDffRules::Rule::Disable) {
-            surface.wetnessTag |= 0x800u;
-          } else if (rule == WetnessDffRules::Rule::Enable) {
-            surface.wetnessTag |= 0x400u;
-          }
-        }
-        surface.windowLightClass = 0;
-        const auto* material = getSurfaceMaterialOrNull(surface.surfaceMaterialIndex);
-        if (windowsEnabled && !surface.eyeParams && material && material->getType() == RtSurfaceMaterialType::Opaque) {
-          const uint32_t textureIndex = material->getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
-          const char* replacementName = nullptr;
-          if (textureIndex < textures.size()) {
-            const auto& texture = textures[textureIndex].getManagedTexture();
-            if (texture.ptr() && texture->m_assetData.ptr()) {
-              replacementName = texture->m_assetData->info().filename;
-            }
-          }
-          surface.windowLightClass = m_windowLights.classify(surface.originalTextureHash,
-            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.originalTextureHash), replacementName);
-        }
-      }
-    }
-    m_windowLightsWereEnabled = windowsEnabled;
     m_accelManager.prepareSceneData(ctx, execBarriers, m_instanceManager);
     // [PerfGpu] sub-stages of the scene data and TLAS work.
     ctx->recordGpuStageTiming("SceneInstanceUpload");

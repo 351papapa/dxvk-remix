@@ -32,6 +32,20 @@
 
 
 
+//!variant volume_integrate_rayquery_water.comp
+//!>       VOLUME_GROUP_X=16 VOLUME_GROUP_Y=8 VOLUME_WATER_SURFACE_LIGHTING=1
+//!variant volume_integrate_rayquery_8x8_water.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=8 VOLUME_WATER_SURFACE_LIGHTING=1
+//!variant volume_integrate_rayquery_8x4_water.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=4 VOLUME_WATER_SURFACE_LIGHTING=1
+
+//!variant volume_integrate_rayquery_water_caustics.comp
+//!>       VOLUME_GROUP_X=16 VOLUME_GROUP_Y=8 VOLUME_WATER_SURFACE_LIGHTING=1 VOLUME_WATER_SOLAR_COOKIE=1
+//!variant volume_integrate_rayquery_8x8_water_caustics.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=8 VOLUME_WATER_SURFACE_LIGHTING=1 VOLUME_WATER_SOLAR_COOKIE=1
+//!variant volume_integrate_rayquery_8x4_water_caustics.comp
+//!>       VOLUME_GROUP_X=8 VOLUME_GROUP_Y=4 VOLUME_WATER_SURFACE_LIGHTING=1 VOLUME_WATER_SOLAR_COOKIE=1
+
 //!end-variants
 #define ATMOSPHERE_AVAILABLE
 

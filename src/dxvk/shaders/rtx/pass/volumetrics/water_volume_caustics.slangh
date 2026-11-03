@@ -1,0 +1,101 @@
+#pragma once
+
+#include "rtx/algorithm/water_caustic_pattern.slangh"
+#include "rtx/algorithm/water_caustic_coverage.slangh"
+
+float3 waterCausticFroxelPosition(float3 coordinate, uint froxelVolume) {
+  const VolumeArgs volumeArgs = cb.volumeArgs;
+  const VolumeDefinitionCamera camera = volumeArgs.cameras[froxelVolume];
+  return froxelCoordinateToTranslatedWorldPosition(
+    camera.projectionToTranslatedWorld, camera.viewToProjection, packedFlagGet(camera.flags, rightHandedFlag),
+    volumeArgs.inverseFroxelGridDimensions, volumeArgs.froxelDepthSlices,
+    volumeArgs.froxelDepthSliceDistributionExponent, volumeArgs.froxelMaxDistance, camera.nearPlane, coordinate);
+}
+
+float waterCausticProjectedSpan(float3 span, float3 direction) {
+  return length(span.xy - direction.xy * (span.z / direction.z));
+}
+
+float waterVolumeCausticTransmission(uint lightIndex, LightSample lightSample,
+                                     RAB_VolumeInteraction interaction, uint3 froxelIndex, uint froxelVolume) {
+  if (!cb.cameraWaterVolumeActive || !cb.cameraWaterSurfaceValid || !cb.isZUp
+      || lightIndex != waterCausticsArgs.sunIndex || waterCausticsArgs.strength <= 0.0f
+      || lightSample.volumeVisibilityRay.w <= 0.0f) {
+    return 1.0f;
+  }
+
+  const float3 centerDirection = -lightSample.normal;
+  const float centerLengthSquared = dot(centerDirection, centerDirection);
+  if (!all(isfinite(centerDirection)) || !isfinite(centerLengthSquared) || centerLengthSquared <= 0.00000001f) {
+    return 1.0f;
+  }
+  // The cookie uses the source center. Native sample and visibility rays stay intact.
+  const float3 direction = normalize(centerDirection);
+  float3 waterPosition;
+  float depth;
+  float angleFade;
+  if (!waterCausticProject(interaction.volumeInteraction.position, direction,
+      waterCausticsArgs.surfaceHeight, waterPosition, depth, angleFade)) {
+    return 1.0f;
+  }
+  const float maxDepth = waterCausticsArgs.maxDepth;
+  if (!isfinite(maxDepth) || maxDepth <= 0.0f || depth >= maxDepth) {
+    return 1.0f;
+  }
+  const float coverage = waterCausticCoverage(WaterCausticsSurfaceInput, waterPosition.xy, waterCausticsArgs.surfaceHeight);
+  if (coverage <= 0.0f) {
+    return 1.0f;
+  }
+
+  // Filter the far face's projected lateral footprint. The native froxel sample
+  // jitters through the full depth interval and accumulates it across frames.
+  // Keeping that depth span out of the isotropic mip preserves transverse detail
+  // at the cost of stochastic variance, without additional pattern samples.
+  const float3 center = froxelIndexToFroxelCoordinate(froxelIndex);
+  const float3 farPosition = waterCausticFroxelPosition(center + float3(0.0f, 0.0f, 0.5f), froxelVolume);
+  const float3 spanX = waterCausticFroxelPosition(center + float3(1.0f, 0.0f, 0.5f), froxelVolume) - farPosition;
+  const float3 spanY = waterCausticFroxelPosition(center + float3(0.0f, 1.0f, 0.5f), froxelVolume) - farPosition;
+  const float3 spanZ = farPosition - waterCausticFroxelPosition(center - float3(0.0f, 0.0f, 0.5f), froxelVolume);
+  const float projectedSpan = max(waterCausticProjectedSpan(spanX, direction),
+    waterCausticProjectedSpan(spanY, direction));
+  const float textureExtent = max(waterCausticsArgs.textureSize.x, waterCausticsArgs.textureSize.y);
+  const float footprint = projectedSpan * textureExtent
+    / max(waterCausticsArgs.scale, 0.0001f);
+  if (!isfinite(footprint) || !all(isfinite(spanZ))) {
+    return 1.0f;
+  }
+  const float lod = max(0.0f, log2(max(footprint, 1.0f)));
+  const float lastLod = max(waterCausticsArgs.textureMaxLod, 0.0f);
+  const float fadeEndLod = max(lastLod, 1.0f);
+  const float lodFade = 1.0f - smoothstep(max(0.0f, fadeEndLod - 2.0f), fadeEndLod, lod);
+  // Mips that average the web to a constant must restore unmodulated lighting.
+  if (lodFade <= 0.0f) {
+    return 1.0f;
+  }
+  const float nearSurfaceSpan = max(abs(spanX.z) + abs(spanY.z) + abs(spanZ.z), 0.0001f);
+  const float surfaceFade = smoothstep(0.0f, nearSurfaceSpan, depth);
+  const float depthFade = 1.0f - smoothstep(maxDepth * saturate(waterCausticsArgs.fadeStart), maxDepth, depth);
+  const float contrast = saturate(waterCausticsArgs.strength) * angleFade * coverage * lodFade * surfaceFade * depthFade;
+  const float transmission = waterCausticFocusAt(WaterCausticsPattern,
+    waterPosition.xy / max(waterCausticsArgs.scale, 0.0001f), cb.timeSinceStartSeconds * waterCausticsArgs.speed,
+    min(lod, lastLod), lastLod, waterCausticsArgs.randomized);
+  return isfinite(transmission) ? lerp(1.0f, transmission, contrast) : 1.0f;
+}
+
+bool waterVolumeGetLightSample(const VolumeReSTIR_Reservoir reservoir, RAB_VolumeInteraction interaction,
+                               out RAB_LightSample lightSample, out float inverseSelectionPdf,
+                               uint3 froxelIndex, uint froxelVolume) {
+  const bool valid = VolumeReSTIR_GetLightSample(reservoir, interaction, lightSample, inverseSelectionPdf);
+  if (valid) {
+    lightSample.radiance *= waterVolumeCausticTransmission(reservoir.lightSample.lightIndex,
+      lightSample, interaction, froxelIndex, froxelVolume);
+  }
+  return valid;
+}
+
+RAB_LightSample waterVolumeGetLightSampleWithTypeHint(uint lightIndex, float2 lightUV, uint lightType,
+                                                     RAB_VolumeInteraction interaction, uint3 froxelIndex, uint froxelVolume) {
+  RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHint(lightIndex, lightUV, lightType, interaction);
+  lightSample.radiance *= waterVolumeCausticTransmission(lightIndex, lightSample, interaction, froxelIndex, froxelVolume);
+  return lightSample;
+}

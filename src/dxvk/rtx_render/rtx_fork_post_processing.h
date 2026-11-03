@@ -33,6 +33,7 @@ namespace dxvk {
       DepthOfField,
       Tonemapping,
       NtscVhs,
+      SunFlare,
       LensRain,
       LensEffects,
       SRGBDither,
@@ -80,7 +81,7 @@ namespace dxvk {
     static std::string trim(const std::string& value);
 
     RTX_OPTION("rtx.postfx", std::string, stackOrder,
-               std::string("bloom,motion_blur,depth_of_field,tonemapping,ntsc_vhs,lens_effects,srgb_dither"),
+               std::string("bloom,motion_blur,depth_of_field,tonemapping,ntsc_vhs,sun_flare,lens_effects,srgb_dither"),
                "Comma-separated post-processing effect order. Effects may be reordered within their color domain; tonemapping and sRGB/dither remain fixed pipeline anchors.");
   };
 

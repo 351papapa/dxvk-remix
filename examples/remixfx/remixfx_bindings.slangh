@@ -39,6 +39,8 @@ struct RemixFxParameters {
   uint valueCount;
 };
 
+static const uint REMIXFX_CAMERA_MEDIUM_WATER = 1u << 0;
+
 struct RemixFxFrameData {
   float4x4 worldToView;
   float4x4 viewToWorld;
@@ -86,7 +88,12 @@ struct RemixFxFrameData {
   // preExposure over last frame's: multiply a radiance history by it (1 except on the rare step frames).
   float preExposure;
   float preExposureHistoryRatio;
-  uint padding[1];
+  // Bit 0 identifies the registered water camera medium. Zero means no recognized active medium.
+  uint cameraMediumFlags;
+  // Normalized game-authored post-effect coefficients. They are not linear radiance.
+  // A missing, invalid or explicitly disabled producer leaves valid zero.
+  float3 gamePostFxTint;
+  uint gamePostFxTintValid;
 };
 
 layout(binding = 0)

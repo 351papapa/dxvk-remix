@@ -163,6 +163,18 @@ void WaterGpuSurface::updateBeachMask(const Rc<DxvkContext>& ctx) {
   ctx->uploadBuffer(m_beachMask, words.data(), uint32_t(words.size() * sizeof(uint32_t)));
 }
 
+bool WaterGpuSurface::surfaceHeightAt(const Vector3& position, float& height) const {
+  return m_waterLevelActive && GetTickCount() - m_waterLevelTick < 500u && m_simulation
+    && m_simulation->waterLevelAt(position, height);
+}
+
+Rc<DxvkBuffer> WaterGpuSurface::waterLevelBuffer() const {
+  if (!m_waterLevelActive || GetTickCount() - m_waterLevelTick >= 500u || !m_simulation) {
+    return nullptr;
+  }
+  return m_simulation->waterLevelBuffer();
+}
+
 void WaterGpuSurface::submit(const Rc<DxvkContext>& ctx, bool enabled, bool simulationEnabled) {
   ScopedCpuProfileZone();
   const auto mesh = reinterpret_cast<remixapi_MeshHandle>(kMesh);
@@ -175,6 +187,7 @@ void WaterGpuSurface::submit(const Rc<DxvkContext>& ctx, bool enabled, bool simu
   }
   const auto material = reinterpret_cast<remixapi_MaterialHandle>(kMaterial);
   const bool available = enabled && assets->accessExternalMaterial(material) != nullptr;
+  m_waterLevelActive = available && m_waterLevelActive;
   if (available && m_shared) { ensureResources(ctx); updateBeachMask(ctx); }
   bool copied = false;
   if (m_shared && m_mutex) {
@@ -182,9 +195,13 @@ void WaterGpuSurface::submit(const Rc<DxvkContext>& ctx, bool enabled, bool simu
     if (result == WAIT_OBJECT_0 || result == WAIT_ABANDONED) {
       if (m_shared->version == gpu::kVersion && m_shared->bytes == sizeof(gpu::Frame)) {
         m_frame = *m_shared;
+        m_waterLevelActive = available && m_frame.active;
+        m_waterLevelTick = m_frame.tick;
         m_shared->ready = available ? 1u : 0u;
         m_shared->readyTick = GetTickCount();
         copied = true;
+      } else {
+        m_waterLevelActive = false;
       }
       ReleaseMutex(m_mutex);
     }

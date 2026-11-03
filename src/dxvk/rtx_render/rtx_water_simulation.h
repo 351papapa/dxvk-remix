@@ -1,4 +1,6 @@
 #pragma once
+#include <vector>
+
 #include "rtx_common_object.h"
 #include "rtx_types.h"
 #include "../../util/sync/sync_signal.h"
@@ -10,6 +12,8 @@ public:
   explicit WaterGpuSimulation(DxvkDevice* device) : CommonDeviceObject(device) { }
   ~WaterGpuSimulation();
   bool prepare(const Rc<DxvkContext>& ctx, bool enabled, remixapi::water::gpu::Frame& frame);
+  bool waterLevelAt(const Vector3& position, float& height) const;
+  Rc<DxvkBuffer> waterLevelBuffer() const;
   const Rc<DxvkBuffer>& heights() const { return m_state[m_parity]; }
   bool hullActive() const { return m_hullActive; }
   float simulationTime() const { return m_valid ? m_simulationTime : -1.0f; }
@@ -35,6 +39,11 @@ private:
   uint32_t m_flowParity = 0, m_pressureParity = 0, m_flowReset = 0;
   float m_flowX = 0, m_flowY = 0, m_flowBudget = 0, m_waterMin = 0, m_waterMax = 0;
   bool m_flowActive = false, m_flowMesh = false, m_mapUploaded = false;
+  std::vector<float> m_waterLevelMap;
+  Rc<DxvkBuffer> m_waterLevelBuffer;
+  uint32_t m_waterLevelTick = 0;
+  uint32_t m_waterLevelEpoch = 0;
+  bool m_waterLevelReady = false;
   void* m_mapping = nullptr;
   void* m_mutex = nullptr;
   remixapi::water::simulation::Shared* m_shared = nullptr;

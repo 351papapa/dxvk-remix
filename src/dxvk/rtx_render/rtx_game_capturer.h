@@ -153,6 +153,9 @@ public:
     m_bTriggerCapture = true;
   }
   
+  // A pending trigger must restore original surface identities before this frame is captured.
+  bool requiresOriginalSurfaceIdentities() const { return m_bTriggerCapture || !isIdle(); }
+
   // Instance Flags
   enum class InstFlag : uint8_t {
     PositionsUpdate = 0,

@@ -23,6 +23,14 @@
 
 #include "rtx/pass/volumetrics/volume_integrate_binding_indices.h"
 
+
+#if VOLUME_WATER_SOLAR_COOKIE
+#include "rtx/pass/volumetrics/water_volume_caustics_args.h"
+layout(push_constant) ConstantBuffer<WaterVolumeCausticsArgs> waterCausticsArgs;
+layout(binding = VOLUME_WATER_CAUSTICS_PATTERN) Sampler2D WaterCausticsPattern;
+layout(binding = VOLUME_WATER_CAUSTICS_SURFACE_INPUT) StructuredBuffer<float> WaterCausticsSurfaceInput;
+#endif
+
 // Inputs
 
 layout(rgba16f, binding = VOLUME_INTEGRATE_BINDING_PREV_ACCUMULATED_RADIANCE_INPUT_Y)

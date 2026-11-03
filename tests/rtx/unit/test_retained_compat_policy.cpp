@@ -1,0 +1,228 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+ * SPDX-License-Identifier: MIT
+ */
+// CPU tests of the policy used by Compat and RetainedScene, not a GPU visibility test.
+#define REMIX_ALLOW_X86
+#include <remix/remix_retained_validation.h>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
+#include <vector>
+#include "../../../src/dxvk/rtx_render/rtx_retained_compat_policy.h"
+#include "../../../src/util/util_matrix.h"
+
+namespace {
+unsigned checks = 0;
+void require(bool condition, const char* message) {
+  ++checks;
+  if (!condition) { std::printf("FAILED %u: %s\n", checks, message); std::exit(1); }
+}
+remixapi_RetainedInstance instance() {
+  remixapi_RetainedInstance result {};
+  result.id = 1; result.mesh = 2;
+  for (unsigned i = 0; i < 3; ++i) result.transform.matrix[i][i] = 1.f;
+  return result;
+}
+void testProtocol() {
+  using namespace remixapi_retained;
+  require(supportedVersion(2) && supportedVersion(3) && !supportedVersion(1) && !supportedVersion(4), "only v2/v3");
+  auto record = instance();
+  require(valid(record, 2) && valid(record, 3), "ordinary v2/v3 record");
+  record.flags = REMIXAPI_RETAINED_HIDDEN;
+  require(!valid(record, 2) && !valid(record) && valid(record, 3), "v2 always rejects HIDDEN, even after a v3 query");
+  record.flags |= REMIXAPI_RETAINED_ORDERED;
+  require(!valid(record, 2) && !valid(record, 3), "ORDERED/HIDDEN mutually exclusive");
+  record.flags = REMIXAPI_RETAINED_ORDERED;
+  require(valid(record, 2) && valid(record, 3), "ordered layout unchanged");
+  record.flags = 4;
+  require(!valid(record, 2) && !valid(record, 3), "unknown flag");
+  record = instance(); record.transform.matrix[1][2] = std::numeric_limits<float>::quiet_NaN();
+  require(!valid(record, 3), "hidden support does not bypass transform validation");
+  require(std::strcmp(clientQueryKey(clientVisibilityKey), bridgeVisibilityKey) == 0, "client key requires matching bridge");
+  require(std::strcmp(clientQueryKey(runtimeVisibilityKey), runtimeVisibilityKey) == 0, "native key remains native");
+  require(std::strcmp(clientVisibilityKey, runtimeVisibilityKey) && std::strcmp(bridgeVisibilityKey, runtimeVisibilityKey),
+          "old bridge forwarding unknown key cannot obtain native capability");
+  record = instance(); require(visibleUnordered(record), "visible unordered counted");
+  record.flags = REMIXAPI_RETAINED_HIDDEN; require(!visibleUnordered(record), "hidden excluded from submitted count");
+  record.flags = REMIXAPI_RETAINED_ORDERED; require(!visibleUnordered(record), "ordered counted only at DrawOrdered");
+}
+void testClassification() {
+  using namespace remixapi_retained;
+  const auto original = instance(); auto value = original;
+  require(sameDescription(original, value) && sameTransform(original, value), "unchanged");
+  value.transform.matrix[0][3] = 20;
+  require(sameDescription(original, value) && !sameTransform(original, value), "translation only is fast");
+  value.flags = REMIXAPI_RETAINED_HIDDEN;
+  require(sameDescription(original, value), "transform plus visibility only is fast");
+  value = original; value.mesh++; require(!sameDescription(original, value), "mesh replacement is full build");
+  value = original; value.id++; require(!sameDescription(original, value), "identity is immutable");
+  value = original; value.categoryFlags++; require(!sameDescription(original, value), "category re-resolved");
+  value = original; value.doubleSided++; require(!sameDescription(original, value), "cull re-resolved");
+  value = original; value.wetTag++; require(!sameDescription(original, value), "wetness re-resolved");
+  value = original; value.objectPickingValue++; require(!sameDescription(original, value), "picking re-resolved");
+  value = original; value.useBlend++; require(!sameDescription(original, value), "blend use re-resolved");
+  value = original; value.flags = REMIXAPI_RETAINED_ORDERED; require(!sameDescription(original, value), "ordered transition is full build");
+  for (unsigned i = 0; i < sizeof(value.blend) / sizeof(uint32_t); ++i) {
+    value = original;
+    const uint32_t word = 1;
+    std::memcpy(reinterpret_cast<uint8_t*>(&value.blend) + i * sizeof(word), &word, sizeof(word));
+    require(!sameDescription(original, value), "every blend word is part of description");
+  }
+}
+struct Entry {
+  bool desiredVisible = true;
+  bool visible = false;
+  std::vector<bool> children;
+  unsigned visibilityWrites = 0;
+  void apply(bool active) {
+    dxvk::retained_compat::applyVisibility(*this, active, [&](bool target) {
+      for (size_t i = 0; i < children.size(); ++i) children[i] = target;
+      ++visibilityWrites;
+    });
+  }
+  void rebuild(size_t count) {
+    children.assign(count, true); // A newly built RetainedScene child defaults to visible.
+    dxvk::retained_compat::finishBuild(*this, [&](bool target) {
+      for (size_t i = 0; i < children.size(); ++i) children[i] = target;
+      ++visibilityWrites;
+    });
+  }
+  bool all(bool value) const { for (bool child : children) if (child != value) return false; return true; }
+};
+void testLifetime() {
+  Entry entry; entry.desiredVisible = false;
+  entry.rebuild(2);
+  require(!entry.visible && entry.all(false), "new HIDDEN parent never leaves its children visible");
+  entry.apply(true);
+  require(!entry.visible && entry.all(false), "commit does not unhide a HIDDEN parent");
+  entry.rebuild(4); // Material/mesh replacement invalidation changes child count.
+  require(!entry.visible && entry.all(false) && !entry.desiredVisible, "asset invalidation keeps desired HIDDEN");
+  entry.apply(false);
+  require(!entry.visible && !entry.desiredVisible, "missing commit preserves HIDDEN intent");
+  entry.desiredVisible = true; entry.apply(false);
+  require(!entry.visible && entry.all(false), "unhide before a current commit remains disabled");
+  entry.apply(true);
+  require(entry.visible && entry.all(true), "current commit resumes without recreating children");
+  const auto writes = entry.visibilityWrites;
+  entry.apply(true); entry.apply(true);
+  require(entry.visibilityWrites == writes, "stable commits perform no child visibility writes");
+  entry.apply(false);
+  require(!entry.visible && entry.desiredVisible && entry.all(false), "missing commit only changes applied state");
+  entry.apply(true);
+  require(entry.visible && entry.desiredVisible && entry.all(true), "resume restores visible intent");
+  entry.desiredVisible = false; entry.apply(true);
+  entry.desiredVisible = true; entry.apply(true);
+  entry.desiredVisible = false; entry.apply(true);
+  require(!entry.visible && entry.all(false), "same-frame toggles end at the latest desired state");
+  entry.rebuild(1);
+  require(!entry.visible && entry.all(false), "hide then replacement rebuild stays hidden");
+  entry.children.clear(); entry.visible = false; // destroy/clear drops children, not host visibility defaults.
+  entry.rebuild(3);
+  require(!entry.visible && entry.all(false), "scene reset retains HIDDEN description");
+  entry = Entry {};
+  require(entry.desiredVisible && !entry.visible && entry.children.empty(), "new epoch starts with no inherited children");
+}
+void testWorldUpdateLifetime() {
+  using State = dxvk::retained_compat::WorldBatchUpdateState;
+  State state;
+  require(!state.incremental(0) && !state.incremental(1), "unpublished cache cannot own incremental views");
+  state.prepared(4);
+  require(state.incremental(4) && !state.incremental(3), "fast path requires exact prepared membership generation");
+  state.hide();
+  require(state.incremental(4) && state.presentationDirty, "missing commit preserves membership but requires republish");
+  state.presented();
+  require(state.incremental(4) && !state.presentationDirty, "resume clears presentation only after publication");
+  state.invalidateStructure();
+  require(!state.incremental(4), "asset or material change forbids visibility-only update even after generic queues clear");
+  state.prepared(5);
+  require(state.incremental(5) && !state.incremental(4), "full prepare binds the new generation");
+  state.lostPublication();
+  require(!state.ready && !state.incremental(5) && state.structureDirty,
+          "failed prefix publication requires canonical fallback and future full republish");
+  state.hide(); state.presented();
+  require(!state.incremental(5), "presentation changes cannot regain lost ownership readiness");
+  state.prepared(0);
+  require(!state.incremental(0), "zero helper revision never establishes ownership");
+  state = {};
+  require(!state.ready && state.structureDirty && !state.presentationDirty && !state.revision, "clear resets world publication state");
+
+  Entry entry; entry.children.assign(2, true); entry.visible = true;
+  State resumed; resumed.prepared(9);
+  entry.apply(false); resumed.hide();
+  require(entry.all(false) && resumed.presentationDirty, "missing commit hides canonical inputs and marks cached views for republish");
+  entry.apply(true);
+  require(entry.all(true) && resumed.incremental(9) && resumed.presentationDirty,
+          "unchanged cached triangle mask still requires world presentation on resume");
+  resumed.presented();
+  require(!resumed.presentationDirty, "successful world presentation consumes the resume gate");
+}
+
+void testAdmissionAndPublishedSources() {
+  using Admission = dxvk::retained_compat::WorldBatchAdmissionState;
+  Admission admission;
+  const auto start = Admission::Clock::time_point {};
+  require(!admission.pending() && !admission.due(start), "no maintenance without pending admission");
+  admission.request();
+  require(admission.due(start), "first pending admission can run immediately");
+  admission.begin(start);
+  admission.request();
+  require(!admission.due(start + std::chrono::milliseconds(999)) && admission.due(start + std::chrono::seconds(1)),
+          "admission cadence uses monotonic time without delaying canonical rendering");
+  admission.begin(start + std::chrono::seconds(1));
+  require(!admission.pending(), "failed attempt does not automatically busy retry");
+  admission.request(); admission.cancel();
+  require(!admission.due(start + std::chrono::seconds(10)), "cancelled failure requires a new event");
+  struct Source { unsigned mesh; float x; };
+  struct Record { unsigned mesh; float x; };
+  dxvk::retained_compat::PublishedSourceState<Source, Record> published;
+  auto a = std::make_shared<const Source>(Source {1, 0});
+  auto b = std::make_shared<const Source>(Source {2, 5});
+  published.publish(a, Record {1, 0});
+  published.stage();
+  require(published.source == a && published.pending, "staging B does not advance published A");
+  published.updateApplied(b, [](Source& old, const Source& current) { old.x = current.x; });
+  published.record.x = b->x;
+  require(published.source->mesh == 1 && published.source->x == 5 && published.pending,
+          "fast transform preserves published old geometry while B is pending");
+  require(published.source->mesh != b->mesh, "global refresh must use the published recipe, not staged B");
+  using Destruction = dxvk::retained_compat::SourceDestruction;
+  using dxvk::retained_compat::sourceDestruction;
+  require(sourceDestruction(false, false) == Destruction::None, "unrelated mesh destruction changes neither source");
+  require(sourceDestruction(false, true) == Destruction::ForgetPublished,
+          "only published A destruction releases its view while pending B survives");
+  require(sourceDestruction(true, false) == Destruction::RemoveEntry && sourceDestruction(true, true) == Destruction::RemoveEntry,
+          "current B destruction retains original whole-record removal semantics");
+  published.forget();
+  published.updateApplied(b, [](Source& old, const Source& current) { old.x = current.x; });
+  require(!published.source && published.pending && b->mesh == 2,
+          "destroying published A leaves pending valid B staged for the next commit");
+  published.publish(b, Record {2, 5});
+  require(published.source == b && !published.pending, "successful canonical build advances source atomically");
+  auto movedB = std::make_shared<const Source>(Source {2, 9});
+  published.updateApplied(movedB, [](Source& old, const Source& current) { old.x = current.x; });
+  require(published.source == movedB && !published.pending, "applied transform without pending geometry shares immutable source");
+}
+
+void testRelativeTransform() {
+  using namespace dxvk;
+  Matrix4 parent; parent[0][0] = 2; parent[1][1] = 3; parent[3].x = 20;
+  Matrix4 local; local[3].x = 3; local[3].y = 5;
+  const Matrix4 first = retained_compat::childTransform(parent, &local);
+  require(first[3].x == 26 && first[3].y == 15, "parent transform composes before replacement local");
+  parent[3].x = 50;
+  const Matrix4 moved = retained_compat::childTransform(parent, &local);
+  require(moved[3].x == 56 && moved[3].y == 15 && local[3].x == 3, "moving parent preserves authored local matrix");
+  Matrix4 rotated; rotated[0][0] = 0; rotated[0][1] = 1; rotated[1][0] = -1; rotated[1][1] = 0;
+  rotated[3].x = 10; rotated[3].y = 20;
+  const Matrix4 turned = retained_compat::childTransform(rotated, &local);
+  require(turned[3].x == 5 && turned[3].y == 23, "rotation keeps the authored local translation relative");
+  const Matrix4 original = retained_compat::childTransform<Matrix4>(parent, nullptr);
+  require(std::memcmp(&original, &parent, sizeof(parent)) == 0, "original surface stays at parent transform");
+}
+}
+int main() {
+  testProtocol(); testClassification(); testLifetime(); testWorldUpdateLifetime(); testAdmissionAndPublishedSources(); testRelativeTransform();
+  std::printf("Retained Compat v2/v3: %u CPU policy checks passed\n", checks);
+  return 0;
+}

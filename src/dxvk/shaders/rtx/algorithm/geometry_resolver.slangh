@@ -41,6 +41,7 @@
 #define RESOLVE_SKY_LIT_PARTICLES 1
 #include "rtx/algorithm/resolve.slangh"
 #include "rtx/algorithm/volume_lighting_consumer.slangh"
+#include "rtx/algorithm/water_volume_segment.slangh"
 #include "rtx/pass/post_fx/post_fx_motion_blur_geometry_flags.slangh"
 #include "rtx/algorithm/nee_cache_light.slangh"
 #include "rtx/utility/gpu_printing.slangh"
@@ -1977,6 +1978,43 @@ bool gbufferDeferUnorderedParticles()
 #endif
 }
 
+bool geometryResolverIsWater(Surface surface, PolymorphicSurfaceMaterialInteraction material)
+{
+  return surface.isAnimatedWater &&
+    polymorphicSurfaceMaterialInteractionGetTypeHelper(material) == surfaceMaterialTypeTranslucent &&
+    !translucentSurfaceMaterialInteractionIsThinWalled(translucentSurfaceMaterialInteractionCreate(material));
+}
+
+uint geometryResolverMediumMaterialIndex(bool waterSurface, uint surfaceMaterialIndex)
+{
+  // The camera-global water volume owns extinction on every water segment.
+  return waterSurface && cb.cameraWaterVolumeActive && cb.startInMediumMaterialIndex != SURFACE_INDEX_INVALID
+    ? cb.startInMediumMaterialIndex : surfaceMaterialIndex;
+}
+
+bool geometryResolverInsideWater(vec3 geometryNormal)
+{
+  // The resolver face-forwards this normal. A downward normal is the underside of the sea.
+  return (cb.isZUp ? geometryNormal.z : geometryNormal.y) < 0.0f;
+}
+
+vec3 geometryResolverEnvironment(vec3 direction, uint2 pixelCoordinate)
+{
+  if (cb.domeLightArgs.active)
+  {
+    return cb.domeLightArgs.radiance * sampleDomeLightTexture(LinearWrapSampler, direction,
+      cb.domeLightArgs.textureIndex, cb.domeLightArgs.worldToLightTransform);
+  }
+
+  if (skyProviderActive())
+  {
+    return skyProviderRadiance(direction, pixelCoordinate,
+      /*isPrimaryRay=*/ false, /*applySkyIndirectScale=*/ false, NUMOS_SKY_DISKS_NONE);
+  }
+
+  return cb.skyBrightness * SkyProbe.SampleLevel(direction, 0);
+}
+
 void geometryResolverVertex(
   EmptyExtraArgs extraArgs, RayHitInfo rayHitInfo,
   inout GeometryResolverState geometryResolverState)
@@ -2148,8 +2186,8 @@ void geometryResolverVertex(
     }
     else
     {
-      // Note: Assume infinite hit distance on miss. This wouldn't be true with things that have a practical tMax
-      // value (such as NEE rays), but for the geometry resolver this is a fine assumption.
+      // A miss has no geometry distance to measure. Water keeps its deep-medium approximation; other thick media use
+      // their authored measurement distance so an open boundary does not absorb the background as if it were infinite.
       volumeTransmittance = translucentSurfaceMaterialEvalInfiniteVolumeTransmittance(
         translucentSurfaceMaterial);
     }
@@ -2321,6 +2359,11 @@ void geometryResolverVertex(
   // writing this value out in cases we know the PDF will be 1 (any case where only PSRR or PSTR happen but not both) to
   // save some writes/reads, but this should be fine for now.
   float selectedIntegrationSurfacePdf = 1.0f;
+  const bool waterSurface = geometryResolverIsWater(surface, polymorphicSurfaceMaterialInteraction);
+  if (waterSurface)
+  {
+    geometryResolverState.insideMedium = geometryResolverInsideWater(surfaceInteraction.geometryNormal);
+  }
   const bool oldInsideMedium = geometryResolverState.insideMedium;
   bool pstrPenetrateSurface = false;
   
@@ -2405,7 +2448,8 @@ void geometryResolverVertex(
 
     // Note: Only setting this for PSTR as it's the only path currently which would need this information (PSRR doesn't off the first interaction at least, but does later
     // during PSR resolving due to things like TIR).
-    transmissionMediumMaterialIndex = translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex;
+    transmissionMediumMaterialIndex = geometryResolverMediumMaterialIndex(
+      waterSurface, translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex);
   }
   else if (exitedMedium)
   {
@@ -2548,7 +2592,7 @@ void geometryResolverVertex(
       const GbufferPSRData psrData = packPSRData(sampledRay, transmissionMediumMaterialIndex,
         geometryResolverState.attenuation * surfaceMaterialInteractionTransmissionPSRSample.attenuation,
         vectorTransform,
-        packedGeometryFlags);
+        packedGeometryFlags, enteredMedium && waterSurface);
 
       storeTransmissionPSRData(psrData, geometryResolverState.pixelCoordinate);
 
@@ -2853,8 +2897,23 @@ void geometryPSRResolverVertex(
     {
       // Note: Assume infinite hit distance on miss. This wouldn't be true with things that have a practical tMax
       // value (such as NEE rays), but for the geometry resolver this is a fine assumption.
-      volumeTransmittance = translucentSurfaceMaterialEvalInfiniteVolumeTransmittance(
-        translucentSurfaceMaterial);
+      if (geometryPSRResolverState.waterMedium)
+      {
+        // An open sea has no bottom hit. Approximate a deep water column with ambient scattering.
+        const float waterDistance = 4.0f * translucentSurfaceMaterial.thicknessOrMeasurementDistance;
+        volumeTransmittance = translucentSurfaceMaterialEvalVolumeTransmittance(
+          translucentSurfaceMaterial, waterDistance);
+        const vec3 up = cb.isZUp ? vec3(0, 0, 1) : vec3(0, 1, 0);
+        const vec3 waterAmbient = 0.05f * geometryResolverEnvironment(up, geometryPSRResolverState.pixelCoordinate) *
+          translucentSurfaceMaterial.transmittanceColor;
+        geometryPSRResolverState.radiance += geometryPSRResolverState.attenuation * radianceAttenuation *
+          (vec3(1.0f) - volumeTransmittance) * waterAmbient;
+      }
+      else
+      {
+        volumeTransmittance = translucentSurfaceMaterialEvalUnresolvedVolumeTransmittance(
+          translucentSurfaceMaterial);
+      }
     }
 
     geometryPSRResolverState.attenuation *= volumeTransmittance;
@@ -2886,7 +2945,9 @@ void geometryPSRResolverVertex(
     {
       skyRadiance = cb.skyBrightness * SkyProbe.SampleLevel(ray.direction, 0);
     }
-    skyRadiance *= calcVolumetricAttenuation(cb.volumeArgs, none, true, 0.0f, ray.origin, ray.direction);
+#ifndef RESOLVER_USE_VOLUMETRIC_ATTENUATION
+    skyRadiance *= evalResolvedVolumeAttenuation(true, 0.0f, ray.origin, ray.direction);
+#endif
     emissiveRadiance += skyRadiance * radianceAttenuation;
   }
 
@@ -2934,6 +2995,17 @@ void geometryPSRResolverVertex(
   SurfaceMaterialInteractionPSRSample surfaceMaterialInteractionReflectionPSRSample;
   SurfaceMaterialInteractionPSRSample surfaceMaterialInteractionTransmissionPSRSample;
   vec3 diffuseLayerWeight = vec3(0.0f);
+  const bool waterSurface = geometryResolverIsWater(surface, polymorphicSurfaceMaterialInteraction);
+  if (waterSurface)
+  {
+    geometryPSRResolverState.insideMedium =
+      geometryResolverInsideWater(surfaceInteraction.geometryNormal);
+    geometryPSRResolverState.waterMedium = geometryPSRResolverState.insideMedium;
+    geometryPSRResolverState.mediumMaterialIndex = geometryPSRResolverState.insideMedium
+      ? geometryResolverMediumMaterialIndex(waterSurface,
+          translucentSurfaceMaterialInteractionCreate(polymorphicSurfaceMaterialInteraction).sourceSurfaceMaterialIndex)
+      : SURFACE_INDEX_INVALID;
+  }
   const bool oldInsideMedium = geometryPSRResolverState.insideMedium;
   bool penetrateSurface = false;
   bool useReflectionPSRSample = false;
@@ -3003,11 +3075,14 @@ void geometryPSRResolverVertex(
     // Note: For now we always know the only type of material which can trigger this path is the translucent material, so no need to check it.
     const TranslucentSurfaceMaterialInteraction translucentSurfaceMaterialInteraction = translucentSurfaceMaterialInteractionCreate(polymorphicSurfaceMaterialInteraction);
 
-    geometryPSRResolverState.mediumMaterialIndex = translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex;
+    geometryPSRResolverState.mediumMaterialIndex = geometryResolverMediumMaterialIndex(
+      waterSurface, translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex);
+    geometryPSRResolverState.waterMedium = surface.isAnimatedWater;
   }
   else if (exitedMedium)
   {
     geometryPSRResolverState.mediumMaterialIndex = SURFACE_INDEX_INVALID;
+    geometryPSRResolverState.waterMedium = false;
   }
 
   // Handle PSR continuation or output a surface otherwise
@@ -3022,6 +3097,7 @@ void geometryPSRResolverVertex(
     geometryPSRResolverState.continuePSRResolving = true;
     geometryPSRResolverState.insideMedium = false;
     geometryPSRResolverState.mediumMaterialIndex = cb.startInMediumMaterialIndex;
+    geometryPSRResolverState.waterMedium = false;
     geometryPSRResolverState.accumulatedRotation = getIdentityQuaternion();
     
   }
@@ -3853,7 +3929,12 @@ uint geometryPSRPreparePass(ivec2 pixelCoordinate) {
   vec3 diffuseLayerWeight = vec3(0.0f);
   bool reflectionSelectedIntegrationSurface = false;
   float selectedIntegrationSurfacePdf = 1.0f;
-  bool insideMedium = cb.startInMediumMaterialIndex != SURFACE_INDEX_INVALID;
+  const uint firstSurfaceIndex = uint(SharedSurfaceIndex[pixelCoordinate]);
+  const bool waterSurface = firstSurfaceIndex != SURFACE_INDEX_INVALID &&
+    geometryResolverIsWater(surfaces[firstSurfaceIndex], polymorphicSurfaceMaterialInteraction);
+  bool insideMedium = waterSurface ?
+    geometryResolverInsideWater(surfaceInteraction.geometryNormal) :
+    cb.startInMediumMaterialIndex != SURFACE_INDEX_INVALID;
   const bool oldInsideMedium = insideMedium;
   bool pstrPenetrateSurface = false;
 
@@ -3920,7 +4001,8 @@ uint geometryPSRPreparePass(ivec2 pixelCoordinate) {
   {
     const TranslucentSurfaceMaterialInteraction translucentSurfaceMaterialInteraction =
       translucentSurfaceMaterialInteractionCreate(polymorphicSurfaceMaterialInteraction);
-    transmissionMediumMaterialIndex = translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex;
+    transmissionMediumMaterialIndex = geometryResolverMediumMaterialIndex(
+      waterSurface, translucentSurfaceMaterialInteraction.sourceSurfaceMaterialIndex);
   }
   else if (exitedMedium)
   {
@@ -3962,7 +4044,7 @@ uint geometryPSRPreparePass(ivec2 pixelCoordinate) {
       sampledRay, transmissionMediumMaterialIndex,
       attenuation * transmissionPSRSample.attenuation,
       vectorTransform,
-      packedGeometryFlags);
+      packedGeometryFlags, enteredMedium && waterSurface);
 
     storeTransmissionPSRData(psrData, pixelCoordinate);
     useAlternateDisocclusionThreshold =

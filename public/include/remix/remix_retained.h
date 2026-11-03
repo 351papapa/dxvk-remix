@@ -1,12 +1,15 @@
 #pragma once
 #include <remix/remix_c.h>
 
-#define REMIXAPI_RETAINED_VERSION 2u
+#define REMIXAPI_RETAINED_VERSION 3u
+#define REMIXAPI_RETAINED_VERSION_2 2u
 #define REMIXAPI_RETAINED_ORDERED 1u
+#define REMIXAPI_RETAINED_HIDDEN 2u
 #define REMIXAPI_RETAINED_MAX_BATCH 4096u
 #define REMIXAPI_GET_RETAINED_INTERFACE_NAME "remixapi_GetRetainedInterface"
 
-// Version 2 supports rigid instances and ordered retained groups. Mesh surfaces own their material handles.
+// Versions 2 and 3 have the same layout. Version 3 adds persistent HIDDEN unordered records.
+// ORDERED and HIDDEN are mutually exclusive. Mesh surfaces own their material handles.
 // Every field on the wire has fixed width; no pNext or client pointers are retained.
 #pragma pack(push, 8)
 typedef struct remixapi_RetainedBlend {
@@ -64,7 +67,8 @@ typedef struct remixapi_RetainedStatus {
 // DrawOrdered validates the whole group before submission; asynchronous errors are sticky in GetStatus.
 // CommitFrame explicitly replays the unordered set once for the current runtime frame, using
 // its current camera. There is no automatic replay. Call after camera acquisition and before RTX injection.
-// Remove unseen instances before CommitFrame. Clear on mode/world/device transitions.
+// Version 2 hosts remove unseen instances. Version 3 hosts may retain them with HIDDEN until shown or unloaded.
+// Clear on mode/world/device transitions. The returned table echoes the requested version.
 // GetStatus synchronizes; use at initialization, reset, and diagnostics, not every frame.
 // Mesh destruction removes its retained instances. Material destruction fails replay closed.
 // Transient scene-cache clears preserve the catalog and the external API mesh/material handles.

@@ -1,5 +1,160 @@
 ## Remix API Changelog
 
+## 2026-11-03 — Camera medium for external effects
+
+The external frame buffer exposes cameraMediumFlags at byte 1356 (formerly
+reserved), with bit 0 indicating water. Frame size and existing non-padding
+offsets are unchanged. No exported function or bridge command is added.
+
+
+## 2026-11-03 — Live post-processing tint
+
+### Added
+
+`__postfx.tint_v1` publishes validity and normalized RGB in one GameStateStore
+value. External frame data appends a typed tint and validity flag at offsets
+1360 and 1372; its size is 1376 bytes. Existing offsets, exported functions and
+bridge commands are unchanged. See [post-processing tint](RemixPostFxAPI.md).
+
+## 2026-11-02 — Private retained catalog v3 and static world batches
+
+The private fixed-width interface negotiates v2 or v3 with an unchanged layout.
+Version 3 adds HIDDEN unordered records and preserves their intended visibility
+through missing commits and asset rebuilds. Transform/visibility-only changes
+update existing retained children. Matching bridge endpoints negotiate support
+through a runtime acknowledgement; v2 wrappers continue to reject v3 flags.
+
+Eligible static opaque surfaces can be physically packed across records sharing
+a 64-unit cell, original texture identity and compatible resolved
+material/surface/cull/wetness state. Pure
+opaque enhanced replacements expand through the existing resolver. Canonical
+identities remain available for invalidation, per-record visibility and tools;
+unsupported inputs or failed builds restore canonical rendering. Unchanged
+membership/state reuses packed vertices, while a changed nonempty visibility
+index set still requires a full BLAS build. All-hidden batches keep the last
+nonempty index buffer/state and geometry revision while remaining hidden. Exact
+mask reveal reuses that topology; release policy 0 still rebuilds the scene view
+in the reveal frame using the same buffer. Different nonempty masks build new
+indices. Retained visibility policy may still request BLAS work.
+World-batch accounting is bounded at 128 MiB. This internal view adds no public
+function or layout change.
+
+The planner preflights complete connected input/bucket components before packing or GPU
+allocation. A capacity-rejected component stays canonical without discarding
+independent accepted batches. Final visibility is published once after a
+successful transaction, preserving unchanged views; actual build/allocation
+failures retain the full canonical fallback. Sparse CPU phase and reason counters
+distinguish budget rejection from errors.
+
+Fixed packed chunks retain unchanged source geometry across admissions. Full-child
+proof retires every changed old part; only complete uncovered children enter new
+delta packing. Stable physical slots and budgeted holes prevent regrouping churn
+without reviving old geometry when a canonical handle is reused. Publication
+remains staged, with canonical fallback on failure.
+
+Synchronous preparation borrows the entry-owned resolved parts. Immutable cached
+sources, physical ranges and members are shared. Cached and fast rendering plans
+carry no ownership list; full output constructs active ownership from storage.
+The full topology index vector was already shared; this change removes duplicate
+metadata copies without changing whole-child ownership or GPU topology rules.
+The CPU complete-child proof uses a compressed incidence index and rejection
+queue instead of rebuilding coverage and rescanning all buckets to convergence.
+Its fixed-point eligibility and whole-child ownership contract remain unchanged;
+grouping, capacity, canonical fallback and GPU topology rules are preserved.
+The R9 algorithm adds no phase fields and reuses R8 telemetry. Separate R10
+diagnostics report six helper full phases including cleanup, then successful
+compatibility publication. Work/Publish pair by runtime frame+prepareAttempt;
+helper completion is distinct from compatibility publication and GPU completion.
+Runtime frame and HUD source-frame IDs are independent; approximate wall-time
+association does not establish a slow-frame cause. Helper log formatting is
+inside outer prepareMs but outside helper totalMs, so diagnostic overhead is an
+expected residual. Normal Perf also exposes the existing sampled BlasBuild,
+TlasBuild and SceneSetup means with stageSamples; missing values stay n/a. No
+new queries, ABI, settings, rendering or admission changes are introduced, and
+global GPU stage times do not isolate world batching.
+
+Separate cumulative full/fast successful-transaction phase counts, totals and
+lifetime maxima supplement independently sampled sparse events. Failed work
+remains in failure/resource counters; lifetime maxima cannot be differenced into
+formal maxima, and absent older-run fields remain unavailable.
+
+Full membership preparation is separate from visibility-only updates. The full
+generation owns a canonical-child/member index; only affected batch masks and
+active indices are staged together before upload, keeping immutable vertices.
+Structural changes forbid the fast path. Missing commits require republishing
+all cached presentations on resume, even for unchanged masks; hidden batches
+never draw the last nonempty topology. Staging or prefix-publication failure
+restores canonical sources. `[WorldBatchFast]` records this work separately.
+
+Local old-child detachment and final visibility share one staged index
+transaction. Successful publication releases old ownership and exposes canonical
+children from the latest successfully published source, preserving stable batches.
+Detached old ranges cannot revive through reused handles or show/republish.
+Optional full readmission is pending-only at a one-second steady-clock interval;
+global asset/texture/options/rule/tool invalidation still requires current
+canonical state before upload. Failure and missing-commit behavior remain safe.
+
+Index-build attempts/builds are logical transitions, including hidden no-allocation
+changes. Separate buffer-resource/byte/triangle and successful reveal/hidden reuse
+counters distinguish actual topology work; they do not measure device-memory
+allocation calls or establish a GPU performance improvement.
+
+Hidden instances skip wetness/material/name classification queries after clearing
+their window class; reveal classification runs before the same frame's upload.
+The window-disable pass also clears hidden surfaces. `[SurfaceClassify]` records
+resetting interval CPU totals and timings separately from cumulative batch work.
+
+A shared gate accepts disabled emission or exactly zero authored intensity without
+changing material fields. Enabled nonzero/nonfinite intensities remain canonical;
+the original texture hash is also retained in world grouping and cache equality.
+
+The r2 runtime and matching bridge builds succeeded. All four targeted CPU tests
+passed, including the r2 emission-policy cases and normal-transform rotation/shear
+coverage. R2's valid formal route regressed to 25.41 average base FPS / 11.68
+1% low against baseline 34.46 / 16.69, so it was rolled back. R3 CPU tests and
+full build passed, but its valid formal route measured 33.86455 average base FPS /
+14.75868 1% low versus baseline 34.46336 / 16.68940. R3 did not meet the performance
+goal. R4 CPU tests and full build passed, but its valid formal route measured
+34.1766608 average base FPS / 14.0138520 1% low against baseline 34.4633559 /
+16.6894049; both gates failed. The observed call interval remained about 72% full
+preparation and 28% fast. R5 CPU tests and build passed, but its valid formal route
+measured 33.824186 average base FPS / 14.885688 1% low against 34.463356 /
+16.689405. Its observed interval was about 3% full / 97% fast; complete formal
+Perf windows averaged 15.20 ms rendering CPU and 28.74 ms GPU. Both FPS gates
+remained unmet. R6 CPU tests and build passed, but its valid formal result was
+34.2475767 average base FPS / 15.848298 1% low against 34.4633559 / 16.6894049.
+Complete formal Perf windows averaged 14.42 ms CPU / 28.18 ms GPU. Its observed
+work was 8049 real IB creations, 2712 reveal reuses and 6863 hidden no-allocation
+transitions. Hidden transitions already did not allocate in R5; they are not an
+allocation saving attributed to R6. Both performance goals remained unmet.
+R7 CPU tests and full build passed. Its valid formal result was 34.8744584 average
+base FPS / 15.8678106 1% low against original 34.4633559 / 16.6894049. Average met
+the existing goal, while 1% low did not. Five complete Perf windows averaged
+13.64 ms CPU / 27.44 ms GPU. Its observed work was 2125 real VB creations and
+6987 real IB creations, with 2778 reveal reuses and 6500 hidden no-allocation
+transitions. All 6286 raw frame samples, including the initial spike and 54
+samples above 50 ms, remain included. R8 targeted CPU tests and full build passed. Its valid formal result was
+34.66398557 average base FPS / 16.66741185 1% low versus original
+34.46335595 / 16.68940488. The strict combined comparison failed on the measured
+0.13178% low1 difference; the prior D485/A9BF working version was restored.
+One small single-run difference does not prove a persistent causal regression.
+Interior full transactions averaged 8.54503 ms total, with 6.83573 ms prepare;
+this does not measure completeInputs separately. Five complete Perf windows
+averaged 13.32 ms CPU / 27.82 ms GPU. All 6250 raw samples remain included.
+R9 targeted CPU tests and full build passed. Its valid 180.025-second formal run
+measured 34.91051504 average base FPS / 16.20685087 1% low versus original
+34.46335595 / 16.68940488. Strict comparison failed on low1; D485/A9BF was
+restored. All 6288 raw samples remained. Full mean was 7.69472 ms, including
+5.95176 ms prepare versus R8's 8.54503 / 6.83573 ms; this does not isolate
+completeInputs or establish a permanent causal FPS change. Five complete Perf
+windows averaged 13.50 ms CPU / 27.64 ms GPU. R10 adds diagnostics only.
+R10 targeted CPU tests and the full build passed. Its one valid 180.017-second diagnostic route retained all 6248 raw frames and measured 34.67515914 average base FPS / 16.25225565 1% low, against original 34.46335595 / 16.68940488. The strict combined comparison failed on low1. D485/A9BF, both original bridge halves and the original configuration/route were restored, as required before the diagnostic regardless of its metrics. The formal interval contained 178 exact Work/Publish pairs without duplicates. Helper full prepare averaged 6.05647 ms (P95 12.1179 ms, maximum 22.7939 ms); its maximum event included 17.317 ms in newPack. That stage includes source decoding, packing, buffer creation/mapping/copy, bounds/hash and initial indices, not just packing arithmetic. Five complete normal Perf windows contained 176 GPU samples: sample-weighted global BLAS 1.29553 ms, TLAS 0.49404 ms and SceneSetup 0.85229 ms. These are global sampled stages and do not identify world-batch or individual slow-frame causes.
+
+R11 removes per-source decoded vertex/index arrays from new world-batch construction. A synchronous reader feeds the existing transform and packing rules directly from validated source buffers into the final CPU arrays. Geometry ordering, authored attribute defaults, transform/normal math, index bounds, output limits and failure atomicity remain checked. Source resources remain strongly retained for the synchronous read. This removes duplicate intermediate allocation/copy work; it does not introduce a pending build queue or change admission, visibility, material, topology or quality rules. R10 diagnostics stay enabled to compare the same measured phases. R11 CPU validation: four targeted CPU tests passed; full build: pending; live/GPU: pending. No FPS improvement or visual equivalence is established before the single formal comparison.
+No R10 FPS benefit or visual equivalence is established. No
+rendering options or presets change. See the
+[compatibility contracts](../docs/RemixRetainedCompatibility.md).
+
 ## 2026-10-31 — Bridge light definition updates
 
 Added a capability-gated command that keeps bridge light handles stable and

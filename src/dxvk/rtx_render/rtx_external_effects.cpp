@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <locale>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,8 +19,10 @@
 #include "rtx_auto_exposure.h"
 #include "rtx_context.h"
 #include "rtx_external_effects.h"
+#include "rtx_fork_game_state.h"
 #include "rtx_imgui.h"
 #include "rtx_postFx.h"
+#include "rtx_water.h"
 
 #include "../imgui/imgui.h"
 #include "../../util/util_env.h"
@@ -78,6 +82,8 @@ namespace dxvk {
       ExternalEffectInputFocusState = 1 << 10,
       ExternalEffectInputProjectedDepth = 1 << 11,
     };
+
+    constexpr uint32_t kCameraMediumWater = 1u << 0;
 
     // Per-dispatch push constants. Parameters live in their own uniform buffer.
     // dispatchSize is the extent this pass runs over, which differs from imageSize for a 'div' pass.
@@ -146,13 +152,45 @@ namespace dxvk {
       // preExposureHistoryRatio is this frame's pre-exposure over last frame's, and is 1 unless it changed.
       float preExposure;
       float preExposureHistoryRatio;
-      uint32_t padding[1];
+      // Bit 0 identifies the registered water camera medium. Zero means no recognized active medium.
+      uint32_t cameraMediumFlags;
+      // Normalized game-authored post-effect coefficients, not scene radiance.
+      float gamePostFxTint[3];
+      uint32_t gamePostFxTintValid;
     };
 
-    static_assert(sizeof(ExternalEffectFrameData) == 1360);
+    static_assert(offsetof(ExternalEffectFrameData, cameraMediumFlags) == 1356);
+    static_assert(offsetof(ExternalEffectFrameData, gamePostFxTint) == 1360);
+    static_assert(offsetof(ExternalEffectFrameData, gamePostFxTintValid) == 1372);
+    static_assert(sizeof(ExternalEffectFrameData) == 1376);
     // std140 rounds the block to a multiple of 16 and scalar layout does not,
-    // so the padding above keeps the struct a multiple of 16.
+    // so the frame layout keeps the struct a multiple of 16.
     static_assert(sizeof(ExternalEffectFrameData) % 16 == 0);
+
+    // One GameValue is copied under one lock, so validity and RGB cannot tear.
+    bool parseGamePostFxTint(const std::string& wire, float (&tint)[3]) {
+      if (wire.size() > 128) {
+        return false;
+      }
+      std::istringstream stream(wire);
+      stream.imbue(std::locale::classic());
+      std::string valid;
+      float values[3] = {};
+      if (!(stream >> valid >> values[0] >> values[1] >> values[2]) || valid != "1") {
+        return false;
+      }
+      stream >> std::ws;
+      if (!stream.eof()) {
+        return false;
+      }
+      for (float value : values) {
+        if (!std::isfinite(value) || value < 0.0f || value > 1.0f) {
+          return false;
+        }
+      }
+      std::copy(std::begin(values), std::end(values), std::begin(tint));
+      return true;
+    }
 
     bool endsWith(const std::string& value, const std::string& suffix) {
       return value.size() >= suffix.size()
@@ -2187,6 +2225,13 @@ namespace dxvk {
     frameData.cameraCut = ctx->getSceneManager().getCamera().isCameraCut() ? 1 : 0;
     frameData.preExposure = PreExposure::get();
     frameData.preExposureHistoryRatio = PreExposure::historyRatio();
+    const uint64_t waterMediumHash = parseWaterMediumHash(WaterSystem::cameraMediumMaterialHash());
+    frameData.cameraMediumFlags = waterMediumHash != 0
+      && waterMediumHash == ctx->getSceneManager().getStartInMediumMaterialSourceHash()
+      ? kCameraMediumWater : 0u;
+    std::string gamePostFxTint;
+    frameData.gamePostFxTintValid = fork_game_state::GameStateStore::get().tryGet(
+      "__postfx.tint_v1", gamePostFxTint) && parseGamePostFxTint(gamePostFxTint, frameData.gamePostFxTint);
 
     ExternalEffectParameterData parameterData = {};
     parameterData.valueCount = effect->manifest.parameterValueCount;

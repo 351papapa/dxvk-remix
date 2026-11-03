@@ -222,6 +222,7 @@ dxvk_src = files([
   'rtx_render/rtx_water_foam_geometry.cpp',
   'rtx_render/rtx_water_foam_geometry.h',
   'rtx_render/rtx_water_foam_sheet_contract.h',
+  'rtx_render/rtx_water_medium.h',
   'rtx_render/rtx_water_simulation.cpp',
   'rtx_render/rtx_water_simulation.h',
   'rtx_render/rtx_water_surface.cpp',
@@ -410,6 +411,7 @@ dxvk_src = files([
   'rtx_render/rtx_pathtracer_integrate_indirect.h',
   'rtx_render/rtx_postFx.cpp',
   'rtx_render/rtx_postFx.h',
+  'rtx_render/rtx_postFx_sun_flare.cpp',
   'rtx_render/rtx_preserved_object_picking.h',
   'rtx_render/rtx_srgb_dither.cpp',
   'rtx_render/rtx_srgb_dither.h',
@@ -427,10 +429,18 @@ dxvk_src = files([
   'rtx_render/rtx_resources.h',
   'rtx_render/rtx_restir_gi_rayquery.cpp',
   'rtx_render/rtx_restir_gi_rayquery.h',
+  'rtx_render/rtx_retained_batch_policy.h',
   'rtx_render/rtx_retained_compat.cpp',
   'rtx_render/rtx_retained_compat.h',
+  'rtx_render/rtx_retained_compat_policy.h',
   'rtx_render/rtx_retained_scene.cpp',
   'rtx_render/rtx_retained_scene.h',
+  'rtx_render/rtx_retained_static_batch.cpp',
+  'rtx_render/rtx_retained_static_batch.h',
+  'rtx_render/rtx_retained_static_batch_cpu.h',
+  'rtx_render/rtx_retained_world_batch.cpp',
+  'rtx_render/rtx_retained_world_batch.h',
+  'rtx_render/rtx_retained_world_batch_cpu.h',
   'rtx_render/rtx_rtxdi_rayquery.cpp',
   'rtx_render/rtx_rtxdi_rayquery.h',
   'rtx_render/rtx_scene_command_queue.h',
@@ -585,6 +595,7 @@ dxvk_src = files([
   'imgui/implot_items.cpp',
 
   'shaders/rtx/pass/rtxdi/local_sphere_select.h',
+  'shaders/rtx/pass/volumetrics/water_volume_caustics_args.h',
 ])
 
 thread_dep = dependency('threads')

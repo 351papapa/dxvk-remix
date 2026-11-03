@@ -5,6 +5,8 @@
 #include "rtx_texture.h"
 #include "rtx_water_foam_geometry.h"
 #include "rtx_water_surface.h"
+#include "rtx_water_medium.h"
+#include "rtx/pass/volumetrics/water_volume_caustics_args.h"
 #include "../../util/util_vector.h"
 #include "../../../public/include/remixapi/water_controls.h"
 
@@ -12,18 +14,32 @@ struct WetnessArgs;
 
 namespace dxvk {
 class RtCamera;
+class SceneManager;
+struct WaterLightSurface {
+  bool valid = false;
+  float height = 0.0f;
+};
+
 class WaterSystem : public CommonDeviceObject {
 public:
   explicit WaterSystem(DxvkDevice* device) : CommonDeviceObject(device) { }
   ~WaterSystem();
   void publishControls(const RtCamera& camera);
   void prepareCaustics(RtxContext* ctx, const Resources::RaytracingOutput& output);
+  void prepareVolumeCaustics(RtxContext* ctx);
+  void bindVolumeCausticsResources(RtxContext* ctx);
+  bool volumeCausticsActive() const { return m_volumeCausticsActive; }
+  bool volumeCausticsChanged() const { return m_volumeCausticsChanged; }
+  const WaterVolumeCausticsArgs& volumeCausticsArgs() const { return m_volumeCausticsArgs; }
   void compositeCaustics(RtxContext* ctx, const Resources::RaytracingOutput& output);
   static std::string resolveAssetPath(const std::string& path);
   void compositeFoam(RtxContext* ctx, const Resources::RaytracingOutput& output);
   void fillShoreWetnessArgs(WetnessArgs& args);
   void bindShoreWetnessResources(RtxContext* ctx);
-  void compositeUnderwater(RtxContext* ctx, const Resources::RaytracingOutput& output);
+  static WaterOpticalProperties opticalProperties();
+  void updateCameraMedium(const SceneManager& scene);
+  const WaterMediumState& cameraMedium() const { return m_cameraMedium; }
+  const WaterLightSurface& cameraLightSurface() const { return m_cameraLightSurface; }
 
   // Updates GPU geometry before scene ingestion and acceleration-structure preparation.
   void submitFoamSurface(Rc<DxvkContext> ctx);
@@ -52,8 +68,9 @@ public:
   RTX_OPTION("rtx.water", float, localFlowDrag, .35f, "Local wake velocity damping per second.");
 
   RTX_OPTION_FLAG("rtx.water", bool, overrideMaterial, false, RtxOptionFlags::InvalidatesDrawcallTranslation, "Apply water color, distance and non-thin-walled shading to translucent AnimatedWater surfaces.");
-  RTX_OPTION_FLAG("rtx.water", Vector3, transmittanceColor, Vector3(0.51138175f, 0.8944833f, 0.98841697f), RtxOptionFlags::InvalidatesDrawcallTranslation, "Water transmittance color at the measurement distance.");
+  RTX_OPTION_FLAG("rtx.water", Vector3, transmittanceColor, Vector3(0.51138175f, 0.8944833f, 0.98841697f), RtxOptionFlags::InvalidatesDrawcallTranslation, "Baseline linear RGB water transmittance at the authored measurement distance. Added particles contribute neutral extinction; the resulting total extinction is shared by the surface, caustics and underwater volume.");
   RTX_OPTION_FLAG("rtx.water", float, transmittanceDistance, 7.5f, RtxOptionFlags::InvalidatesDrawcallTranslation, "Water transmittance measurement distance in game world units.");
+  RTX_OPTION_FLAG("rtx.water", float, particleExtinctionPerMeter, 0.0f, RtxOptionFlags::InvalidatesDrawcallTranslation, "Added neutral suspended-particle extinction per meter, 0 to 1. Zero preserves authored water transmittance. Increases the same total extinction for water materials, caustics and underwater lighting; respects scene scale.");
   RTX_OPTION("rtx.water", float, amplitude, 0.55f, "Local geometric swell amplitude in game world units. Zero disables swell.");
   RTX_OPTION("rtx.water", float, oceanWaveStrength, 1.25f, "Overall ocean swell and beach-wave height multiplier, applied on the GPU.");
   RTX_OPTION("rtx.water", float, rainWaveMultiplier, 1.25f, "Rainy ocean wave height relative to normal weather; blends with the weather transition.");
@@ -107,7 +124,7 @@ private:
   RTX_OPTION("rtx.water", float, causticsScale, 4.0f, "World units per caustic texture repeat for the shared-protocol ocean material.");
   RTX_OPTION("rtx.water", bool, causticsScalePerDomain, false, "Use causticsPoolScale for authored pools and fountains instead of the ocean scale. The split is decided per receiver from isOceanWater on the water surface the refracted ray actually hit. Off: every water surface uses causticsScale.");
   RTX_OPTION("rtx.water", float, causticsPoolScale, 1.6f, "World units per caustic texture repeat for non-ocean animated water (pools, fountains). Small values pack more of the pattern into the same distance, so the web reads finer than the ocean tile at the same camera distance. Ignored when causticsScalePerDomain is off.");
-  RTX_OPTION("rtx.water", float, causticsDispersion, 0.35f, "Chromatic dispersion of the caustics, visible only from above the water. The fringes come from colour splitting as light crosses the surface, so they are a transmission effect and switch off once the camera is underwater. The pattern is evaluated three times along the receiver normal's horizontal projection and the results drive the output R / G / B channels separately. Offsets follow the analysed scale: Disp * 0.08 * saturate(depth * 0.5) of a tile, so 0.35 moves about 0.028. 0 disables it and returns to the single-tap cost.");
+  RTX_OPTION("rtx.water", float, causticsDispersion, 0.35f, "Chromatic dispersion on caustic receivers, shared above and below water. Evaluates three pattern taps; zero uses one tap.");
   RTX_OPTION("rtx.water", float, causticsSpeed, 0.6f, "Caustic texture deformation speed. Zero freezes the pattern.");
   RTX_OPTION("rtx.water", float, causticsMaxDepth, 12.0f, "Maximum receiver depth in world units.");
   RTX_OPTION("rtx.water", std::string, causticsTexture, "", "DDS pattern used by receiver caustics.");
@@ -115,19 +132,20 @@ private:
   RTX_OPTION("rtx.water", bool, reflectedCausticsEnabled, false, "Approximate sunlight reflected from water onto nearby opaque receivers.");
   RTX_OPTION("rtx.water", float, reflectedCausticsStrength, 1.0f, "Reflected caustic strength, independent of underwater strength.");
   RTX_OPTION("rtx.water", float, reflectedCausticsHeight, 5.0f, "Maximum receiver height above water in world units.");
-  RTX_OPTION("rtx.water", bool, underwaterEnabled, false, "Apply distance-dependent absorption, haze and volumetric light shafts when the camera is below AnimatedWater geometry.");
-  RTX_OPTION("rtx.water", float, underwaterDensity, 0.045f, "Additional artistic underwater extinction per world unit.");
-  RTX_OPTION("rtx.water", Vector3, underwaterFogColor, Vector3(0.025f, 0.16f, 0.20f), "Linear underwater haze color, scaled by daylight.");
-  RTX_OPTION("rtx.water", bool, underwaterLightShafts, false, "Integrate underwater light shafts on the GPU using the water surface and relative depth.");
-  RTX_OPTION("rtx.water", bool, underwaterSceneLights, false, "Integrate underwater scattering from RTX sphere, spot, rectangle, disk, cylinder and distant lights.");
-  RTX_OPTION("rtx.water", int, underwaterSceneLightCandidates, 8, "Strongest RTX light candidates per underwater screen tile, selected entirely on the GPU (1 to 32).");
-  RTX_OPTION("rtx.water", float, underwaterSceneLightStrength, 1.0f, "RTX light contribution to underwater scattering.");
-  RTX_OPTION("rtx.water", float, underwaterShaftStrength, 0.24f, "Underwater scattering strength in the same exposure units as haze, with isotropic phase normalized to 1. 0 disables the shaft volume.");
-  RTX_OPTION("rtx.water", float, underwaterShaftScale, 8.0f, "World-space spacing of focused underwater sunlight.");
-  RTX_OPTION("rtx.water", float, underwaterShaftMaxDistance, 40.0f, "Maximum camera ray length integrated for underwater shafts.");
-  RTX_OPTION("rtx.water", float, underwaterShaftAnisotropy, 0.45f, "Forward scattering of underwater sunlight, 0 to 0.8.");
-  RTX_OPTION("rtx.water", int, underwaterShaftSamples, 12, "Underwater volume samples per pixel, 4 to 256. Higher reduces integration banding at increased GPU cost.");
-  RTX_OPTION("rtx.water", int, underwaterDebugView, 0, "GPU underwater diagnostics: 0: Normal, 1: Water depth, 2: Water entry hit rate, 3: Light visibility, 4: Shafts only. Diagnostic modes bypass the underwater master toggle.");
+  RTX_OPTION("rtx.water", bool, underwaterEnabled, false, "Use native volumetric lighting for the configured camera water medium. Requires water material override and a neutral camera medium; shares the surface transmittance and distance.");
+  RTX_OPTION("rtx.water", std::string, cameraMediumMaterialHash, "", "Hexadecimal source material hash supplied by SetCameraMediumMaterial for water. Empty disables water classification; unrelated glass media remain unchanged.");
+  RTX_OPTION("rtx.water", float, underwaterScattering, 0.0f, "Scattering fraction of neutral water extinction, 0 to 1: the weakest authored RGB extinction plus added particle extinction. The remaining fraction absorbs light. Water color follows shared transmittance and scene lighting; zero gives absorption only.");
+  RTX_OPTION("rtx.water", float, underwaterAnisotropy, 0.0f, "Forward scattering of the water medium, 0 to 0.8. Native volumetric lighting supplies sun shafts and local light scattering.");
+  RTX_OPTION("rtx.water", float, volumetricCausticsStrength, 0.0f, "Contrast of caustic shafts from the strongest upward directional light in the underwater volume, 0 to 1. Any positive value selects one shared dynamic pattern for projected ocean receivers and that light in the underwater volume; zero keeps the standard receiver pattern. Uses the ocean caustic scale, speed and randomized animation. Pools and reflected caustic patterns retain their own paths. Bounded contrast recovery counters texture filtering; local volume gain is capped at eight. Source-mean normalization does not guarantee total energy conservation under animated warps or mip contrast recovery. Receiver brightness retains its existing pattern bounds, and a black source adds no surface caustics. Requires enabled receiver caustics and a registered GPU water surface. Animated shafts use a shorter lighting history and may show more noise.");
+  WaterVolumeCausticsArgs m_volumeCausticsArgs {};
+  bool m_volumeCausticsActive = false;
+  bool m_volumeCausticsChanged = false;
+  WaterLightSurface m_causticLightSurface;
+  Rc<DxvkImageView> m_volumeCausticPattern;
+  uint64_t m_volumeCausticSourceCookie = 0;
+  Rc<DxvkBuffer> m_volumeCausticSurface;
+  WaterMediumState m_cameraMedium;
+  WaterLightSurface m_cameraLightSurface;
   void prepareCausticTexture(RtxContext* ctx);
   TextureRef m_causticTexture;
   TextureRef m_foamTexture;
@@ -173,8 +191,6 @@ private:
   bool m_shoreWetnessReady = false;
   std::string m_causticTexturePath;
   Resources::Resource m_causticRadiance;
-  Resources::Resource m_underwaterShafts;
-  bool m_underwaterShaftsDispatched = false;
   bool m_causticsPrepared = false;
   void* m_mapping = nullptr;
   void* m_mutex = nullptr;

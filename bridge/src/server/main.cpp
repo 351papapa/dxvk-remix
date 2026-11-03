@@ -20,6 +20,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #include <remix/remix_retained.h>
+#include <remix/remix_retained_validation.h>
 #include "util_remixapi_gpu_instancing.h"
 #include "util_remixapi_light_update.h"
 #include "util_remixapi_retained_error.h"
@@ -2971,21 +2972,31 @@ void ProcessDeviceCommandQueue() {
       case RemixApi_RetainedCommit:
       case RemixApi_RetainedStatus:
       case RemixApi_RetainedDrawOrdered:
+      case RemixApi_RetainedGetInterfaceV3:
+      case RemixApi_RetainedUpsertV3:
       {
+        const auto command = rpcHeader.command;
+        const bool getInterface = command == RemixApi_RetainedGetInterface || command == RemixApi_RetainedGetInterfaceV3;
+        const bool upsert = command == RemixApi_RetainedUpsert || command == RemixApi_RetainedUpsertV3;
+        const uint32_t version = command == RemixApi_RetainedGetInterfaceV3 || command == RemixApi_RetainedUpsertV3
+          ? REMIXAPI_RETAINED_VERSION : REMIXAPI_RETAINED_VERSION_2;
         remixapi_RetainedInterface retained = {};
         auto result = REMIXAPI_ERROR_CODE_SUCCESS;
-        if (retainedModule != ghModule || !retainedInterface.BatchUpsert) {
+        if (retainedModule != ghModule || !retainedInterface.BatchUpsert || retainedInterface.version != version) {
           retainedInterface = {};
           retainedModule = ghModule;
           const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedInterface>(
             GetProcAddress(ghModule, REMIXAPI_GET_RETAINED_INTERFACE_NAME));
-          result = getter ? getter(REMIXAPI_RETAINED_VERSION, sizeof(retainedInterface), &retainedInterface)
+          result = getter ? getter(version, sizeof(retainedInterface), &retainedInterface)
                           : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && retainedInterface.version != version) {
+            result = REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+            retainedInterface = {};
+          }
         }
         retained = retainedInterface;
-        const auto command = rpcHeader.command;
         uint64_t epoch = 0;
-        if (command != RemixApi_RetainedGetInterface && command != RemixApi_RetainedStatus) {
+        if (!getInterface && command != RemixApi_RetainedStatus) {
           void* data = nullptr;
           const uint32_t size = DeviceBridge::get_data(&data);
           if (size == sizeof(epoch)) {
@@ -2994,19 +3005,19 @@ void ProcessDeviceCommandQueue() {
             result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
           }
         }
-        if (command != RemixApi_RetainedGetInterface && command != RemixApi_RetainedStatus &&
+        if (!getInterface && command != RemixApi_RetainedStatus &&
             command != RemixApi_RetainedClear && (!epoch || epoch != retainedBridgeEpoch)) {
           result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
         }
-        if (command == RemixApi_RetainedUpsert || command == RemixApi_RetainedRemove || command == RemixApi_RetainedDrawOrdered) {
+        if (upsert || command == RemixApi_RetainedRemove || command == RemixApi_RetainedDrawOrdered) {
           void* data = nullptr;
           const uint32_t size = DeviceBridge::get_data(&data);
-          const uint32_t stride = command == RemixApi_RetainedUpsert ? sizeof(remixapi_RetainedInstance) : sizeof(uint64_t);
+          const uint32_t stride = upsert ? sizeof(remixapi_RetainedInstance) : sizeof(uint64_t);
           if (size == 0 || size % stride || size / stride > REMIXAPI_RETAINED_MAX_BATCH) {
             result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
           }
           if (result == REMIXAPI_ERROR_CODE_SUCCESS && epoch == retainedBridgeEpoch) {
-            if (command == RemixApi_RetainedUpsert) {
+            if (upsert) {
               std::vector<remixapi_RetainedInstance> instances(size / stride);
               std::memcpy(instances.data(), data, size);
               for (auto& instance : instances) {
@@ -3047,7 +3058,7 @@ void ProcessDeviceCommandQueue() {
             result = retained.CommitFrame(epoch);
           }
         }
-        if (command == RemixApi_RetainedGetInterface) {
+        if (getInterface) {
           ServerMessage message(Commands::Bridge_Response, currentUID);
           message.send_data(static_cast<uint32_t>(result));
         } else if (command == RemixApi_RetainedStatus) {
@@ -3796,6 +3807,19 @@ void ProcessDeviceCommandQueue() {
           if (remixapi::g_remix.GetGameValue && remixapi::g_remix.UpdateLightDefinition) {
             result = remixapi::g_remix.GetGameValue(remixapi::light_update::runtimeVersionKey,
               buf.data(), kMaxValueSize, &actual_size);
+          }
+        } else if (std::strcmp(key_str.c_str(), remixapi_retained::bridgeVisibilityKey) == 0) {
+          const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedInterface>(
+            GetProcAddress(ghModule, REMIXAPI_GET_RETAINED_INTERFACE_NAME));
+          remixapi_RetainedInterface capability = {};
+          result = getter ? getter(REMIXAPI_RETAINED_VERSION, sizeof(capability), &capability)
+                          : REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && capability.version == REMIXAPI_RETAINED_VERSION &&
+              capability.BatchUpsert && remixapi::g_remix.GetGameValue) {
+            result = remixapi::g_remix.GetGameValue(remixapi_retained::runtimeVisibilityKey,
+              buf.data(), kMaxValueSize, &actual_size);
+          } else {
+            result = REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
           }
         } else if (std::strcmp(key_str.c_str(), remixapi::light_update::serverStatusKey) == 0) {
           const auto value = format_string("processed=%llu;errors=%llu;lastError=%u",

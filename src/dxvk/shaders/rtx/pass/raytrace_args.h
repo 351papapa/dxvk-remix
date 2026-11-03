@@ -567,6 +567,11 @@ struct RaytraceArgs {
   float particleFroxelConsumerScale;
   float particleFroxelRawScale;
 
+  // The camera-global water volume owns extinction for animated-water segments.
+  uint cameraWaterVolumeActive;
+  float cameraWaterSurfaceHeight;
+  uint cameraWaterSurfaceValid;
+
   // NOTE: Add structs to the top section of RaytraceArgs, not the bottom.
   // NOTE: bool does not work in debug builds, use uint instead.
 };
@@ -579,5 +584,8 @@ static_assert(offsetof(RaytraceArgs, renderTargetCamera) % 16 == 0,
               "A struct above renderTargetCamera in RaytraceArgs is not a multiple of 16 bytes.");
 static_assert(offsetof(RaytraceArgs, particleFroxelConsumerScale) == offsetof(RaytraceArgs, softOmmFlags) + 4);
 static_assert(offsetof(RaytraceArgs, particleFroxelRawScale) == offsetof(RaytraceArgs, softOmmFlags) + 8);
+static_assert(offsetof(RaytraceArgs, cameraWaterVolumeActive) == offsetof(RaytraceArgs, particleFroxelRawScale) + 4);
+static_assert(offsetof(RaytraceArgs, cameraWaterSurfaceHeight) == offsetof(RaytraceArgs, cameraWaterVolumeActive) + 4);
+static_assert(offsetof(RaytraceArgs, cameraWaterSurfaceValid) == offsetof(RaytraceArgs, cameraWaterSurfaceHeight) + 4);
 static_assert(sizeof(RaytraceArgs) % 16 == 0, "RaytraceArgs must cover complete constant-buffer rows.");
 #endif

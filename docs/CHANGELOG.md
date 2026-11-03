@@ -8,6 +8,513 @@ surfaces sharing an API mesh handle distinct. Pure API host asset keys and the
 D3D9 geometry hash fallback remain supported. No options or defaults change;
 this fix is preset-independent. Commits: this change.
 
+## 2026-11-03 — Optional solar lens flare post-processing
+
+Adds a disabled-by-default `Sun Flare` entry to the display-domain post-processing
+stack, after tonemapping and before terminal sRGB/dither. SA's 26-ghost and VC's
+7-ghost layouts can be paired independently with the extracted VC masks or SA
+star texture. Source direction and tint follow the active NUMOS sky; geometry
+visibility, optional cloud attenuation and time-based fades are evaluated by the
+runtime. This is a visual adaptation, not a pixel-exact legacy-renderer replica.
+
+Optional camera-water suppression uses the configured camera medium identity
+independently of water fog/light-shaft toggles, with an AnimatedWater upward-ray
+fallback when no identity is configured. Submersion clears visibility immediately;
+resurfacing uses a controlled rise. The VC 1.0 EN companion suppressor ASI removes
+only native solar ghosts during corona rendering and must not be combined with
+the earlier Im3D flare plugin.
+
+The feature adds two compute dispatches when active and introduces no new bridge
+API. Solar visibility uses a fixed eight-ray disk sample; there is no new quality
+preset or quality/sample-count tradeoff control. Existing rendering quality
+presets and their sample counts are unchanged. This is additional work, not a
+measured performance improvement. All new feature toggles remain off and the texture directory empty by default;
+the example configuration explicitly opts into SA layout with VC textures, cloud
+occlusion, resolution scaling and water suppression. No GPU gameplay acceptance
+or performance measurement is claimed. Runtime build status is recorded separately.
+
+New options:
+
+- `rtx.sunFlare.sunFlareEnable`
+- `rtx.sunFlare.sunFlareStyle`
+- `rtx.sunFlare.sunFlareTextureSet`
+- `rtx.sunFlare.sunFlareTextureDirectory`
+- `rtx.sunFlare.sunFlareBrightness`
+- `rtx.sunFlare.sunFlareSize`
+- `rtx.sunFlare.sunFlareResolutionScale`
+- `rtx.sunFlare.sunFlareFlicker`
+- `rtx.sunFlare.sunFlareHideUnderwater`
+- `rtx.sunFlare.sunFlareCloudOcclusion`
+- `rtx.sunFlare.sunFlareFadeIn`
+- `rtx.sunFlare.sunFlareFadeOut`
+- `rtx.sunFlare.sunFlareWaterTransition`
+
+Solar tint is normalized by peak illuminance and modulated by atmospheric
+transmittance; brightness is an artistic control rather than proportional solar
+illuminance. Zero peak or a zero horizon gate suppresses the effect. Final-image
+composition does not export three-dimensional flare geometry to USD captures.
+
+Commits: pending. See [implementation](../documentation/SunFlare.md) and
+[usage](../documentation/SunFlareUsage.md).
+
+## 2026-11-03 — Camera-aware underwater post-processing
+
+Lens Rain hides and clears drop history inside the configured camera water
+medium, including forced previews. It resumes with clean state on exit.
+External effects receive camera medium flags without extending the frame ABI;
+the Trails effect can pass through underwater and reset history at boundaries.
+No options, defaults, blur pass or sample counts are added. Commits: pending.
+See [water](../documentation/RemixWater.md) and
+[external frame data](RemixFx.md#frame-data).
+
+## 2026-11-03 — Water camera coverage and live effect tint
+
+Water lighting queries the existing global water-level metadata so moving the
+camera outside the player-centered simulation patch does not disable underwater
+shafts. Local simulation size, volumetric grid, ray counts, scale and strengths
+are unchanged. The Water menu groups its existing controls and folds integration
+and diagnostics into Advanced settings; no option or default changes.
+
+External post-processing effects can receive a live typed tint through the
+existing game-state API. Old frame offsets remain compatible; new effects need
+the paired runtime. No new render pass is added. No measured performance claim.
+
+Commits: pending. See [water](../documentation/RemixWater.md) and
+[post-processing tint](../documentation/RemixPostFxAPI.md).
+
+## 2026-11-03 — Water absorption stops at the surface
+
+Resolved reflection/refraction and indirect ray segments apply native water
+attenuation only to their length below the registered base surface plane.
+This fixes excessive blue/dark sky and sun transmission after a ray exits water,
+and also handles finite air segments, unordered emissive surfaces and ordinary
+surface-to-light absorption. Shadow rays keep their full length; portal and
+special opaque-hit visibility queries retain the native fallback. Water
+reflection and re-entry keep their absorption; the native distance cap applies
+to water length. Missing or invalid boundaries retain the native fallback.
+
+No option, default, ABI, ray count, sample count or rendering pass changes.
+This is a preset-independent boundary correction using the existing flat plane,
+not a displaced-wave or nested-medium solver. The code leaves material IOR and
+caustic settings unchanged; the final VC calibration is recorded below. The
+extracted geometry/wrapper tests pass 300,094 cases and the
+actual visibility-branch integration passes 11 checks. F2BE9418 built successfully;
+the audit verified 1,502 affected shader consumers and full SPIR-V embedding in
+the DLL. The 34 native volume integration/ReSTIR variants are unchanged. Native
+VC captures restore white/gray clouds and retain shafts, with less apparent shaft
+contrast against the brighter scene before the final optical calibration.
+
+Using the original identical configuration, candidate base-FPS changes against
+18C46994 were -3.44%, -4.78% and -5.30% in samples 2401-3600, 4801-6000 and
+8401-9600. One predeclared warm reverse pair gave -0.194%, -0.782% and -1.677%
+in those same windows. Its predeclared primary window was 8401-9600: baseline
+50.6252 -> candidate 49.7760 FPS, total GPU 17.640 -> 17.890 ms, Volumetrics
+1.730 -> 1.600 ms. GPU figures are medians of logged window p50 values. Warm
+scene/OMM populations are closer, but remain unequal; this is neither statistical
+equivalence nor a speedup. All first-pair data, loading differences and declared
+windows remain retained.
+
+The accepted and deployed final VC profile changes only transmittance red
+0 -> 0.51138175 and receiver `causticsStrength` 2.65 -> 1.0. This calibrates color
+and receiver brightness, without reducing quality or sample counts. IOR 1.5,
+scale 2.98, speed 3, sigma_s 0.00958578/m, particle settings and volume quality
+remain unchanged. Final native captures retain underwater shafts and white/gray
+clouds; the above-water view is normal, and both water states deactivate on exit.
+Temporary validation configuration was restored and save hashes were unchanged.
+
+The final fresh run measured 48.723/50.403/50.073 base FPS in the same three
+windows, total GPU 18.685/17.730/17.595 ms and Volumetrics 2.370/1.615/1.600 ms.
+Against the warmed reverse 18C46994 reference these are -2.456%/-0.247%/-1.092%,
+with late primary 50.6252 -> 50.0726 FPS. Against the original first-run reference
+they remain -3.664%/-3.160%/-3.140%. All previous data, including the red-only
+profile, remain retained. This final comparison includes optical changes and
+unequal scene populations; it is not a code-only speedup or universal performance
+guarantee. See the archived `balanced-optics-review.json`, `final-profile.json`
+and [water integration](../documentation/RemixWater.md#resolved-water-and-air-segments-2026-11-03).
+Implementation is in the working tree; no commit was created by this task.
+
+## 2026-11-03 — Unified dynamic caustic field
+
+The projected ocean receiver and selected directional light in the native water
+volume evaluate one source-normalized primary field at Q / causticsScale with
+shared time, randomized setting and UV warp/advection. The eightfold repeat
+and separate slow clock are removed; pools, reflected caustics and the disabled
+feature retain their paths. Every positive contrast selects the shared receiver
+field, while zero retains the original pattern; receiver appearance can switch
+at zero. No setting/default, resource binding, per-frame pass or ray is added.
+
+Randomized sampling uses three linear tile samples plus the static source mean.
+Bounded artistic LOD contrast recovery amplifies residuals by at most four around
+sourceMean / guardedMean and caps the result at min(8, 1 / guardedMean).
+Constant sources stay constant, but clipped contrast recovery can raise the field
+average; dynamic energy conservation is not claimed.
+The volume uses the maximum projected X/Y extent for its footprint and the
+selected light's center only for cookie projection; native Beer and shadow rays
+are unchanged. Receiver amplitude remains 2 * sourceMean, with black-source
+enhancement zero, scalar/RGB-average bound two and channel bound six.
+
+Final 18C46994 is installed and visibly produces fine shafts in VC at the user's
+unchanged scale 2.98. Fixture columns are weaker at 2.98 and clear at 11.92,
+where the receiver pattern also enlarges. A 21-frame, 2.829-second sampled
+animation at 11.92 showed no whole-image flash; grain remains and long-run
+flicker-free behavior is not established. Build auditing covered 1,626 shader
+dependencies, nine affected variants/layouts and 14 unchanged prior variants.
+
+The first 638790EE -> 18C46994 pair gave primary 50.4236 -> 48.6003 FPS
+(-3.62%) and supplementary 49.1715 -> 50.2109 (+2.11%); the reference
+primary included a mod hot reload and incomplete scene loading. Its complete
+data remain retained. The predeclared reverse 18C46994 -> 638790EE repetition
+gave primary 49.0701 -> 48.9045 FPS (-0.337%, 20.379 -> 20.448 ms) and
+supplementary 50.0601 -> 50.4134 FPS (+0.706%, 19.976 -> 19.836 ms).
+No obvious regression appeared in this controlled fixed view; the result is
+not a universal/statistical guarantee or a new cf86 route comparison.
+The earlier 638790EE measurements below remain unchanged. Existing fixture
+cleanup diagnostics also remain. See
+[water integration](../documentation/RemixWater.md#unified-receiver-and-volume-field-2026-11-03).
+Implementation is in the working tree; no commit was created by this task.
+
+## 2026-11-03 — Patterned directional-light transmission in water volumes
+
+Added `rtx.water.volumetricCausticsStrength` (0 to 1, default 0) to modulate
+the selected upward directional light inside native froxel integration using
+the existing caustic texture. Receiver and volume paths share world projection,
+scale, animation and water coverage. The option requires enabled receiver
+caustics, positive receiver strength and a fresh registered GPU surface. It is
+independent of graphics presets; zero retains the existing projection and lighting.
+
+The selected light is commonly the sun but can be another upward directional
+source. The volume multiplier now uses a normalized artistic focusing field,
+not only bounded darkening. A one-time compute dispatch shapes the source as
+`saturate(r)^4` into a power-of-two R16 cache; the full mip chain supplies its
+area mean. F=min(shaped/guardedMean,8) limits peaks, with conservative half-float
+rounding allowance and neutral handling of black or invalid means. The complete
+resampled tile has mean at most one; arbitrary scene crops/fades and the existing
+receiver enhancement are not a full physical energy-conservation model.
+
+The envelope spans eight fine-web tiles and shares projection, clock and source
+between volume and receiver. Volume sampling reads the field plus its mean;
+receiver fine caustics only multiply by min(F,1), avoiding compounded brightening.
+Contrast zero preserves the original web; intermediate values blend continuously.
+This is texture-driven artistic focusing, not wave refraction. Density, authored
+source power and visibility rays remain unchanged. There is no extra per-frame
+pass; the shaped mip cache is reused by source cookie while requested, including
+above-water receivers, and released when the effect or valid source is absent.
+The original receiver texture remains intact. Animated patterns cap lighting
+history at eight frames and may expose more noise.
+
+Mip filtering follows the projected XY cross-section at the envelope scale;
+existing froxel z jitter and history accumulation integrate the depth interval,
+with possible temporal noise during motion or at coarse depth slices. Coverage
+checks use three cells with identical boundary semantics. Grid headers are
+loaded once, and validated wet/height corners are reused only within the same
+coarse cell; each point retains its mask lookup. The two changes passed
+221,472 and 1,014,920 extracted CPU comparisons respectively. Neither source
+read counts nor these equivalence tests establish a GPU speedup.
+
+Camera compositing also clips the initial upward underwater segment to the
+registered flat water plane, consistently for primary, alpha and transmittance
+control paths. Exits use finite attenuation instead of the native infinite miss
+path. Two former `CompositeArgs` padding words now carry the combined active/valid/Z-up
+flag and surface height, preserving total size and all other offsets. A real-header
+compile-only check verifies this layout and the host assignments; the extracted
+helper separately passed 30,027 numerical CPU checks. These are not GPU acceptance.
+Subsequent PSR branches and water re-entry still require a complete segmented-medium
+model; this is not wave refraction.
+
+The normalized field passed 237,148 extracted CPU checks, including a binary16
+mip-rounding model. Unlike the earlier filtering and bounded-envelope candidates,
+build `20A32924` produced clear empty-water columns in diagnostic/game-cookie
+fixtures and visible shafts in the live game. Final build `638790EE` retained
+that result after the coverage cache change. Short sampled animation tests on
+`20A32924` retained the structure but still showed grain; its no-light and above-water
+controls correctly kept the water-volume field inactive. These tests do not prove
+long-run temporal stability. One runner did not capture an exit code after a
+file-sharing error, and existing device-object disposal diagnostics remain;
+validation is not an all-pass or clean-teardown claim.
+
+The valid matched 180-second route (`cf86bb3e` -> `638790EE`, only the DLL
+changed) retained all 6,170 / 6,344 formal base-frame samples. Average FPS was
+34.2172 -> 35.2166 (+2.92%); 1% low was 16.9454 -> 16.2821 (-3.91%) and
+0.1% low was 7.7974 -> 7.5341 (-3.38%). This is a single, mostly above-water
+whole-runtime pair, not an across-the-board improvement, a statistically
+significant result or an isolated underwater cost measurement.
+
+The separate final `638790EE` fixed underwater OFF/ON pair visibly produced
+multiple water columns only when enabled. At unchanged 1114x626 -> 1920x1080,
+DLSS Balanced/Ray Reconstruction and 4x frame generation, primary base FPS was
+51.3373 -> 49.0244 (-4.51%), mean frame time 19.479 -> 20.398 ms, and
+volumetrics 1.380 -> 2.290 ms. The supplementary interval gave
+51.5650 -> 48.9021 FPS (-5.16%) and volumetrics 1.415 -> 2.280 ms.
+Each preselected interval retained ten windows, 1,200 base frames and 600 GPU
+samples per run. GPU times are median window p50s; base FPS excludes generated
+display frames. The observed 4.5-5.2% underwater switch cost is separate from
+the route's average-FPS gain; one pair does not establish statistical significance
+or a universal cost estimate.
+The runtime default remains off. See [water integration](../documentation/RemixWater.md#caustic-pattern-transmission-in-the-water-volume).
+Implementation is in the working tree; no commit was created by this task.
+
+## 2026-11-02 — Independent water particles and directional-light water distance
+
+Added `rtx.water.particleExtinctionPerMeter` (default 0) to increase suspended
+particle scattering independently of the baseline water color. The same resulting
+total extinction feeds water materials, receiver caustics and native camera
+volumetrics, with bounded half-float material encoding. Zero preserves the previous
+optical behavior. This physical material parameter is independent of graphics presets.
+
+For a camera covered by a valid shared GPU water mesh, native volume directional
+light sampling uses its base plane to measure the water portion of the light path.
+The original full visibility ray is retained for buildings and boats above water.
+The path uses shader variants and adds no GPU resources, passes or rays; it retains
+the native grid quality and sampling settings. It remains a flat entry-plane
+approximation with homogeneous camera integration, without wave-focused caustics
+or refracted visibility. See [water integration](../documentation/RemixWater.md).
+
+Validation compared accepted DLL `51f6d0ef` with beta=0 against `0c741ab3`
+with beta=0.01/m, using the same fixture executable outside the test sandbox.
+At 720p, median window-p50 GPU time was 12.79 -> 12.85 ms and volumetrics
+0.28 -> 0.28 ms (three windows, 60 samples each). In VC at fixed noon and camera
+(-576, -1488, 3), nine complete windows over frames 2400-3600 measured
+17.50 -> 17.65 ms GPU and 1.55 -> 1.57 ms volumetrics, at 1114x626 internal
+resolution reconstructed to 1920x1080 with DLSS and Ray Reconstruction.
+Water color, scattering 0.9, anisotropy 0.4, caustics scale 2.98 and quality
+settings were held constant. Dynamic OMM/BLAS work prevents a speedup claim.
+The preselected late interval (frames 4800-6000, nine windows and 540 GPU
+samples per run) measured 16.95 -> 17.62 ms GPU (+0.67 ms, 3.95%) and
+1.61 -> 1.63 ms volumetrics (+0.02 ms). OMM coverage differed: 66.87-67.47%
+before and 50.00-50.69% after. Volumetric time stayed close while total GPU
+time varied with scene work; the increase cannot be assigned solely to water.
+Scattering is visible; the open-water viewpoint did not show distinct light
+shafts. Wave-surface refraction and focusing remain unimplemented. The tested
+beta=0.01/m profile is deployed; the runtime option still defaults to zero.
+
+The test sandbox caused Crashpad named-pipe access failures. Both DLLs exited
+with code 0 outside it; both retained the diagnostic for 57 common objects.
+This validation did not require a runtime or dependency fix.
+
+Implementation is in the working tree; no commit was created by this task.
+
+## 2026-11-02 — Unified camera water volumetrics
+
+The configured camera water material now selects a typed homogeneous water profile
+in the native froxel renderer. Surface, receiver caustics and volume extinction
+share linear transmittance and world-space distance. Neutral scattering derives
+from that extinction and scene lights; the separate fog tint and full-resolution
+shaft pass are removed. Air/weather options remain authored and unchanged.
+Water activates the cache when air fog is off, and waterline/optical changes reset
+volume history. A source-material hash distinguishes water from unrelated glass.
+Receiver caustic scale, animation and dispersion are camera-independent.
+Reflected caustics use the hit water material's F0 instead of a fixed reflectivity.
+
+The opt-in profile requires a neutral API camera medium plus material override;
+it retains the homogeneous-volume limitation described in `RemixWater.md`.
+
+## 2026-11-02 — Retain hidden API records and batch static world surfaces
+
+The private retained interface supports v3 HIDDEN records alongside the unchanged
+v2 layout. Transform/visibility-only updates reuse existing children; missing
+commits and asset rebuilds preserve the host's desired visibility. Matching bridge
+endpoints require a runtime acknowledgement before exposing v3.
+
+Static unordered surfaces from different records can share a rendering batch in
+a 64-unit cell when their original game-texture identity, resolved opaque
+material, alpha, cull, legacy surface state and current wetness rule agree. Pure opaque enhanced replacements expand
+through the existing resolver, retaining authored relative transforms and final
+part materials. Canonical descriptions and original identities remain available
+for asset invalidation, capture and picking; a canonical child is suppressed only
+after every one of its expanded parts is covered and all batch builds succeed.
+Unsupported services/layouts, moved records and ordered surfaces keep their
+canonical rendering path.
+
+The shared emission gate admits an enabled flag only when its authored intensity
+is exactly zero, alongside disabled emission. Enabled nonzero or nonfinite
+intensities remain canonical. Material fields and user settings are preserved;
+the rule does not infer zero emission from a global scale or a dark texture.
+
+Unchanged membership, transforms and state reuse the packed vertex buffer.
+Visibility-only changes select member index ranges. A changed nonempty index set
+builds an index buffer when it differs from the last nonempty mask and preserves
+immutable vertex/history resources while still requiring a full BLAS rebuild.
+An all-hidden batch retains its last nonempty buffer/state and geometry revision
+without drawing it. Exact-mask reveal reuses that topology; a resident view only
+changes visibility, while release policy 0 rebuilds its scene view using the same
+buffer in the reveal frame. A different nonempty mask still builds new indices.
+Retained visibility policy can still request BLAS work. World-batch resource accounting is bounded
+at 128 MiB, with 256 batches and 65536 resident physical parts, including holes. The separate same-parent
+geometry cache remains bounded at 64 MiB / 256 entries. Capture/picking requests
+restore canonical sources before upload, and wetness changes restore current
+canonical state in the same frame; optional batch readmission can follow later. Preparation/build failure restores canonical sources. No options or
+presets change.
+
+Whole-component budget preflight runs before vertex packing or GPU allocation.
+Each input connects all buckets containing its expanded parts; a rejected
+component stays entirely canonical while independent accepted components remain
+batched. Cached memberships receive deterministic preference. Successful
+transactions apply final visibility without temporarily hiding unchanged views,
+preserving their static BLAS state. Unchanged sources retain fixed packed
+chunks across admissions; whole-child source proof retires every changed part,
+while only uncovered complete children enter new-delta packing. Physical slots
+stay stable, retired holes remain budgeted, and reused child IDs cannot reactivate
+old geometry. Synchronous input views borrow owned resolved-part vectors, and
+cached source/range/physical-member metadata is shared immutably. Cached and fast
+rendering plans carry no ownership list; full output constructs active ownership.
+The full topology index vector was already shared. New-delta
+packing and changed-mask topology work retain their existing rules. Separate
+full/fast cumulative successful-transaction CPU counts/totals/lifetime maxima
+supplement independently sampled sparse events. Failed work remains in existing
+failure/resource counters; maxima are not formal-interval maxima by subtraction.
+Rejection/failure counters distinguish normal budget fallback from errors.
+The CPU complete-input proof uses a compressed incidence index and rejection
+queue to reach the existing complete-child fixed point, replacing repeated
+coverage-array construction and whole-bucket rescans. Grouping, admission and
+GPU/BLAS rules remain unchanged. Existing R8 phase fields are reused.
+Diagnostic-only full-preparation Work and successful Publish events pair by
+runtime frame and prepareAttempt. Six helper phases include temporary/old-cache
+cleanup; outer prepare includes helper log formatting, while helper total does
+not. Runtime frame IDs and benchmark HUD frame IDs are independent domains;
+wall-time proximity is context rather than causal attribution. Normal Perf now
+also exposes existing sampled BlasBuild/TlasBuild/SceneSetup stage means and
+stageSamples even outside its top-five list, with missing data as n/a. These
+global GPU stages do not identify world-batch work. No GPU queries, settings,
+ABI, rendering or admission rules change; diagnostic overhead is expected.
+
+An accepted child-to-batch member index is bound to the full preparation's
+membership generation. Visibility-only changes stage only affected masks/index
+buffers on the same scene-thread transaction, retaining immutable vertices and
+whole-child ownership. Structural changes require full reconciliation. Missing
+commits hide views and force republishing on resume, including unchanged masks;
+all-hidden batches remain hidden. Any staging or prefix-publication failure
+restores canonical children. `[WorldBatchFast]` keeps these timings/counters
+separate from full preparation.
+
+Local changes detach old children and apply final visibility in one index
+transaction before releasing ownership and showing canonical children from the
+latest successfully published source. Detachment cannot be reversed by a
+later show or reused handle; unaffected packed batches retain their vertices,
+handles and member order. Optional full readmission runs only while pending,
+using a one-second steady-clock interval. Global state invalidation must resolve
+current canonical rendering before upload rather than defer it with admission.
+Missing commits and failed prefix publication retain canonical fallback safety.
+
+Logical index-transition counters include hidden transitions with no allocation.
+Separate resource/byte/triangle counters record actual index-buffer work;
+committed reveal reuse and hidden no-allocation counters expose the new path.
+These counters do not measure vkAllocateMemory calls or prove GPU cost vanished.
+
+Hidden instances skip wetness/material/name classification after clearing their
+window class. Reveals are classified before merge/upload in the same frame; the
+window-disable pass still clears hidden surfaces. `[SurfaceClassify]` reports
+resetting interval totals and CPU average/maximum timing, not lifetime counters.
+
+The r2 runtime and matching bridge builds succeeded. All four targeted CPU
+policy/packing/cache/index-only tests passed, including the r2 rerun and zero/nonzero/
+nonfinite emission cases. Rotation and shear normal-transform cases also passed.
+R2 failed the valid 180-second formal route: average base FPS was 25.41 and
+1% low was 11.68, versus the preserved baseline's 34.46 and 16.69. R2 was rolled
+back. R3 CPU tests and full build passed, but its valid 180-second formal route
+measured 33.86455 average base FPS / 14.75868 1% low, below baseline 34.46336 /
+16.68940. R3 did not meet the performance goal. R4 CPU tests and full build passed,
+but its valid formal route measured 34.1766608 average base FPS / 14.0138520 1% low
+versus baseline 34.4633559 / 16.6894049; both performance gates failed. About 28%
+of sampled-interval calls used the fast path and 72% still prepared fully. R5 CPU
+tests and full build passed, but its valid formal result was 33.824186 average
+base FPS / 14.885688 1% low, below baseline 34.463356 / 16.689405. Its observed
+calls were about 3% full / 97% fast, and complete formal Perf windows averaged
+15.20 ms rendering CPU / 28.74 ms GPU. Both FPS gates remained unmet. R6 CPU
+tests and full build passed, but its valid formal route measured 34.2475767
+average base FPS / 15.848298 1% low versus baseline 34.4633559 / 16.6894049.
+Complete formal Perf windows averaged 14.42 ms CPU / 28.18 ms GPU. Its checkpoint
+work was 8049 actual index-buffer creations, 2712 reveal reuses and 6863 hidden
+no-allocation transitions; hidden transitions already allocated no buffer in R5.
+Both original goals remained unmet. R7 CPU tests and full build passed. Its valid
+formal result was 34.8744584 average base FPS / 15.8678106 1% low, against original
+34.4633559 / 16.6894049; average passed while 1% low did not. Five complete Perf
+windows averaged 13.64 ms CPU / 27.44 ms GPU. The observed checkpoint work was
+2125 real VB creations / 6987 real IB creations, with 2778 reveal reuses and
+6500 hidden no-allocation transitions. All 6286 raw samples and 54 samples above
+50 ms remain included. R8 targeted CPU tests and full build passed. Its valid formal result was
+34.66398557 average base FPS / 16.66741185 1% low against original
+34.46335595 / 16.68940488. The strict combined comparison failed on the measured
+0.13178% low1 difference and the prior D485/A9BF working version was restored;
+a single small difference does not prove a persistent causal regression.
+Interior-checkpoint full transactions averaged 8.54503 ms total / 6.83573 ms
+prepare, which does not isolate completeInputs. Five complete Perf windows
+averaged 13.32 ms CPU / 27.82 ms GPU. All 6250 raw samples remain included.
+R9 targeted CPU tests and full build passed. Its valid 180.025-second formal run
+measured 34.91051504 average base FPS / 16.20685087 1% low against original
+34.46335595 / 16.68940488. The unchanged strict combined comparison failed on
+low1 and the prior D485/A9BF version was restored. All 6288 raw frames remain
+included. Full transactions averaged 7.69472 ms total / 5.95176 ms prepare,
+versus R8's 8.54503 / 6.83573 ms; prepare was 12.93% lower, without an isolated
+completeInputs timer or permanent causal FPS claim. Five complete Perf windows
+averaged 13.50 ms CPU / 27.64 ms GPU. R10 is diagnostic only.
+R10 targeted CPU tests and the full build passed. Its one valid 180.017-second diagnostic route retained all 6248 raw frames and measured 34.67515914 average base FPS / 16.25225565 1% low, against original 34.46335595 / 16.68940488. The strict combined comparison failed on low1. D485/A9BF, both original bridge halves and the original configuration/route were restored, as required before the diagnostic regardless of its metrics. The formal interval contained 178 exact Work/Publish pairs without duplicates. Helper full prepare averaged 6.05647 ms (P95 12.1179 ms, maximum 22.7939 ms); its maximum event included 17.317 ms in newPack. That stage includes source decoding, packing, buffer creation/mapping/copy, bounds/hash and initial indices, not just packing arithmetic. Five complete normal Perf windows contained 176 GPU samples: sample-weighted global BLAS 1.29553 ms, TLAS 0.49404 ms and SceneSetup 0.85229 ms. These are global sampled stages and do not identify world-batch or individual slow-frame causes.
+
+R11 removes per-source decoded vertex/index arrays from new world-batch construction. A synchronous reader feeds the existing transform and packing rules directly from validated source buffers into the final CPU arrays. Geometry ordering, authored attribute defaults, transform/normal math, index bounds, output limits and failure atomicity remain checked. Source resources remain strongly retained for the synchronous read. This removes duplicate intermediate allocation/copy work; it does not introduce a pending build queue or change admission, visibility, material, topology or quality rules. R10 diagnostics stay enabled to compare the same measured phases. R11 CPU validation: four targeted CPU tests passed; full build: pending; live/GPU: pending. No FPS improvement or visual equivalence is established before the single formal comparison.
+No R10 FPS improvement or visual equivalence is established. See [retained compatibility](RemixRetainedCompatibility.md).
+The implementation belongs to the change introducing this entry.
+
+## 2026-11-02 — Complete capture receipts for ignored textures
+
+Draws marked for legacy capture now return geometry hashes and normalized
+material state even when their textures are ignored. The receipt path keeps
+these draws out of both raster rendering and the retained scene, allowing an
+API integration to finish capturing a multi-surface object while preserving
+the user's ignore rules. Invalid geometry remains rejected.
+No options, presets or API signatures change.
+
+The Release build and capture-log unit test passed, with all 151 exports
+preserved. In-game logs contain all nine paired capture receipts for the
+reported object and no repeated capture timeout in the tested session.
+Brief visual flashing is not yet verified frame by frame. Single-run FPS
+comparisons are retained in the game integration's test records.
+The implementation belongs to the change introducing this entry.
+
+## 2026-11-02 — Preserve mesh replacements during draw capture
+
+Legacy draw-capture markers now record hashes while retaining the D3D9
+frontend's normal object identity and mesh-replacement decisions. A captured
+draw that the frontend skips records its hashes without submitting geometry,
+preventing capture from temporarily adding the original mesh over a replacement.
+Geometry hash results remain available to normal draw preparation, including
+its camera and skinning handling. No options, presets or API signatures change.
+
+The Release runtime compiled successfully, all 151 runtime exports were
+preserved, and the capture-log and worker-future tests passed. The reverted
+RR preparation shader also passed SPIR-V validation. Visual confirmation of
+the reported brief original-mesh flash is pending.
+The implementation belongs to the change introducing this entry.
+
+## 2026-11-01 — Keep thick translucent backgrounds visible
+
+A path that misses geometry while inside a non-thin-walled translucent material
+now uses the material's authored measurement distance for its final volume
+attenuation. The previous infinite-volume fallback turned the scene behind two
+stacked car windows black. Thin-walled materials already bypass the medium path.
+No options, presets or API signatures change.
+
+The reproduction is looking through one car window and a second non-thin-walled
+car window. The background through thin-walled layers remained visible. The
+runtime and all shader variants built successfully; visual acceptance with two
+thick layers is pending. The implementation belongs to the change introducing
+this entry.
+
+## 2026-11-01 — Scope retained D3D9 lifetime to static objects
+
+Extend the unseen lifetime of stable, unmoving static world draws while using
+the normal short lifetime for movers, skinned content, replacements, terrain and
+sky objects. An old handle with a same-frame successor is hidden immediately.
+Hidden retained replacements now also stop their lights and graphs so a flare
+cannot remain at the previous object transform. No options, presets or shader
+paths change.
+
+The prior global 64-frame extension produced 4,547 `missing=64` releases in the
+reported session and coincided with old vehicle wheels and replacement flares
+remaining behind moving objects. The earlier `b_hse_interior` handle-reuse
+observation does not establish that flicker fixed, so the latest 610–618 frame
+regression remains open until it is retested with this build. Post-change visual
+acceptance is pending. The implementation belongs to the change introducing
+this entry.
+
 ## 2026-10-31 — Invalidate texture hash caches per texture
 
 Track texture content versions per texture instead of invalidating every

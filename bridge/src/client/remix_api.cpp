@@ -393,22 +393,30 @@ remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyMesh(remixapi_MeshHandle handle
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
-remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+remixapi_ErrorCode retainedBatchUpsertVersion(uint32_t version, uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
   if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
   if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !instances)) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
   for (uint32_t i = 0; i < count; ++i) {
-    if (!remixapi_retained::valid(instances[i]) || instances[i].mesh > UINT32_MAX) {
+    if (!remixapi_retained::valid(instances[i], version) || instances[i].mesh > UINT32_MAX) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
   }
   if (count) {
-    ClientMessage message(Commands::RemixApi_RetainedUpsert);
+    ClientMessage message(version == REMIXAPI_RETAINED_VERSION_2 ? Commands::RemixApi_RetainedUpsert : Commands::RemixApi_RetainedUpsertV3);
     message.send_data(sizeof(epoch), &epoch);
     message.send_data(count * sizeof(*instances), instances);
   }
   return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsert(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+  return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION_2, epoch, count, instances);
+}
+
+remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsertV3(uint64_t epoch, uint32_t count, const remixapi_RetainedInstance* instances) {
+  return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION, epoch, count, instances);
 }
 
 remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
@@ -729,12 +737,20 @@ constexpr bool strings_equal(char const * a, char const * b) {
 extern "C" {
   DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
-    if (!outInterface || version != REMIXAPI_RETAINED_VERSION || structSize != sizeof(*outInterface)) {
+    if (!outInterface || !remixapi_retained::supportedVersion(version) || structSize != sizeof(*outInterface)) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
     *outInterface = {};
     if (!g_bInterfaceInitialized) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    if (version == REMIXAPI_RETAINED_VERSION) {
+      char visibleVersion[2] = {};
+      uint32_t visibleSize = 0;
+      if (remixapi_GetGameValue(remixapi_retained::clientVisibilityKey, visibleVersion, sizeof(visibleVersion), &visibleSize) != REMIXAPI_ERROR_CODE_SUCCESS ||
+          visibleSize != 2 || visibleVersion[0] != '3' || visibleVersion[1] != 0) {
+        return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+      }
     }
     char capability[2] = {};
     uint32_t capabilitySize = 0;
@@ -745,14 +761,14 @@ extern "C" {
     DeviceBridge::ResponseTransaction transaction;
     UID uid = 0;
     {
-      ClientMessage message(Commands::RemixApi_RetainedGetInterface);
+      ClientMessage message(version == REMIXAPI_RETAINED_VERSION_2 ? Commands::RemixApi_RetainedGetInterface : Commands::RemixApi_RetainedGetInterfaceV3);
       uid = message.get_uid();
     }
     WAIT_FOR_SERVER_RESPONSE("remixapi_GetRetainedInterface", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, uid);
     const auto result = static_cast<remixapi_ErrorCode>(DeviceBridge::get_data());
     DeviceBridge::pop_front();
     if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
-      *outInterface = { REMIXAPI_RETAINED_VERSION, sizeof(*outInterface), retainedBatchUpsert,
+      *outInterface = { version, sizeof(*outInterface), version == REMIXAPI_RETAINED_VERSION_2 ? retainedBatchUpsert : retainedBatchUpsertV3,
         retainedBatchRemove, retainedClear, retainedCommitFrame, retainedGetStatus, retainedDrawOrdered };
     }
     return result;
@@ -963,7 +979,7 @@ extern "C" {
     {
       ClientMessage c(Commands::RemixApi_GetGameValue);
       currentUID = c.get_uid();
-      send(c, legacy_surface::clientQueryKey(remixapi::light_update::serverQueryKey(key)));
+      send(c, legacy_surface::clientQueryKey(remixapi_retained::clientQueryKey(remixapi::light_update::serverQueryKey(key))));
       c.send_data(in_buffer_size);
     }
     WAIT_FOR_SERVER_RESPONSE("remixapi_GetGameValue", REMIXAPI_ERROR_CODE_GENERAL_FAILURE, currentUID);

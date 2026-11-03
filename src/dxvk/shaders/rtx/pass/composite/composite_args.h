@@ -142,7 +142,15 @@ struct CompositeArgs {
   float stochasticAlphaBlendRadianceVolumeFroxelGain;
 
   uint stochasticAlphaBlendAverageSearchMatches;
-  uint alphaBlendSearchPad0;
-  uint alphaBlendSearchPad1;
+  // Reuses two SAB padding words: enabled water medium + valid Z-up surface plane.
+  uint cameraWaterSurfaceActive;
+  float cameraWaterSurfaceHeight;
   uint alphaBlendSearchPad2;
 };
+
+#ifdef __cplusplus
+static_assert(offsetof(CompositeArgs, cameraWaterSurfaceActive) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 4);
+static_assert(offsetof(CompositeArgs, cameraWaterSurfaceHeight) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 8);
+static_assert(offsetof(CompositeArgs, alphaBlendSearchPad2) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 12);
+static_assert(sizeof(CompositeArgs) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 16);
+#endif

@@ -108,6 +108,10 @@ namespace dxvk {
     // Describes and builds a frontend-resolved entry at once, during the caller's command instead of at the next
     // frame(), and queues its result for takeFeedback (frontend::SceneInterface::buildInstance).
     bool buildNow(const Rc<DxvkContext>& ctx, uint64_t handle, ExternalDrawState&& state, bool reportFeedback = true);
+    // CPU-only rendering view of a canonical original: resolves pure opaque mesh replacements and flattens their
+    // authored local transforms/materials/categories. Empty replacements produce an empty successful result.
+    // Leaves canonical and out unchanged on failure. The caller retains original identities for invalidation/tools.
+    bool resolveStaticParts(const ExternalDrawState& canonical, std::vector<ExternalDrawState>& out) const;
     // The feedback queue of frontend-resolved entries: buildNow's results, and Released for an entry a later build
     // rejected.
     void takeFeedback(std::vector<frontend::InstanceFeedback>& out);

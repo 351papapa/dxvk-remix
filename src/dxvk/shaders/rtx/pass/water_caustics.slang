@@ -1,6 +1,10 @@
 //!variant water_caustics.comp
 //!variant water_caustics_local.comp
 //!> LOCAL_LIGHTS
+//!variant water_caustics_solar.comp
+//!> WATER_CAUSTICS_SOLAR_PROJECTION
+//!variant water_caustics_local_solar.comp
+//!> LOCAL_LIGHTS WATER_CAUSTICS_SOLAR_PROJECTION
 //!variant water_caustics_composite.comp
 //!> COMPOSITE
 //!end-variants
@@ -22,6 +26,10 @@ layout(binding = CAUSTICS_SECONDARY_RADIANCE) RWTexture2D<float4> SecondaryRadia
 #include "rtx/utility/packing.slangh"
 #include "rtx/algorithm/sky_provider.slangh"
 #include "rtx/pass/water_caustics_math.slangh"
+#include "rtx/algorithm/water_caustic_pattern.slangh"
+#ifdef WATER_CAUSTICS_SOLAR_PROJECTION
+#include "rtx/algorithm/water_caustic_coverage.slangh"
+#endif
 #ifdef LOCAL_LIGHTS
 #include "rtx/concept/light/light.slangh"
 #endif
@@ -38,56 +46,20 @@ layout(binding = CAUSTICS_PDF) Texture2D<float> SurfacePdf;
 layout(binding = CAUSTICS_PRIMARY_CONE) Texture2D<float> PrimaryCone;
 layout(binding = CAUSTICS_SECONDARY_CONE) Texture2D<float> SecondaryCone;
 layout(binding = CAUSTICS_PATTERN) Sampler2D Pattern;
-
-float2 causticHash(float2 p) {
-  float3 p3 = frac(float3(p.x, p.y, p.x) * float3(0.1031f, 0.1030f, 0.0973f));
-  p3 += dot(p3, p3.yzx + 33.33f);
-  return frac((p3.xx + p3.yz) * p3.zy);
-}
-
-float2 causticNoise(float2 p) {
-  float2 cell = floor(p);
-  float2 f = frac(p);
-  f = f * f * (3.0f - 2.0f * f);
-  return lerp(lerp(causticHash(cell), causticHash(cell + float2(1, 0)), f.x),
-              lerp(causticHash(cell + float2(0, 1)), causticHash(cell + float2(1, 1)), f.x), f.y) * 2.0f - 1.0f;
-}
-
-float causticTile(float2 uv, float2 cell, float lod) {
-  float2 random = causticHash(cell);
-  float angle = random.x * 6.2831853f;
-  float s = sin(angle), c = cos(angle);
-  float2 rotated = float2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
-  return Pattern.SampleLevel(rotated + random * 13.0f, lod).r;
-}
-
-float causticStochastic(float2 uv, float lod) {
-  float2 grid = float2(uv.x - uv.y * 0.57735027f, uv.y * 1.15470054f);
-  float2 cell = floor(grid), f = frac(grid);
-  float2 v0, v1, v2;
-  float3 weights;
-  if (f.x + f.y < 1.0f) {
-    v0 = cell; v1 = cell + float2(1, 0); v2 = cell + float2(0, 1);
-    weights = float3(1.0f - f.x - f.y, f.x, f.y);
-  } else {
-    v0 = cell + 1.0f; v1 = cell + float2(0, 1); v2 = cell + float2(1, 0);
-    weights = float3(f.x + f.y - 1.0f, 1.0f - f.x, 1.0f - f.y);
-  }
-  weights = weights * weights * weights;
-  weights /= max(dot(weights, float3(1)), 0.0001f);
-  float3 samples = float3(causticTile(uv, v0, lod), causticTile(uv, v1, lod), causticTile(uv, v2, lod));
-  // RMS blending retains bright filaments better than a linear crossfade.
-  return sqrt(dot(weights, samples * samples));
-}
+#ifdef WATER_CAUSTICS_SOLAR_PROJECTION
+layout(binding = CAUSTICS_SURFACE_INPUT) StructuredBuffer<float> WaterSurfaceInput;
+layout(binding = CAUSTICS_ENVELOPE) Sampler2D FocusPattern;
+#endif
 
 // Trace toward the water. `ocean` reports whether the surface that was hit is the
 // WaterLab ocean material, so the caller can pick the right pattern tiling: ocean
 // and authored pools are separate art domains and a pool in a sea shot must not
 // inherit the ocean scale.
 bool causticWaterHit(float3 position, float3 normal, float3 direction, float maxDistance,
-                     out float distance, out bool ocean) {
+                     out float distance, out bool ocean, out float normalReflectance) {
   distance = 0.0f;
   ocean = false;
+  normalReflectance = 0.0f;
   if (dot(normal, direction) <= 0.001f) { return false; }
   RayDesc ray;
   ray.Origin = position + normal * 0.02f;
@@ -100,29 +72,18 @@ bool causticWaterHit(float3 position, float3 normal, float3 direction, float max
   while (query.Proceed()) { }
   if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
   uint surface = (query.CommittedInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CommittedGeometryIndex();
-  if (!surfaces[surface].isAnimatedWater) { return false; }
+  if (surface >= cb.surfaceCount || !surfaces[surface].isAnimatedWater) { return false; }
+  const MemoryPolymorphicSurfaceMaterial material = surfaceMaterials[surface];
+  if ((material.data[0].x & surfaceMaterialTypeMask) != surfaceMaterialTypeTranslucent) { return false; }
+  // The packed F0 comes from this water material's IOR, as in native surface shading.
+  normalReflectance = float(reinterpret<TranslucentSurfaceMaterial>(material).baseReflectivity);
+  if (!isfinite(normalReflectance)) { return false; }
+  normalReflectance = saturate(normalReflectance);
   ocean = surfaces[surface].isOceanWater;
   distance = query.CommittedRayT();
   return true;
 }
 
-
-// One evaluation of the caustic web at a pattern-space coordinate. `time` and `lod`
-// are hoisted to the caller so the three dispersion taps can share them.
-float causticPatternAt(float2 uv, float time, float lod) {
-  float2 warp = 0.075f * float2(sin(uv.y * 6.2831853f + time), sin(uv.x * 6.2831853f - time * 0.83f));
-  float a, b;
-  if (args.randomized != 0) {
-    warp = 0.28f * causticNoise(uv * 0.7f + float2(time * 0.09f, -time * 0.061f))
-      + 0.09f * causticNoise(uv * 1.73f + float2(-time * 0.13f, time * 0.077f));
-    a = causticStochastic(uv + warp + float2(time * 0.021f, time * 0.009f), lod);
-    b = causticStochastic(float2(-uv.y, uv.x) * 1.137f - warp + float2(-time * 0.017f, time * 0.013f), lod);
-  } else {
-    a = Pattern.SampleLevel(uv + warp + float2(time * 0.035f, time * 0.021f), lod).r;
-    b = Pattern.SampleLevel(float2(-uv.y, uv.x) - warp + float2(-time * 0.027f, time * 0.017f), lod).r;
-  }
-  return 2.0f * min(a * a, b * b);
-}
 
 // Horizontal projection of a receiver normal, in the same plane the pattern is
 // sampled in. The dispersion taps slide along this direction.
@@ -143,19 +104,7 @@ float3 causticPattern(float3 waterPosition, float cone, bool ocean, float2 flowD
 
   const float dispersion = args.dispersion;
   if (dispersion <= 0.0f) {
-    return float3(causticPatternAt(uv, time, lod));
-  }
-
-  // Dispersion is a surface-transmission effect: the fringes come from the colour
-  // splitting as light crosses the water surface. It only exists when the caustics are
-  // seen *through* that surface, which means the camera has to be above the water.
-  // Underwater the eye never crosses the surface and ImmersiveVC shows no dispersion
-  // either - its dispersion code lives in the water-surface shader, not in the
-  // underwater post pass.
-  const float3 cameraPosition = transpose(cb.camera.viewToWorld)[3].xyz;
-  const float3 up = cb.isZUp != 0 ? float3(0.0f, 0.0f, 1.0f) : float3(0.0f, 1.0f, 0.0f);
-  if (dot(cameraPosition - waterPosition, up) <= 0.0f) {
-    return float3(causticPatternAt(uv, time, lod));
+    return float3(waterCausticPatternAt(Pattern, uv, time, lod, args.randomized));
   }
 
   // Dispersion. Offset along the receiver normal's horizontal projection, scaled by
@@ -166,9 +115,9 @@ float3 causticPattern(float3 waterPosition, float cone, bool ocean, float2 flowD
   // Constants follow ImmersiveVC: offset = normalize(normal.xy) * Disp * 0.08 *
   // saturate(depth * 0.5). At the default 0.35 that is ~0.028 of a tile.
   const float2 delta = flowDirection * (dispersion * 0.08f * saturate(depth * 0.5f));
-  const float back = causticPatternAt(uv - delta, time, lod);
-  const float mid = causticPatternAt(uv, time, lod);
-  const float front = causticPatternAt(uv + delta, time, lod);
+  const float back = waterCausticPatternAt(Pattern, uv - delta, time, lod, args.randomized);
+  const float mid = waterCausticPatternAt(Pattern, uv, time, lod, args.randomized);
+  const float front = waterCausticPatternAt(Pattern, uv + delta, time, lod, args.randomized);
 
   // tint has a mean of exactly one, so it only moves the per-channel balance. The
   // overall level is tied to the middle tap, which is what the single-tap path
@@ -177,6 +126,28 @@ float3 causticPattern(float3 waterPosition, float cone, bool ocean, float2 flowD
   const float3 tint = float3(back, mid, front) / max(mean, 1e-4f);
   return mid * tint;
 }
+
+#ifdef WATER_CAUSTICS_SOLAR_PROJECTION
+float3 causticFocusPattern(float3 waterPosition, float cone, float2 flowDirection, float depth) {
+  const float sourceMean = FocusPattern.SampleLevel(float2(0.5f), args.solarPadding.x).r;
+  if (!isfinite(sourceMean) || sourceMean <= 0.00001f) {
+    return float3(0.0f);
+  }
+  const float receiverGain = 2.0f * sourceMean;
+  const float scale = max(args.scale, 0.0001f);
+  const float2 uv = waterPosition.xy / scale;
+  const float time = cb.timeSinceStartSeconds * args.speed;
+  const float lod = min(max(0.0f, log2(max(cone * args.solarPadding.y / scale, 1.0f))), args.solarPadding.x);
+  const float mid = waterCausticFocusAt(FocusPattern, uv, time, lod, args.solarPadding.x, args.randomized);
+  if (args.dispersion <= 0.0f) {
+    return float3(mid * receiverGain);
+  }
+  const float2 delta = flowDirection * (args.dispersion * 0.08f * saturate(depth * 0.5f));
+  const float back = waterCausticFocusAt(FocusPattern, uv - delta, time, lod, args.solarPadding.x, args.randomized);
+  const float front = waterCausticFocusAt(FocusPattern, uv + delta, time, lod, args.solarPadding.x, args.randomized);
+  return waterCausticFocusDispersion(back, mid, front) * receiverGain;
+}
+#endif
 
 // Transmitted caustics modulate the existing direct-light solution, including its shadows.
 bool evaluateTransmittedCaustics(uint2 pixel, bool primary, out float3 modulation) {
@@ -219,8 +190,29 @@ bool evaluateTransmittedCaustics(uint2 pixel, bool primary, out float3 modulatio
 #endif
   if (!sourceAboveWater) { return false; }
   float3 normal = signedOctahedralToSphereDirection(snorm2x16ToFloat2x32(primary ? PrimaryNormal[pixel] : SecondaryNormal[pixel]));
-  float3 pattern = causticPattern(ray.Origin + up * query.CommittedRayT(), cone,
-    surfaces[surface].isOceanWater, causticFlowDirection(normal), depth);
+  const bool ocean = surfaces[surface].isOceanWater;
+  float3 waterPosition = ray.Origin + up * query.CommittedRayT();
+  const float2 flowDirection = causticFlowDirection(normal);
+  float3 pattern;
+#ifdef WATER_CAUSTICS_SOLAR_PROJECTION
+  if (args.solarProjectionEnabled && ocean && cb.isZUp && args.lightValid && args.solarContrast > 0.0f) {
+    float3 projectedPattern = float3(0.0f);
+    float projectedDepth;
+    float projectionWeight;
+    // Both paths share the solar coordinate, while zero contrast retains the vertical web.
+    if (waterCausticProject(position, args.lightDirection, args.solarSurfaceHeight,
+        waterPosition, projectedDepth, projectionWeight)) {
+      projectionWeight *= waterCausticCoverage(WaterSurfaceInput, waterPosition.xy, args.solarSurfaceHeight);
+      if (projectionWeight > 0.0f) {
+        projectedPattern = causticFocusPattern(waterPosition, cone, flowDirection, depth) * projectionWeight;
+      }
+    }
+    pattern = projectedPattern;
+  } else
+#endif
+  {
+    pattern = causticPattern(waterPosition, cone, ocean, flowDirection, depth);
+  }
   modulation = pattern * (args.strength * causticDepthFade(depth, args.maxDepth, args.fadeStart));
   return true;
 }
@@ -247,25 +239,15 @@ float3 evaluateDirectionalCaustics(uint2 pixel, bool primary) {
   if (sunHeight <= 0.0f || max(albedo.x, max(albedo.y, albedo.z)) <= 0.0f) {
     return float3(0);
   }
-  float3 tangent = (sun - sunHeight * up) / 1.333f;
-  float3 toWater = tangent + up * sqrt(max(0.0f, 1.0f - dot(tangent, tangent)));
-  float distance;
-  bool reflected = false;
-  bool ocean = false;
-  float depthLimit = args.maxDepth;
-  float strength = args.strength;
-  bool hitWater = false;
-  if (!hitWater && args.reflectedStrength > 0.0f) {
-    reflected = true;
-    toWater = sun - 2.0f * sunHeight * up;
-    depthLimit = args.reflectedHeight;
-    strength = args.reflectedStrength * (0.08f + 0.92f * pow(1.0f - sunHeight, 5.0f));
-    // Fade against the actual trace reach, including the grazing-angle cap.
-    float2 reach = causticReflectedReach(depthLimit, sunHeight);
-    depthLimit = reach.y;
-    hitWater = causticWaterHit(position, normal, toWater, reach.x, distance, ocean);
-  }
-  if (!hitWater) { return float3(0); }
+  if (args.reflectedStrength <= 0.0f) { return float3(0); }
+  float3 toWater = sun - 2.0f * sunHeight * up;
+  float distance, normalReflectance;
+  bool ocean;
+  // Fade against the actual trace reach, including the grazing-angle cap.
+  float2 reach = causticReflectedReach(args.reflectedHeight, sunHeight);
+  float depthLimit = reach.y;
+  if (!causticWaterHit(position, normal, toWater, reach.x, distance, ocean, normalReflectance)) { return float3(0); }
+  float strength = args.reflectedStrength * (normalReflectance + (1.0f - normalReflectance) * pow(1.0f - sunHeight, 5.0f));
   float cosine = saturate(dot(normal, toWater));
   float depth = distance * abs(dot(toWater, up));
   float3 waterPosition = position + normal * 0.02f + distance * toWater;
@@ -284,12 +266,11 @@ float3 evaluateDirectionalCaustics(uint2 pixel, bool primary) {
 
   float3 pattern = causticPattern(waterPosition, cone, ocean, causticFlowDirection(normal), depth);
   float fade = causticDepthFade(depth, depthLimit, args.fadeStart);
-  float3 attenuation = reflected ? float3(1) : pow(clamp(args.transmittance, float3(0.001f), float3(1.0f)), float3(distance / args.transmittanceDistance));
   float3 sunlight = args.lightIrradiance;
   if (useAtmosphere) {
     sunlight = skyProviderSunIrradiance(waterPosition) * cb.preExposure;
   }
-  float3 radiance = albedo * sunlight * attenuation * (cosine * pattern * fade * strength / 3.14159265f);
+  float3 radiance = albedo * sunlight * (cosine * pattern * fade * strength / 3.14159265f);
   radiance *= smoothstep(0.0f, 0.087f, sunHeight) / max(SurfacePdf[pixel], 0.001f);
   return max(radiance, float3(0));
 }
@@ -307,17 +288,12 @@ float3 evaluateLocalCaustics(uint2 pixel, bool primary) {
   float3 albedo = primary ? PrimaryAlbedo[pixel].xyz : SecondaryAlbedo[pixel].xyz;
   if (max(albedo.x, max(albedo.y, albedo.z)) <= 0.0f) { return float3(0); }
   float3 up = cb.isZUp != 0 ? float3(0, 0, 1) : float3(0, 1, 0);
-  float probeDistance;
-  bool reflected = false;
-  bool ocean = false;
-  bool hit = false;
-  if (!hit && args.reflectedStrength > 0.0f) {
-    reflected = true;
-    hit = causticWaterHit(position, -up, -up, args.reflectedHeight, probeDistance, ocean);
-  }
-  if (!hit) { return float3(0); }
-  float waterHeight = dot(position, up) + (reflected ? -1.0f : 1.0f) * (probeDistance + 0.02f);
-  float depthLimit = reflected ? args.reflectedHeight : args.maxDepth;
+  if (args.reflectedStrength <= 0.0f) { return float3(0); }
+  float probeDistance, normalReflectance;
+  bool ocean;
+  if (!causticWaterHit(position, -up, -up, args.reflectedHeight, probeDistance, ocean, normalReflectance)) { return float3(0); }
+  float waterHeight = dot(position, up) - (probeDistance + 0.02f);
+  float depthLimit = args.reflectedHeight;
   float3 origin = position + normal * 0.02f;
   float3 result = float3(0);
   for (uint i = 0; i < min(args.localLightCount, 8u); ++i) {
@@ -332,7 +308,7 @@ float3 evaluateLocalCaustics(uint2 pixel, bool primary) {
     // Two fixed emitter samples keep this undenoised pass temporally stable.
     for (uint sampleIndex = 0; sampleIndex < 2; ++sampleIndex) {
       float2 uv = float2(sampleIndex == 0 ? 0.25f : 0.75f, 0.5f);
-      float3 interfacePoint = causticInterfacePoint(origin, center, up, waterHeight, reflected);
+      float3 interfacePoint = causticReflectedInterfacePoint(origin, center, up, waterHeight);
       if (light.polymorphicType == lightTypeCylinder) {
         CylinderLight cylinder = cylinderLightCreate(light);
         float3 tangent, bitangent;
@@ -346,7 +322,7 @@ float3 evaluateLocalCaustics(uint2 pixel, bool primary) {
       for (uint iteration = 0; iteration < 2; ++iteration) {
         interaction.position = interfacePoint;
         lightSample = decodedPolymorphicLightSampleArea(light, uv, interaction);
-        interfacePoint = causticInterfacePoint(origin, lightSample.position, up, waterHeight, reflected);
+        interfacePoint = causticReflectedInterfacePoint(origin, lightSample.position, up, waterHeight);
       }
       if (dot(lightSample.position, up) <= waterHeight + 0.02f) { continue; }
       float3 toInterface = interfacePoint - origin;
@@ -355,7 +331,7 @@ float3 evaluateLocalCaustics(uint2 pixel, bool primary) {
       float3 toWater = toInterface / interfaceDistance;
       float waterDistance;
       // Allow wave displacement around the planar solve, then fade using the actual hit.
-      if (!causticWaterHit(position, normal, toWater, interfaceDistance + 1.0f, waterDistance, ocean)) { continue; }
+      if (!causticWaterHit(position, normal, toWater, interfaceDistance + 1.0f, waterDistance, ocean, normalReflectance)) { continue; }
       float3 waterPosition = origin + toWater * waterDistance;
       float depth = abs(dot(waterPosition - origin, up));
       float fade = causticDepthFade(depth, depthLimit, args.fadeStart);
@@ -383,9 +359,8 @@ float3 evaluateLocalCaustics(uint2 pixel, bool primary) {
       query.TraceRayInline(topLevelAS, shadowFlags, OBJECT_MASK_OPAQUE | OBJECT_MASK_TRANSLUCENT, shadow);
       while (query.Proceed()) { }
       if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) { continue; }
-      float strength = reflected ? args.reflectedStrength * (0.08f + 0.92f * pow(1.0f - lightHeight, 5.0f)) : args.strength;
-      float3 attenuation = reflected ? float3(1) : pow(clamp(args.transmittance, float3(0.001f), float3(1)), float3(waterDistance / args.transmittanceDistance));
-      float3 contribution = albedo * irradiance * attenuation
+      float strength = args.reflectedStrength * (normalReflectance + (1.0f - normalReflectance) * pow(1.0f - lightHeight, 5.0f));
+      float3 contribution = albedo * irradiance
         * (saturate(dot(normal, toWater)) * causticPattern(waterPosition, cone, ocean, causticFlowDirection(normal), depth) * fade * strength / 3.14159265f);
       contribution *= receiverFade * sourceFade * smoothstep(0.0f, 0.087f, lightHeight)
         / max(SurfacePdf[pixel], 0.001f);

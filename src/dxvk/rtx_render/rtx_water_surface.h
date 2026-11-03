@@ -21,6 +21,8 @@ public:
   Rc<DxvkBuffer> beachMaskBuffer() const { return m_registered ? m_beachMask : Rc<DxvkBuffer>(); }
   uint64_t topologyHash() const { return m_registered ? m_topologyHash : 0; }
   float oceanWaveStrength() const { return m_registered ? m_oceanWaveStrength : 0.0f; }
+  bool surfaceHeightAt(const Vector3& position, float& height) const;
+  Rc<DxvkBuffer> waterLevelBuffer() const;
 private:
   void ensureResources(const Rc<DxvkContext>& ctx);
   void updateBeachMask(const Rc<DxvkContext>& ctx);
@@ -36,6 +38,8 @@ private:
   uint32_t m_sequence = 0;
   uint32_t m_shoreLogFrames = 0;
   bool m_registered = false;
+  bool m_waterLevelActive = false;
+  uint32_t m_waterLevelTick = 0;
   float m_submittedTime = 0.0f;
   float m_oceanWaveStrength = 0.0f;
   std::unique_ptr<WaterGpuSimulation> m_simulation;

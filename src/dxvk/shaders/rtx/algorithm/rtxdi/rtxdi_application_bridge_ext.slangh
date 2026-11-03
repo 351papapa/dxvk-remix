@@ -30,7 +30,7 @@
 #define RAB_GetLightSample RAB_GetLightSampleBase
 #define RAB_GetPortalSpaceLightSample RAB_GetPortalSpaceLightSampleBase
 #define RAB_LoadReservoir RAB_LoadReservoirBase
-#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW || VOLUME_WATER_SURFACE_LIGHTING
 #define RAB_GetLightSampleWithTypeHint RAB_GetLightSampleWithTypeHintBase
 #endif
 #ifdef RESTIR_GI_PREVIOUS_FRAME_PAGE
@@ -116,12 +116,52 @@ void applyVolumeLightSampleCloudShadow(inout RAB_LightSample lightSample, Decode
 }
 #endif
 
+#if VOLUME_WATER_SURFACE_LIGHTING
+void applyVolumeWaterSurface(inout RAB_LightSample lightSample, DecodedPolymorphicLight light, RAB_VolumeInteraction volumeInteraction)
+{
+  lightSample.volumeVisibilityRay = float4(0.0f);
+  if (!cb.cameraWaterVolumeActive || !cb.cameraWaterSurfaceValid || light.polymorphicType != lightTypeDistant)
+  {
+    return;
+  }
+
+  const float3 position = volumeInteraction.volumeInteraction.position;
+  const float3 toLight = lightSample.position - position;
+  const float sourceDistance = length(toLight);
+  if (!isfinite(sourceDistance) || sourceDistance <= 0.0f)
+  {
+    return;
+  }
+  const float3 direction = toLight / sourceDistance;
+  // The submitted water-height protocol uses world Z as its height axis.
+  if (direction.z <= 0.0001f)
+  {
+    return;
+  }
+
+  if (!all(isfinite(position)) || !isfinite(cb.cameraWaterSurfaceHeight))
+  {
+    return;
+  }
+  const float depth = max(cb.cameraWaterSurfaceHeight - position.z, 0.0f);
+  // Keep the virtual sample distinct from its froxel even at the surface.
+  const float positionScale = max(max(abs(position.x), abs(position.y)), abs(position.z));
+  const float minDistance = max(0.0001f, positionScale * 0.000001f);
+  const float waterDistance = clamp(depth / direction.z, minDistance, sourceDistance);
+  lightSample.volumeVisibilityRay = float4(direction, sourceDistance);
+  lightSample.position = position + direction * waterDistance;
+}
+#endif
+
 // A sample of the previous frame's lights is encoded at the previous pre-exposure (rtx_pre_exposure.h).
 // The wrappers below bring it to this frame's pre-exposure.
 
 RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, MinimalSurfaceInteraction minimalSurfaceInteraction, bool usePreviousLights = false)
 {
   RAB_LightSample lightSample = RAB_GetLightSampleBase(lightID, lightUV, minimalSurfaceInteraction, usePreviousLights);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
   if (usePreviousLights)
   {
     lightSample.radiance *= cb.preExposureHistoryRatio;
@@ -144,19 +184,31 @@ RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, RAB_VolumeInter
 #if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
   applyVolumeLightSampleCloudShadow(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
 #endif
+#if VOLUME_WATER_SURFACE_LIGHTING
+  applyVolumeWaterSurface(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
+#endif
   return lightSample;
 }
 
-#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW || VOLUME_WATER_SURFACE_LIGHTING
 RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uint lightType, RAB_Surface surface)
 {
-  return RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, surface);
+  RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, surface);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
+  return lightSample;
 }
 
 RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uint lightType, RAB_VolumeInteraction volumeInteraction)
 {
   RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, volumeInteraction);
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
   applyVolumeLightSampleCloudShadow(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
+#endif
+#if VOLUME_WATER_SURFACE_LIGHTING
+  applyVolumeWaterSurface(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
+#endif
   return lightSample;
 }
 #endif
@@ -165,6 +217,9 @@ RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uin
 RAB_LightSample RAB_GetPortalSpaceLightSample(uint lightIdx, float2 lightUV, uint8_t portalIdx, MinimalSurfaceInteraction minimalSurfaceInteraction, bool usePreviousLights = false)
 {
   RAB_LightSample lightSample = RAB_GetPortalSpaceLightSampleBase(lightIdx, lightUV, portalIdx, minimalSurfaceInteraction, usePreviousLights);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
   if (usePreviousLights)
   {
     lightSample.radiance *= cb.preExposureHistoryRatio;

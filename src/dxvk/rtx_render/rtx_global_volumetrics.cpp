@@ -24,9 +24,11 @@
 #include "dxvk_device.h"
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx_composite.h"
+#include "rtx_water.h"
 
 #include "rtx/pass/common_binding_indices.h"
 #include "rtx/pass/volumetrics/volume_integrate_binding_indices.h"
+#include "rtx/pass/volumetrics/water_volume_caustics_args.h"
 
 #include <rtx_shaders/volume_integrate_rayquery.h>
 #include <rtx_shaders/volume_integrate_rayquery_8x8.h>
@@ -60,10 +62,46 @@
 #define RTX_WETNESS_SHADER_volume_restir_temporal volume_restir_temporal_wetness
 #define RTX_WETNESS_SHADER_volume_restir_visibility volume_restir_visibility_wetness
 
+#include <rtx_shaders/volume_integrate_rayquery_water.h>
+#include <rtx_shaders/volume_integrate_rayquery_water_wetness.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8_water.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8_water_wetness.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4_water.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4_water_wetness.h>
+#include <rtx_shaders/volume_restir_initial_water.h>
+#include <rtx_shaders/volume_restir_initial_water_wetness.h>
+#include <rtx_shaders/volume_restir_visibility_water.h>
+#include <rtx_shaders/volume_restir_visibility_water_wetness.h>
+#include <rtx_shaders/volume_restir_temporal_water.h>
+#include <rtx_shaders/volume_restir_temporal_water_wetness.h>
+#include <rtx_shaders/volume_restir_spatial_resampling_water.h>
+#include <rtx_shaders/volume_restir_spatial_resampling_water_wetness.h>
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_water volume_integrate_rayquery_water_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x8_water volume_integrate_rayquery_8x8_water_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x4_water volume_integrate_rayquery_8x4_water_wetness
+#define RTX_WETNESS_SHADER_volume_restir_initial_water volume_restir_initial_water_wetness
+#define RTX_WETNESS_SHADER_volume_restir_visibility_water volume_restir_visibility_water_wetness
+#define RTX_WETNESS_SHADER_volume_restir_temporal_water volume_restir_temporal_water_wetness
+#define RTX_WETNESS_SHADER_volume_restir_spatial_resampling_water volume_restir_spatial_resampling_water_wetness
+
+#include <rtx_shaders/volume_integrate_rayquery_water_caustics.h>
+#include <rtx_shaders/volume_integrate_rayquery_water_caustics_wetness.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8_water_caustics.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x8_water_caustics_wetness.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4_water_caustics.h>
+#include <rtx_shaders/volume_integrate_rayquery_8x4_water_caustics_wetness.h>
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_water_caustics volume_integrate_rayquery_water_caustics_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x8_water_caustics volume_integrate_rayquery_8x8_water_caustics_wetness
+#define RTX_WETNESS_SHADER_volume_integrate_rayquery_8x4_water_caustics volume_integrate_rayquery_8x4_water_caustics_wetness
+
 namespace dxvk {
 
   // Defined within an unnamed namespace to ensure unique definition across binary
   namespace {
+    static_assert(sizeof(WaterVolumeCausticsArgs) == 64);
+    static_assert(offsetof(WaterVolumeCausticsArgs, sunIndex) == 20);
+    static_assert(offsetof(WaterVolumeCausticsArgs, textureSize) == 40);
+
     class VolumeRestirShaderInitial : public ManagedShader {
       WETNESS_SHADER_SOURCE(VolumeRestirShaderInitial, VK_SHADER_STAGE_COMPUTE_BIT, volume_restir_initial)
 
@@ -146,6 +184,30 @@ namespace dxvk {
     };
 
     PREWARM_SHADER_PIPELINE(VolumeIntegrateShader);
+
+    class VolumeWaterCausticsShader : public ManagedShader {
+      WETNESS_SHADER_SOURCE(VolumeWaterCausticsShader, VK_SHADER_STAGE_COMPUTE_BIT, volume_integrate_rayquery_water_caustics)
+
+      BINDLESS_ENABLED()
+      PUSH_CONSTANTS(WaterVolumeCausticsArgs)
+
+      BEGIN_PARAMETER()
+        COMMON_RAYTRACING_BINDINGS
+
+        SAMPLER3D(VOLUME_INTEGRATE_BINDING_PREV_ACCUMULATED_RADIANCE_INPUT_Y)
+        SAMPLER3D(VOLUME_INTEGRATE_BINDING_PREV_ACCUMULATED_RADIANCE_INPUT_CO_CG)
+        SAMPLER3D(VOLUME_INTEGRATE_BINDING_PREV_ACCUMULATED_RADIANCE_INPUT_AGE)
+        TEXTURE3D(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT)
+        RW_TEXTURE3D(VOLUME_INTEGRATE_BINDING_ACCUMULATED_RADIANCE_OUTPUT_Y)
+        RW_TEXTURE3D(VOLUME_INTEGRATE_BINDING_ACCUMULATED_RADIANCE_OUTPUT_CO_CG)
+        RW_TEXTURE3D(VOLUME_INTEGRATE_BINDING_ACCUMULATED_RADIANCE_OUTPUT_AGE)
+        SAMPLER2D(VOLUME_WATER_CAUSTICS_PATTERN)
+        STRUCTURED_BUFFER(VOLUME_WATER_CAUSTICS_SURFACE_INPUT)
+      END_PARAMETER()
+    };
+
+    PREWARM_SHADER_PIPELINE(VolumeWaterCausticsShader);
+
   }
 
   static const std::array<RtxGlobalVolumetrics::Preset, RtxGlobalVolumetrics::PresetCount> Presets = {
@@ -576,6 +638,9 @@ namespace dxvk {
   }
 
   VolumeArgs RtxGlobalVolumetrics::getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes, const VolumetricWeatherState& weather) const {
+    const WaterSystem& waterSystem = m_device->getCommon()->metaWater();
+    const WaterMediumState& water = waterSystem.cameraMedium();
+
     // Calculate the volumetric parameters from options and the fixed function fog state.
 
     // Note: Volumetric transmittance color option is in gamma space, so must be converted to linear for usage in the volumetric system.
@@ -583,7 +648,9 @@ namespace dxvk {
 
     // Note: Fall back to usual default in cases such as the "none" D3D fog mode, no fog remapping specified, or invalid values in the fog mode derivation
     // (such as dividing by zero).
-    float transmittanceMeasurementDistance = weather.transmittanceMeasurementDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
+    float transmittanceMeasurementDistance = water.active
+      ? water.attenuationDistance
+      : weather.transmittanceMeasurementDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
     Vector3 multiScatteringEstimate = Vector3();
 
     // Check if fog density is below the configurable threshold to determine if physical volumetrics should be used.
@@ -591,7 +658,7 @@ namespace dxvk {
     const bool canUsePhysicalFog = shouldConvertToPhysicalFog(fogState, waterFogDensityThreshold());
 
     if (
-      weather.enableFogRemap &&
+      !water.active && weather.enableFogRemap &&
       // Note: Only consider remapping fog if any fixed function fog is actually enabled (not the "none" mode).
       fogState.mode != frontend::FogMode::None &&
       canUsePhysicalFog
@@ -662,12 +729,15 @@ namespace dxvk {
 
     // Calculate scattering and attenuation coefficients for the volume
 
-    Vector3 const volumetricAttenuationCoefficient{
-      -log(transmittanceColorLinear.x) / transmittanceMeasurementDistance,
-      -log(transmittanceColorLinear.y) / transmittanceMeasurementDistance,
-      -log(transmittanceColorLinear.z) / transmittanceMeasurementDistance
-    };
-    Vector3 const volumetricScatteringCoefficient{ volumetricAttenuationCoefficient * weather.singleScatteringAlbedo };
+    const Vector3 volumetricAttenuationCoefficient = water.active
+      ? water.extinction
+      : Vector3 {
+          -log(transmittanceColorLinear.x) / transmittanceMeasurementDistance,
+          -log(transmittanceColorLinear.y) / transmittanceMeasurementDistance,
+          -log(transmittanceColorLinear.z) / transmittanceMeasurementDistance
+        };
+    const Vector3 volumetricScatteringCoefficient = water.active
+      ? water.scattering : volumetricAttenuationCoefficient * weather.singleScatteringAlbedo;
 
     const RtCamera& mainCamera = cameraManager.getMainCamera();
 
@@ -689,20 +759,26 @@ namespace dxvk {
     volumeArgs.restirFroxelDepthSlices = static_cast<uint16_t>(m_restirFroxelVolumeExtent.depth);
 
     volumeArgs.maxAccumulationFrames = static_cast<uint16_t>(maxAccumulationFrames());
+    if (waterSystem.volumeCausticsActive() && waterSystem.volumeCausticsArgs().speed > 0.0f) {
+      // Moving transmission needs a shorter history; resolution and samples stay
+      // unchanged, with less temporal smoothing and correspondingly more noise.
+      volumeArgs.maxAccumulationFrames = std::min(volumeArgs.maxAccumulationFrames, 8u);
+    }
     volumeArgs.froxelDepthSliceDistributionExponent = froxelDepthSliceDistributionExponent();
-    volumeArgs.froxelMaxDistance = weather.froxelMaxDistanceMeters * RtxOptions::getMeterToWorldUnitScale();
+    volumeArgs.froxelMaxDistance = (water.active ? froxelMaxDistanceMeters() : weather.froxelMaxDistanceMeters) * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.froxelFireflyFilteringLuminanceThreshold = froxelFireflyFilteringLuminanceThreshold();
     volumeArgs.attenuationCoefficient = volumetricAttenuationCoefficient;
-    volumeArgs.enable = enable() && canUsePhysicalFog;
-    volumeArgs.enableTranslucentShadows = volumeArgs.enable && weather.enableTranslucentShadows;
+    volumeArgs.enable = water.active || (enable() && canUsePhysicalFog);
+    volumeArgs.enableTranslucentShadows = volumeArgs.enable && (water.active || weather.enableTranslucentShadows);
     // The fog integral (RTXDI's integrateVolumetricNEE) adds multiScatteringEstimate to the cached radiance and scales the sum
     // by scatteringCoefficient, and nothing else reads either term. Scaling one by the fog sun gain and dividing the other by it
     // applies the gain to the cached radiance alone. The floor keeps the division finite.
-    const float fogSunGain = RtxOptions::skyMode() == SkyMode::Numos ? std::max(weather.fogSunVisibilityGain, 1e-6f) : 1.0f;
+    const float fogSunGain = !water.active && RtxOptions::skyMode() == SkyMode::Numos ? std::max(weather.fogSunVisibilityGain, 1e-6f) : 1.0f;
     volumeArgs.scatteringCoefficient = volumetricScatteringCoefficient * fogSunGain;
     volumeArgs.enableVolumeRISInitialVisibility = enableInitialVisibility();
     volumeArgs.enablevisibilityReuse = visibilityReuse();
-    const bool isViewHistoryInvalidated = mainCamera.isViewHistoryInvalidated(m_device->getCurrentFrameId());
+    const bool isViewHistoryInvalidated = mainCamera.isViewHistoryInvalidated(m_device->getCurrentFrameId())
+      || water.changed || waterSystem.volumeCausticsChanged();
     // Note: We need to invalidate the volumetric reservoir when detecting camera cut to avoid accumulating the history from different scenes
     volumeArgs.enableVolumeTemporalResampling = enableTemporalResampling() && !isViewHistoryInvalidated;
     volumeArgs.enableVolumeSpatialResampling = enableSpatialResampling() && !isViewHistoryInvalidated;
@@ -716,10 +792,10 @@ namespace dxvk {
     volumeArgs.maxFilteredRadianceU = 1.f - volumeArgs.minFilteredRadianceU;
     volumeArgs.multiScatteringEstimate = multiScatteringEstimate / fogSunGain;
     volumeArgs.enableReferenceMode = enableReferenceMode();
-    volumeArgs.volumetricFogAnisotropy = weather.anisotropy;
-    volumeArgs.volumetricConsumerGain = RtxOptions::skyMode() == SkyMode::Numos ? weather.volumetricConsumerGain : 1.0f;
+    volumeArgs.volumetricFogAnisotropy = water.active ? water.anisotropy : weather.anisotropy;
+    volumeArgs.volumetricConsumerGain = !water.active && RtxOptions::skyMode() == SkyMode::Numos ? weather.volumetricConsumerGain : 1.0f;
 
-    volumeArgs.enableNoiseFieldDensity = weather.enableHeterogeneousFog;
+    volumeArgs.enableNoiseFieldDensity = !water.active && weather.enableHeterogeneousFog;
     volumeArgs.noiseFieldSubStepSize = weather.noiseFieldSubStepSizeMeters * RtxOptions::getMeterToWorldUnitScale();
     volumeArgs.noiseFieldOctaves = static_cast<uint32_t>(weather.noiseFieldOctaves);
     volumeArgs.noiseFieldTimeScale = weather.noiseFieldTimeScale;
@@ -729,7 +805,7 @@ namespace dxvk {
     volumeArgs.noiseFieldLacunarity = weather.noiseFieldLacunarity;
     volumeArgs.noiseFieldGain = weather.noiseFieldGain;
 
-    volumeArgs.depthOffset = weather.depthOffset;
+    volumeArgs.depthOffset = water.active ? 0.0f : weather.depthOffset;
 
     const float invertedWorld = atmosphereInverted() ? -1.f : 1.f;
     const Vector3 sceneUpDirection = RtxOptions::zUp() ? Vector3(0, 0, invertedWorld) : Vector3(0, invertedWorld, 0);
@@ -742,7 +818,7 @@ namespace dxvk {
     const Vector3 planetCenter = project(mainCamera.getPosition(), Vector3(), sceneUpDirection) - sceneUpDirection * planetRadius;
     const float atmosphereRadius = atmosphereHeight + planetRadius;
 
-    volumeArgs.enableAtmosphere = enableAtmosphere();
+    volumeArgs.enableAtmosphere = !water.active && enableAtmosphere();
     volumeArgs.sceneUpDirection = sceneUpDirection;
     volumeArgs.atmosphereHeight = atmosphereHeight;
     volumeArgs.planetCenter = planetCenter;
@@ -826,6 +902,10 @@ namespace dxvk {
     auto numRestirCellsExtent = m_restirFroxelVolumeExtent;
     numRestirCellsExtent.width *= numActiveFroxelVolumes;
 
+    WaterSystem& waterSystem = m_device->getCommon()->metaWater();
+    const bool waterSurfaceLighting = waterSystem.cameraLightSurface().valid;
+    const bool waterCaustics = waterSurfaceLighting && waterSystem.volumeCausticsActive();
+
     // Compute restir
     {
       ScopedGpuProfileZone(ctx, "Volume Integrate Restir Initial");
@@ -834,7 +914,9 @@ namespace dxvk {
 
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getCurrentVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderInitial::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, waterSurfaceLighting
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderInitial, volume_restir_initial_water)
+        : VolumeRestirShaderInitial::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
@@ -845,7 +927,9 @@ namespace dxvk {
 
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getCurrentVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderVisibility::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, waterSurfaceLighting
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderVisibility, volume_restir_visibility_water)
+        : VolumeRestirShaderVisibility::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
@@ -857,7 +941,9 @@ namespace dxvk {
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_PREV_VOLUME_RESERVOIRS_INPUT, getPreviousVolumeReservoirs().view, nullptr);
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getCurrentVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderTemporal::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, waterSurfaceLighting
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderTemporal, volume_restir_temporal_water)
+        : VolumeRestirShaderTemporal::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
@@ -869,7 +955,9 @@ namespace dxvk {
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_PREV_VOLUME_RESERVOIRS_INPUT, getCurrentVolumeReservoirs().view, nullptr);
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getPreviousVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderSpatialResampling::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, waterSurfaceLighting
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeRestirShaderSpatialResampling, volume_restir_spatial_resampling_water)
+        : VolumeRestirShaderSpatialResampling::getShader());
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
@@ -883,11 +971,31 @@ namespace dxvk {
 
       ctx->bindResourceView(VOLUME_INTEGRATE_BINDING_VOLUME_RESERVOIRS_OUTPUT, getPreviousVolumeReservoirs().view, nullptr);
 
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, integrateWorkgroup8x4()
-        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x4)
-        : integrateWorkgroup8x8()
-          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x8)
-          : VolumeIntegrateShader::getShader());
+      if (waterCaustics) {
+        waterSystem.bindVolumeCausticsResources(ctx);
+        ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
+        const WaterVolumeCausticsArgs& args = waterSystem.volumeCausticsArgs();
+        ctx->pushConstants(0, sizeof(args), &args);
+      }
+
+      const auto shader = waterCaustics
+        ? (integrateWorkgroup8x4()
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeWaterCausticsShader, volume_integrate_rayquery_8x4_water_caustics)
+          : integrateWorkgroup8x8()
+            ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeWaterCausticsShader, volume_integrate_rayquery_8x8_water_caustics)
+            : VolumeWaterCausticsShader::getShader())
+        : waterSurfaceLighting
+        ? (integrateWorkgroup8x4()
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x4_water)
+          : integrateWorkgroup8x8()
+            ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x8_water)
+            : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_water))
+        : (integrateWorkgroup8x4()
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x4)
+          : integrateWorkgroup8x8()
+            ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, VolumeIntegrateShader, volume_integrate_rayquery_8x8)
+            : VolumeIntegrateShader::getShader());
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, shader);
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 
@@ -938,7 +1046,8 @@ namespace dxvk {
     // They are latched before RtxPass::onFrameBegin, which creates the textures on the first frame, so that the first allocation already has the right size.
     // A change of size drops history, as a restart of the cache does.
     const FroxelConsumerCacheQuality quality = consumerCacheQuality();
-    const bool fullCache = enable() || quality == FroxelConsumerCacheQuality::Full;
+    const bool waterActive = m_device->getCommon()->metaWater().cameraMedium().active;
+    const bool fullCache = enable() || waterActive || quality == FroxelConsumerCacheQuality::Full;
     const FroxelConsumerCacheQuality reduction = fullCache ? FroxelConsumerCacheQuality::Off : quality;
     const bool cacheActive = fullCache || reduction != FroxelConsumerCacheQuality::Off;
     m_froxelCacheHistoryStale = cacheActive && (!m_froxelCacheActive || reduction != m_froxelCacheReduction);

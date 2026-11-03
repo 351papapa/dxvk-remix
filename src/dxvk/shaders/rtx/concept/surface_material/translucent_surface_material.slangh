@@ -68,3 +68,12 @@ vec3 translucentSurfaceMaterialEvalInfiniteVolumeTransmittance(TranslucentSurfac
 
   return volumeAttenuation;
 }
+
+// A ray that misses geometry while inside a thick material has crossed a finite boundary. Treating that path as
+// infinitely thick drives an otherwise visible background to black. One authored measurement depth gives exactly
+// transmittanceColor and supplies a defined fallback for open or one-sided translucent geometry.
+vec3 translucentSurfaceMaterialEvalUnresolvedVolumeTransmittance(TranslucentSurfaceMaterial translucentSurfaceMaterial)
+{
+  const float distance = max(translucentSurfaceMaterial.thicknessOrMeasurementDistance, 1e-5f);
+  return translucentSurfaceMaterialEvalVolumeTransmittance(translucentSurfaceMaterial, distance);
+}

@@ -26,6 +26,7 @@
 #include "dxvk_context.h"
 #include "rtx_objectpicking.h"
 #include "rtx_resources.h"
+#include "rtx_texture.h"
 
 #include "../spirv/spirv_code_buffer.h"
 #include "../util/util_matrix.h"
@@ -99,6 +100,22 @@ namespace dxvk {
     void showLensRainImguiSettings();
     void dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
     void showNtscImguiSettings();
+    void dispatchSunFlare(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
+    void showSunFlareImguiSettings();
+
+    RTX_OPTION("rtx.sunFlare", bool, sunFlareEnable, false, "Enable solar lens ghosts after tonemapping. Disable the original game flare to avoid duplicate rendering.");
+    RTX_OPTION("rtx.sunFlare", int, sunFlareStyle, 0, "0: Dense layout with 26 ghosts, 1: Classic layout with 7 ghosts.");
+    RTX_OPTION("rtx.sunFlare", int, sunFlareTextureSet, 0, "0: Mixed shape textures, 1: Soft star texture. Independent of the layout.");
+    RTX_OPTION("rtx.sunFlare", std::string, sunFlareTextureDirectory, "", "Directory containing the five flare DDS textures. Empty disables texture loading.");
+    RTX_OPTION("rtx.sunFlare", float, sunFlareBrightness, 1.0f, "Display-space solar flare intensity multiplier.");
+    RTX_OPTION("rtx.sunFlare", float, sunFlareSize, 1.0f, "Multiplier for the selected layout's reference ghost sizes.");
+    RTX_OPTION("rtx.sunFlare", bool, sunFlareResolutionScale, false, "Scale original pixel sizes by output height / 480.");
+    RTX_OPTION("rtx.sunFlare", bool, sunFlareFlicker, false, "Random 0.7 to 1.0 brightness modulation. Does not consume the game RNG.");
+    RTX_OPTION("rtx.sunFlare", bool, sunFlareHideUnderwater, false, "Hide the flare when the camera is submerged, independently of water fog and light-shaft toggles.");
+    RTX_OPTION("rtx.sunFlare", bool, sunFlareCloudOcclusion, false, "Attenuate the flare with the runtime cloud transmittance.");
+    RTX_OPTION("rtx.sunFlare", float, sunFlareFadeIn, 0.15f, "Visibility fade-in time constant in seconds.");
+    RTX_OPTION("rtx.sunFlare", float, sunFlareFadeOut, 0.10f, "Visibility fade-out time constant in seconds.");
+    RTX_OPTION("rtx.sunFlare", float, sunFlareWaterTransition, 0.15f, "Minimum visibility fade-in time constant in seconds when resurfacing. Submerged cameras have zero flare.");
 
     inline bool isPostFxEnabled() const { return enable(); }
     inline bool isMotionBlurEnabled() const { return enable() && enableMotionBlur() && motionBlurSampleCount() > 0 && exposureFraction() > 0.0f; }
@@ -223,6 +240,12 @@ namespace dxvk {
     Rc<vk::DeviceFn> m_vkd;
     Rc<DxvkBuffer> m_highlightingValues;
     Resources::Resource m_dofFocusState;
+    Resources::Resource m_sunFlareState;
+    std::array<TextureRef, 5> m_sunFlareTextures;
+    std::string m_sunFlareLoadedDirectory;
+    uint64_t m_sunFlareLastTimeMs = 0;
+    uint32_t m_sunFlareFrame = 0;
+    bool m_sunFlareInitialized = false;
     // Half resolution depth-of-field working set. DxvkPostFx is not an RtxPass,
     // so it has no createTargetResource/releaseTargetResource hook: these are
     // created on demand in dispatchDof, rebuilt when the output extent changes,

@@ -377,6 +377,7 @@ namespace dxvk {
           AxisAlignedBoundingBox lightBounds;   // object space, the replacement's lights
           uint32_t lights = 0;
           bool skinned = false;         // Never kept unseen (LifetimePolicy), as the tracker does for skinned instances
+          bool deforming = false;       // Dynamic geometry never receives the static world lifetime.
           bool nonMainCamera = false;   // Never kept unseen either (the anti-culling frustum is the main camera's)
           // A 3D-skybox object, described as a Main-camera entry. skyTransforms are its latest sky-camera transforms,
           // reprojected at every flush.
@@ -493,6 +494,7 @@ namespace dxvk {
           uint64_t rejectedBakes = 0;    // bakes of rejected terrain objects' draws (rejectedTerrainDraw)
           uint64_t terrainRematerials = 0;  // ... that re-described the material after a cascade change
           uint64_t terrainChannelPasses = 0;  // bake passes of a material channel other than albedo
+          uint32_t flickerProbeLogs = 0;
           uint64_t perDraws = 0;         // per-draw draws described on the transient lane
           uint64_t perDrawDrops = 0;     // per-draw draws with nothing to describe (no geometry, failed futures or copy)
           uint64_t perDrawViewModel = 0; // ... with the view-model camera
@@ -700,8 +702,26 @@ namespace dxvk {
           }
         }
 
-        void requestRelease(uint64_t handle, Object& object, ReleaseReason reason) {
+        void requestRelease(uint64_t handle, Object& object, ReleaseReason reason, uint32_t frame) {
           if (!object.releasing) {
+            if (reason != ReleaseReason::Reset && totals.flickerProbeLogs < 5000) {
+              const uint32_t missingFrames =
+                frame > object.frameLastSeen ? frame - object.frameLastSeen : 0;
+              Logger::info(str::format(
+                "[FlickerProbe] release frame=", frame,
+                " reason=", uint32_t(reason),
+                " missing=", missingFrames,
+                " lastSeen=", object.frameLastSeen,
+                " created=", object.frameCreated,
+                " handle=", handle,
+                " asset=", object.assetHash,
+                " described=", object.described,
+                " pairKey=", object.pairKey,
+                " categories=", object.categories,
+                " replaced=", object.replaced,
+                " hidden=", object.hiddenUnseen));
+              ++totals.flickerProbeLogs;
+            }
             object.releasing = true;
             totals.released++;
             totals.releasedBy[uint32_t(reason)]++;
@@ -718,14 +738,10 @@ namespace dxvk {
           }
         }
 
-        // A stale object leaves the frame's scene at once, as the game does not draw it in this frame. The app thread's
-        // destroy follows a frame or two later. A new object of this frame that draws the same mesh next to it is taken
-        // to be the same object under a new key, so it takes over the stale object's motion history.
-        void retireStale(frontend::SceneInterface& scene, uint64_t handle, Object& object, uint32_t frame) {
-          object.agedOut = true;
-          hideUnseen(scene, handle, object);
+        // Returns the current-frame object that continues this one under a new handle.
+        uint64_t successorOf(uint64_t handle, const Object& object, uint32_t frame) const {
           if (object.frameLastSeen + 1 != frame) {
-            return;  // Not drawn in the last frame, so no draw of this frame continues it.
+            return 0;  // The object was not drawn in the previous frame.
           }
           const Vector3 centre = (object.objectToWorld * Vector4(object.bounds.getCentroid(), 1.f)).xyz();
           const float maxDistanceSqr = RtxOptions::getUniqueObjectDistanceSqr();
@@ -733,7 +749,8 @@ namespace dxvk {
           float bestDistanceSqr = std::numeric_limits<float>::infinity();
           for (const uint64_t created : createdThisFrame) {
             const auto found = objects.find(created);
-            if (found == objects.end() || found->second.pairKey != object.pairKey || found->second.releasing) {
+            if (found == objects.end() || created == handle || found->second.pairKey != object.pairKey ||
+                found->second.described != object.described || found->second.releasing) {
               continue;
             }
             const Object& candidate = found->second;
@@ -744,10 +761,33 @@ namespace dxvk {
               bestDistanceSqr = distanceSqr;
             }
           }
+          return best;
+        }
+
+        // A stale object leaves the frame's scene at once, as the game does not draw it in this frame. The app thread's
+        // destroy follows a frame or two later. A new object of this frame that draws the same mesh next to it is taken
+        // to be the same object under a new key, so it takes over the stale object's motion history.
+        void retireStale(frontend::SceneInterface& scene, uint64_t handle, Object& object, uint32_t frame) {
+          object.agedOut = true;
+          hideUnseen(scene, handle, object);
+          const uint64_t best = successorOf(handle, object, frame);
           if (best != 0 && scene.inheritHistory(best, handle)) {
             totals.recreations++;
             createdThisFrame.erase(std::find(createdThisFrame.begin(), createdThisFrame.end(), best));
           }
+        }
+
+        static bool canExtendUnseenLifetime(const Object& object) {
+          const CategoryFlags categories(object.categories);
+          return object.frameLastSeen > object.frameCreated &&
+            !object.skinned &&
+            !object.deforming &&
+            !object.nonMainCamera &&
+            !object.skybox3d &&
+            !object.terrain &&
+            object.frameMoved != object.frameLastSeen &&
+            !categories.test(InstanceCategories::ThirdPersonPlayerModel) &&
+            !categories.test(InstanceCategories::IgnoreAntiCulling);
         }
 
         // The scene's copy of the object goes, with the lights and graphs of its mesh replacement.
@@ -1077,6 +1117,7 @@ namespace dxvk {
           // Geometry that changes between descriptions (skinned, dynamic / user-pointer data, or an object updated in
           // place) is owned by the entry.
           object.skinned = kept.getSkinningState().numBones > 0;
+          object.deforming = object.skinned || kept.dynamicSource || kept.vertexCaptured;
           object.nonMainCamera = kept.cameraType != translator::CameraClass::Main;
           object.skybox3d = skybox;
           object.terrain = bakedTerrain;
@@ -1209,7 +1250,6 @@ namespace dxvk {
             totals.perDrawDrops++;
             return;
           }
-          captureDraw(state);
           DrawCallTransforms& transforms = state.modifyTransformData();
           if (!sameMatrix(transforms.worldToView, worldToView)) {
             transforms.objectToWorld = inverseAffine(worldToView) * transforms.worldToView * transforms.objectToWorld;
@@ -1296,22 +1336,24 @@ namespace dxvk {
             logKeptCameraCut(*ctx);
           }
 
-          // Events that end the scene's copies: a scene clear or mods changed.
+          // Events that affect the scene's copies: a scene clear, replacement
+          // assets changed, or draw translation changed.
           const uint32_t events = sceneInterface.takeSceneEvents();
           const bool clearChanged = (events & frontend::kSceneEventCleared) != 0;
           const bool modsChanged = (events & frontend::kSceneEventModsChanged) != 0;
-          const bool resetRequested = clearChanged || modsChanged;
-          if (resetRequested && !objects.empty()) {
-            // Everything is handed over again; the entries stay until the app thread's destroys arrive.
+          if (clearChanged && !objects.empty()) {
+            // A cleared scene invalidates every handle. Hand everything over
+            // again; the entries stay until the app thread's destroys arrive.
             for (auto& [handle, object] : objects) {
-              requestRelease(handle, object, ReleaseReason::Reset);
+              requestRelease(handle, object, ReleaseReason::Reset, frame);
             }
             totals.resets++;
-            // The first event that applies ([D3D9v2] direct "resets (...)", for the churn hunt).
-            totals.resetsBy[uint32_t(clearChanged ? ResetReason::Clear : ResetReason::Mods)]++;
-          } else if ((events & frontend::kSceneEventTranslationInvalid) != 0 && !objects.empty()) {
-            // Every draw is translated once more: the scene's objects are prepared and described again in place at their
-            // next draw.
+            totals.resetsBy[uint32_t(ResetReason::Clear)]++;
+          } else if ((modsChanged || (events & frontend::kSceneEventTranslationInvalid) != 0) &&
+                     !objects.empty()) {
+            // Replacement assets and translation-only option changes keep the
+            // existing handles. The scene swaps each updated entry in place,
+            // so an object is not hidden while its replacement mesh reloads.
             ++reprepareEpoch;
             channel->requestReprepare();
             totals.reprepares++;
@@ -1344,6 +1386,22 @@ namespace dxvk {
               continue;
             }
             Object& object = found->second;
+            if (frame > object.frameLastSeen + 1 && totals.flickerProbeLogs < 5000) {
+              Logger::info(str::format(
+                "[FlickerProbe] redraw frame=", frame,
+                " missing=", frame - object.frameLastSeen,
+                " lastSeen=", object.frameLastSeen,
+                " created=", object.frameCreated,
+                " handle=", handle,
+                " asset=", object.assetHash,
+                " described=", object.described,
+                " pairKey=", object.pairKey,
+                " categories=", object.categories,
+                " replaced=", object.replaced,
+                " hidden=", object.hiddenUnseen,
+                " releasing=", object.releasing));
+              ++totals.flickerProbeLogs;
+            }
             object.frameLastSeen = frame;
             if (object.hiddenUnseen) {
               // Drawn again before the app thread's destroy: shown until then.
@@ -1410,7 +1468,7 @@ namespace dxvk {
           for (const frontend::InstanceFeedback& item : feedback) {
             const auto found = objects.find(item.handle);
             if (item.kind == frontend::InstanceFeedback::Kind::Released && found != objects.end()) {
-              requestRelease(item.handle, found->second, ReleaseReason::Rebuilt);
+              requestRelease(item.handle, found->second, ReleaseReason::Rebuilt, frame);
             }
           }
           feedback.clear();
@@ -1431,6 +1489,37 @@ namespace dxvk {
               }
               continue;
             }
+            const uint64_t successor = successorOf(handle, object, frame);
+            if (successor != 0) {
+              const auto successorObject = objects.find(successor);
+              const bool successorMoved = object.frameMoved == object.frameLastSeen ||
+                (successorObject != objects.end() &&
+                 !sameMatrix(object.objectToWorld, successorObject->second.objectToWorld));
+              if (successorMoved) {
+                // A moving draw changed handle: hide the old transform promptly and transfer its history.
+                requestRelease(handle, object, ReleaseReason::Aged, frame);
+                retireStale(sceneInterface, handle, object, frame);
+                continue;
+              }
+              // A static draw may be re-keyed at the same transform. Transfer history without introducing
+              // a visibility gap; the normal static grace below hides the old entry if it does not return.
+              if (sceneInterface.inheritHistory(successor, handle)) {
+                totals.recreations++;
+                createdThisFrame.erase(std::find(createdThisFrame.begin(), createdThisFrame.end(), successor));
+              }
+            }
+            translator::LifetimeFrame objectLifetime = lifetime;
+            const bool staticWorldObject = canExtendUnseenLifetime(object);
+            if (staticWorldObject) {
+              // Keep the resources long enough to survive batching, while allowing only a short
+              // visibility grace. A moved/replaced object that fails to report a transform update
+              // must not remain visibly stuck at its previous position for the full resource lifetime.
+              constexpr uint32_t kStaticWorldVisibilityGraceFrames = 2;
+              if (frame > object.frameLastSeen + kStaticWorldVisibilityGraceFrames) {
+                hideUnseen(sceneInterface, handle, object);
+              }
+              objectLifetime.framesToKeepObjects = std::max(objectLifetime.framesToKeepObjects, 64u);
+            }
             translator::UnseenObject unseen;
             unseen.frameLastSeen = object.frameLastSeen;
             unseen.frameCreated = object.frameCreated;
@@ -1441,10 +1530,11 @@ namespace dxvk {
             // Replacement lights keep the object alive as they keep its replacement instance (light anti-culling).
             unseen.lightBounds = object.replaced ? &object.lightBounds : nullptr;
             unseen.objectToWorld = &object.objectToWorld;
-            if (!translator::LifetimePolicy::isStale(unseen, lifetime) || translator::LifetimePolicy::keepUnseen(unseen, lifetime)) {
+            if (!translator::LifetimePolicy::isStale(unseen, objectLifetime) ||
+                (staticWorldObject && translator::LifetimePolicy::keepUnseen(unseen, objectLifetime))) {
               continue;
             }
-            requestRelease(handle, object, ReleaseReason::Aged);
+            requestRelease(handle, object, ReleaseReason::Aged, frame);
             retireStale(sceneInterface, handle, object, frame);
           }
           createdThisFrame.clear();
@@ -1508,8 +1598,15 @@ namespace dxvk {
         : m_impl(std::make_shared<Impl>()) {
       }
 
+      void D3D9Frontend::capture(const DrawCallState& drawCallState) {
+        m_impl->captureDraw(drawCallState);
+      }
+
       void D3D9Frontend::commit(RtxContext* ctx, const DrawParameters& params, DrawCallState& drawCallState,
                                 CommitMode mode, uint64_t handle) {
+        if (mode == CommitMode::CaptureOnly) {
+          return;
+        }
         m_impl->keepFogDraw(drawCallState);
         // Held skinned draws go first once this frame's camera is set up, and a draw of a held object waits for it.
         m_impl->drainSkinned(ctx, false, handle);
@@ -1531,6 +1628,8 @@ namespace dxvk {
           return;
         case CommitMode::PerDraw:
           m_impl->perDraw(ctx, drawCallState);
+          return;
+        case CommitMode::CaptureOnly:
           return;
         case CommitMode::RasterOnly:
           // The scene owns the object, and only its raster services run: a terrain object's bake, else the sky matte

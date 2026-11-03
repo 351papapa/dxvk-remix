@@ -977,7 +977,9 @@ namespace dxvk {
     if (!verticesInRange(vertexContext, vertexIndexOffset, geoData.vertexCount)) {
       ONCE(Logger::info("[RTX-Compatibility-Info] Rasterized a draw without ray tracing it: its indices reach past its vertex buffer."));
       frontend::reportInput(*m_parent->GetDXVKDevice(), SceneInput::VertexRange);
-      return PrepareDrawFlag::PreserveDrawCallAndItsState;
+      return m_activeDrawCallState.testCategoryFlags(InstanceCategories::Ignore)
+        ? prepareFlagsForIgnoredDraws
+        : PrepareDrawFlag::PreserveDrawCallAndItsState;
     }
 
     // Copy all the vertices into a staging buffer.  Assign fields of the geoData structure.
@@ -998,6 +1000,12 @@ namespace dxvk {
                                       vertexIndexOffset, maxOffsetedIndex);
 
     m_activeDrawCallState.futureGeometryHashes = computeHash(geoData, maxOffsetedIndex, geometryHashMemoizationKey);
+    if (m_activeDrawCallState.testCategoryFlags(InstanceCategories::Ignore) &&
+        d3d9State().renderStates[213] && d3d9State().renderStates[214]) {
+      // A capture receipt needs the input geometry and normalized material, without a render draw or camera update.
+      m_activeDrawCallState.materialData.updateCachedHash();
+      return PrepareDrawFlag::CommitToRayTracing;
+    }
     m_activeDrawCallState.futureBoundingBox = computeAxisAlignedBoundingBox(geoData);
     
     // Process skinning data
@@ -1082,7 +1090,10 @@ namespace dxvk {
 #if REMIX_D3D9_FRONTEND
     ScopedCpuProfileZone();
     const frontends::d3d9::Decision decision = std::exchange(m_frontendDecision, frontends::d3d9::Decision());
-    if (decision.skip) {
+    m_activeDrawCallState.captureSession = d3d9State().renderStates[213];
+    m_activeDrawCallState.captureToken = d3d9State().renderStates[214];
+    const bool capture = m_activeDrawCallState.captureSession && m_activeDrawCallState.captureToken;
+    if (decision.skip && !capture) {
       // Nothing is queued: the scene owns this object and nothing changed, or the frontend dropped the draw. The draw's
       // hash futures are dropped unread (the workers still run them and release their buffer references). Only the per-draw parts
       // are cleared: the rest of the state carries across draws (the clip plane is recomputed only when
@@ -1108,14 +1119,23 @@ namespace dxvk {
     }
 
     m_activeDrawCallState.wetnessTag = d3d9State().renderStates[210];
-    m_activeDrawCallState.captureSession = d3d9State().renderStates[213];
-    m_activeDrawCallState.captureToken = d3d9State().renderStates[214];
     submitActiveDrawCallState();
 
-    m_parent->EmitCs([params, this, mode = decision.mode, handle = decision.handle](DxvkContext* ctx) {
+    const auto mode = decision.skip ? frontends::d3d9::CommitMode::CaptureOnly : decision.mode;
+    m_parent->EmitCs([params, this, mode, handle = decision.handle](DxvkContext* ctx) {
       assert(dynamic_cast<RtxContext*>(ctx));
       DrawCallState drawCallState;
       if (m_drawCallStateQueue.pop(drawCallState)) {
+        if (drawCallState.captureSession && drawCallState.captureToken && drawCallState.finalizeGeometryHashes()) {
+          m_frontend.capture(drawCallState);
+          if (mode != frontends::d3d9::CommitMode::CaptureOnly) {
+            // The normal commit still resolves the hash future together with its bounds and skinning.
+            drawCallState.futureGeometryHashes = Future<GeometryHashes>::ready(GeometryHashes(drawCallState.getGeometryData().hashes));
+          }
+        }
+        if (mode == frontends::d3d9::CommitMode::CaptureOnly) {
+          return;
+        }
         m_frontend.commit(static_cast<RtxContext*>(ctx), params, drawCallState, mode, handle);
       }
     });
@@ -1453,8 +1473,9 @@ namespace dxvk {
         });
       }
       
-      // Check if an ignore texture is bound
-      if (m_activeDrawCallState.getCategoryFlags().test(InstanceCategories::Ignore)) {
+      // Ignored textures still provide capture receipts without entering the scene.
+      if (m_activeDrawCallState.getCategoryFlags().test(InstanceCategories::Ignore) &&
+          !(d3d9State().renderStates[213] && d3d9State().renderStates[214])) {
         return false;
       }
 
@@ -1532,11 +1553,16 @@ namespace dxvk {
       return countPrepareOutcome(flags);
     }
     const bool perDraw = perDrawMarked();
-    if (!perDraw && tryEarlySkip(indices, vertices, context, flags)) {
+    const bool capture = d3d9State().renderStates[213] && d3d9State().renderStates[214];
+    if (!perDraw && !capture && tryEarlySkip(indices, vertices, context, flags)) {
       return countPrepareOutcome(flags);
     }
     flags = prepareDrawBody(indices, vertices, context);
-    if ((flags & PrepareDrawFlag::CommitToRayTracing) && perDraw) {
+    if ((flags & PrepareDrawFlag::CommitToRayTracing) && capture &&
+        m_activeDrawCallState.testCategoryFlags(InstanceCategories::Ignore)) {
+      m_frontendDecision = frontends::d3d9::Decision();
+      m_frontendDecision.mode = frontends::d3d9::CommitMode::CaptureOnly;
+    } else if ((flags & PrepareDrawFlag::CommitToRayTracing) && perDraw) {
       m_frontendDecision = m_frontendApp.perDraw(frontendFog());
     } else if (flags & PrepareDrawFlag::CommitToRayTracing) {
       observeFrontendInputs(indices, vertices, context, false, flags);
@@ -1897,10 +1923,6 @@ namespace dxvk {
   }
 
   bool D3D9Rtx::perDrawMarked() const {
-    // A capture needs every tagged draw, including unchanged scene-owned geometry.
-    if (d3d9State().renderStates[213] && d3d9State().renderStates[214]) {
-      return true;
-    }
     const uint32_t state = m_frontendApp.perDrawRenderState();
     if (state == 0 || state >= d3d9State().renderStates.size()) {
       return false;
@@ -2131,7 +2153,12 @@ namespace dxvk {
 
     const perf::ApiScope perfPrepareScope { perf::Api::D3D9PrepareRT }; // [PerfApi] rtx.profile.detailedLogging
     const PrepareDrawFlags flags = internalPrepareDraw(indices, vertices, drawContext);
-    if ((flags & PrepareDrawFlag::CommitToRayTracing) && perDrawMarked()) {
+    const bool capture = d3d9State().renderStates[213] && d3d9State().renderStates[214];
+    if ((flags & PrepareDrawFlag::CommitToRayTracing) && capture &&
+        m_activeDrawCallState.testCategoryFlags(InstanceCategories::Ignore)) {
+      m_frontendDecision = frontends::d3d9::Decision();
+      m_frontendDecision.mode = frontends::d3d9::CommitMode::CaptureOnly;
+    } else if ((flags & PrepareDrawFlag::CommitToRayTracing) && perDrawMarked()) {
       m_frontendDecision = m_frontendApp.perDraw(frontendFog());
     } else if (flags & PrepareDrawFlag::CommitToRayTracing) {
       observeFrontendInputs(indices, vertices, drawContext, true, flags);

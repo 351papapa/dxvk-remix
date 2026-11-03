@@ -1325,6 +1325,18 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.subsurface.transmissionBsdfSampleCount|int|1|||The sample count for transmission BSDF\.\(1spp as default\)|
 |rtx.subsurface.transmissionSingleScatteringSampleCount|int|1|||The sample count for every single scattering on BSDF transmission \(refracted\) ray\.\(1spp as default\)|
 |rtx.subsurface.transmittanceFollowsAlbedo|bool|True|||Diffusion profile subsurface scattering: when a material's subsurface transmittance texture is its albedo texture, reads it the same way as the albedo\. It skips the software gamma decode on sRGB textures \(see rtx\.linearizeSrgbTextures\) and applies the material's albedo tint \(remixapi\_MaterialInfoOpaqueAlbedoTintEXT\)\. Without this, such textures are decoded twice and a host's tint, such as a skin tone, is lost\.|
+|rtx.sunFlare.sunFlareBrightness|float|1|||Display\-space solar flare intensity multiplier\.|
+|rtx.sunFlare.sunFlareCloudOcclusion|bool|False|||Attenuate the flare with the runtime cloud transmittance\.|
+|rtx.sunFlare.sunFlareEnable|bool|False|||Enable solar lens ghosts after tonemapping\. Disable the original game flare to avoid duplicate rendering\.|
+|rtx.sunFlare.sunFlareFadeIn|float|0.15|||Visibility fade\-in time constant in seconds\.|
+|rtx.sunFlare.sunFlareFadeOut|float|0.1|||Visibility fade\-out time constant in seconds\.|
+|rtx.sunFlare.sunFlareFlicker|bool|False|||Random 0\.7 to 1\.0 brightness modulation\. Does not consume the game RNG\.|
+|rtx.sunFlare.sunFlareHideUnderwater|bool|False|||Hide the flare when the camera is submerged, independently of water fog and light\-shaft toggles\.|
+|rtx.sunFlare.sunFlareResolutionScale|bool|False|||Scale original pixel sizes by output height / 480\.|
+|rtx.sunFlare.sunFlareSize|float|1|||Multiplier for the selected layout's reference ghost sizes\.|
+|rtx.sunFlare.sunFlareStyle|int|0|||0: Dense layout with 26 ghosts, 1: Classic layout with 7 ghosts\.|
+|rtx.sunFlare.sunFlareTextureSet|int|0|||0: Mixed shape textures, 1: Soft star texture\. Independent of the layout\.|
+|rtx.sunFlare.sunFlareWaterTransition|float|0.15|||Minimum visibility fade\-in time constant in seconds when resurfacing\. Submerged cameras have zero flare\.|
 |rtx.suppressLightKeeping|bool|False|||If true, Remix doesn't keep game's original light sources for many frames\. For example, if a game switches a point light off, then, in Remix, the light might still be rendered as if it's enabled: because the light would be cached \(kept\) for many consecutive frames\. \(So to solve this, set this option to True\)\.|
 |rtx.sweep.loop|bool|False|||Starts the settings sweep again after the last step instead of stopping\. The user's settings are restored between passes\.|
 |rtx.sweep.startDelaySeconds|float|5|0|3600|Seconds the settings sweep waits after it is started from the menu, counted once the game shows a ray traced scene, so the menu can be closed before the first step\.|
@@ -1527,7 +1539,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.beachWaveLength|float|8.9|||Shore depth\-domain phase scale; local crest distance also depends on the beach slope\.|
 |rtx.water.beachWavePeriod|float|4.5|||Seconds between beach wave crests\.|
 |rtx.water.beachWaves|bool|False|||GPU beach waves driven by measured terrain depth\. Requires GPU water surface; independent of ocean swell amplitude\.|
-|rtx.water.causticsDispersion|float|0.35|||Chromatic dispersion of the caustics, visible only from above the water\. The fringes come from colour splitting as light crosses the surface, so they are a transmission effect and switch off once the camera is underwater\. The pattern is evaluated three times along the receiver normal's horizontal projection and the results drive the output R / G / B channels separately\. Offsets follow the analysed scale: Disp \* 0\.08 \* saturate\(depth \* 0\.5\) of a tile, so 0\.35 moves about 0\.028\. 0 disables it and returns to the single\-tap cost\.|
+|rtx.water.causticsDispersion|float|0.35|||Chromatic dispersion on caustic receivers, shared above and below water\. Evaluates three pattern taps; zero uses one tap\.|
 |rtx.water.causticsEnabled|bool|False|||Project animated light caustics onto submerged opaque receivers\. Requires AnimatedWater geometry\.|
 |rtx.water.causticsFadeStart|float|0.5|||Fraction of maximum depth or reflected height where caustics begin fading out\.|
 |rtx.water.causticsLocalLightRange|float|60|||Local caustic light and receiver range from camera in world units; fades over the outer quarter\.|
@@ -1565,6 +1577,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.localFlowSwirl|float|1|||Boat counter\-rotating wake force multiplier\.|
 |rtx.water.oceanWaveStrength|float|1.25|||Overall ocean swell and beach\-wave height multiplier, applied on the GPU\.|
 |rtx.water.overrideMaterial|bool|False|||Apply water color, distance and non\-thin\-walled shading to translucent AnimatedWater surfaces\.|
+|rtx.water.particleExtinctionPerMeter|float|0|||Added neutral suspended\-particle extinction per meter, 0 to 1\. Zero preserves authored water transmittance\. Increases the same total extinction for water materials, caustics and underwater lighting; respects scene scale\.|
 |rtx.water.propagationSpeed|float|4|||Interaction wave propagation speed in game world units per second\.|
 |rtx.water.rainWaveMultiplier|float|1.25|||Rainy ocean wave height relative to normal weather; blends with the weather transition\.|
 |rtx.water.reduceOffscreen|bool|False|||Reduce local interaction solver to 30 Hz outside the expanded camera view; preserve state for camera turns and reflections\.|
@@ -1587,21 +1600,12 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.speed|float|1|||Geometric swell animation speed multiplier\.|
 |rtx.water.steepness|float|0.55|||Gerstner horizontal displacement strength\. Limited internally to prevent folded crests\.|
 |rtx.water.stormWaveMultiplier|float|1.5|||Stormy ocean wave height relative to normal weather; blends with the weather transition\.|
-|rtx.water.transmittanceColor|float3|0.511382, 0.894483, 0.988417|||Water transmittance color at the measurement distance\.|
+|rtx.water.transmittanceColor|float3|0.511382, 0.894483, 0.988417|||Baseline linear RGB water transmittance at the authored measurement distance\. Added particles contribute neutral extinction; the resulting total extinction is shared by the surface, caustics and underwater volume\.|
 |rtx.water.transmittanceDistance|float|7.5|||Water transmittance measurement distance in game world units\.|
-|rtx.water.underwaterDebugView|int|0|||GPU underwater diagnostics: 0: Normal, 1: Water depth, 2: Water entry hit rate, 3: Light visibility, 4: Shafts only\. Diagnostic modes bypass the underwater master toggle\.|
-|rtx.water.underwaterDensity|float|0.045|||Additional artistic underwater extinction per world unit\.|
-|rtx.water.underwaterEnabled|bool|False|||Apply distance\-dependent absorption, haze and volumetric light shafts when the camera is below AnimatedWater geometry\.|
-|rtx.water.underwaterFogColor|float3|0.025, 0.16, 0.2|||Linear underwater haze color, scaled by daylight\.|
-|rtx.water.underwaterLightShafts|bool|False|||Integrate underwater light shafts on the GPU using the water surface and relative depth\.|
-|rtx.water.underwaterSceneLightCandidates|int|8|||Strongest RTX light candidates per underwater screen tile, selected entirely on the GPU \(1 to 32\)\.|
-|rtx.water.underwaterSceneLightStrength|float|1|||RTX light contribution to underwater scattering\.|
-|rtx.water.underwaterSceneLights|bool|False|||Integrate underwater scattering from RTX sphere, spot, rectangle, disk, cylinder and distant lights\.|
-|rtx.water.underwaterShaftAnisotropy|float|0.45|||Forward scattering of underwater sunlight, 0 to 0\.8\.|
-|rtx.water.underwaterShaftMaxDistance|float|40|||Maximum camera ray length integrated for underwater shafts\.|
-|rtx.water.underwaterShaftSamples|int|12|||Underwater volume samples per pixel, 4 to 256\. Higher reduces integration banding at increased GPU cost\.|
-|rtx.water.underwaterShaftScale|float|8|||World\-space spacing of focused underwater sunlight\.|
-|rtx.water.underwaterShaftStrength|float|0.24|||Underwater scattering strength in the same exposure units as haze, with isotropic phase normalized to 1\. 0 disables the shaft volume\.|
+|rtx.water.underwaterAnisotropy|float|0|||Forward scattering of the water medium, 0 to 0\.8\. Native volumetric lighting supplies sun shafts and local light scattering\.|
+|rtx.water.underwaterEnabled|bool|False|||Use native volumetric lighting for the configured camera water medium\. Requires water material override and a neutral camera medium; shares the surface transmittance and distance\.|
+|rtx.water.underwaterScattering|float|0|||Scattering fraction of neutral water extinction, 0 to 1: the weakest authored RGB extinction plus added particle extinction\. The remaining fraction absorbs light\. Water color follows shared transmittance and scene lighting; zero gives absorption only\.|
+|rtx.water.volumetricCausticsStrength|float|0|||Contrast of caustic shafts from the strongest upward directional light in the underwater volume, 0 to 1\. Any positive value selects one shared dynamic pattern for projected ocean receivers and that light in the underwater volume; zero keeps the standard receiver pattern\. Uses the ocean caustic scale, speed and randomized animation\. Pools and reflected caustic patterns retain their own paths\. Bounded contrast recovery counters texture filtering; local volume gain is capped at eight\. Source\-mean normalization does not guarantee total energy conservation under animated warps or mip contrast recovery\. Receiver brightness retains its existing pattern bounds, and a black source adds no surface caustics\. Requires enabled receiver caustics and a registered GPU water surface\. Animated shafts use a shorter lighting history and may show more noise\.|
 |rtx.water.waterMapCellSize|float|1|||World units per cell in the producer's water\-level map\.|
 |rtx.water.waterMapOrigin|float2|0, 0|||World XY origin of the producer's 128 by 128 water\-level map\.|
 |rtx.water.wavelength|float|12|||Primary geometric swell wavelength in game world units\.|
@@ -1760,7 +1764,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.postfx.external.effectSearchPath|string|remix-shaders|||Directory searched recursively for \.remixfx\.slang effects\. Relative paths are resolved from the game executable\.|
 |rtx.postfx.external.slangCompilerPath|string||||Optional path to slangc\.exe for compiling external effects\. When empty, Remix searches beside the runtime and game executable\.|
 |rtx.postfx.motionBlurMaskOutTextures|hash set||||Disable motion blur for meshes with specific texture\.|
-|rtx.postfx.stackOrder|string|bloom,motion_blur,depth_of_field,tonemapping,ntsc_vhs,lens_effects,srgb_dither|||Comma\-separated post\-processing effect order\. Effects may be reordered within their color domain; tonemapping and sRGB/dither remain fixed pipeline anchors\.|
+|rtx.postfx.stackOrder|string|bloom,motion_blur,depth_of_field,tonemapping,ntsc_vhs,sun_flare,lens_effects,srgb_dither|||Comma\-separated post\-processing effect order\. Effects may be reordered within their color domain; tonemapping and sRGB/dither remain fixed pipeline anchors\.|
 |rtx.rayPortalModelTextureHashes|hash vector||||Texture hashes identifying ray portals\.<br>Entries are interpreted as pairs of hashes; the list length must be even and will be clamped to the internal max portal count\.|
 |rtx.raytracedRenderTargetTextures|hash set||||DescriptorHashes for Render Targets\. \(Screens that should display the output of another camera\)\.|
 |rtx.remixMenuKeyBinds|virtual keys|ALT,X|||Hotkey to open the Remix menu\.<br>example override: 'rtx\.remixMenuKeyBinds = CTRL, SHIFT, Z'\.<br>Full list of key names available in \`src/util/util\_keybind\.h\`\.|
@@ -1770,12 +1774,14 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.skyBoxGeometries|hash set||||Geometries from draw calls used for the sky or are otherwise intended to be very far away from the camera at all times \(no parallax\)\.<br>Any draw calls using a geometry hash in this list will be treated as sky and rendered as such in a manner different from typical geometry\.<br>The geometry hash being used for sky detection is based off of the asset hash rule, see: "rtx\.geometryAssetHashRuleString"\.|
 |rtx.skyBoxTextures|hash set||||Textures on draw calls used for the sky or are otherwise intended to be very far away from the camera at all times \(no parallax\)\.<br>Any draw calls using a texture in this list will be treated as sky and rendered as such in a manner different from typical geometry\.|
 |rtx.smoothNormalsTextures|hash set||||Textures on draw calls whose geometry should have smooth normals generated on the GPU\.<br>This is useful for older D3D9 games where the geometry may be missing smooth normals, especially when using the VertexShader Capture mechanism\.<br>When a draw call matches, area\-weighted smooth normals will be computed from the triangle mesh and used for ray tracing\.|
+|rtx.sunFlare.sunFlareTextureDirectory|string||||Directory containing the five flare DDS textures\. Empty disables texture loading\.|
 |rtx.sweep.steps|string||||Limits the settings sweep to the steps whose name contains one of these comma\-separated words, ignoring case, for example "restir, preset"\. Empty runs every step\.|
 |rtx.terrainTextures|hash set||||Albedo textures that are baked blended together to form a unified terrain texture used during ray tracing\.<br>Put albedo textures into this category if the game renders terrain as a blend of multiple textures\.|
 |rtx.tonemap.gradePreset|string|None|||The color grade preset the tone mapper applies: a built\-in one \(None, Warm Amber, Olive Green\) or a preset file in rtx\.tonemap\.gradePresetDirectory, by name\. A game's rtx\.conf can set the default\. The Remix API can show other grades while the game runs; changing this option shows this preset again\.|
 |rtx.tonemap.gradePresetDirectory|string|rtx-remix/colorgrade|||Folder of the color grade preset files \(\<name\>\.conf\), relative to the game's folder unless absolute\.|
 |rtx.uiTextures|hash set||||Textures on draw calls that should be treated as screenspace UI elements\.<br>All exclusively UI\-related textures should be classified this way and doing so allows the UI to be rasterized on top of the ray traced scene like usual\.<br>Note that currently the first UI texture encountered triggers RTX injection \(though this may change in the future as this does cause issues with games that draw UI mid\-frame\)\.|
 |rtx.water.beachMaskPath|string||||Optional IVTX world\-space beach eligibility mask\. Empty or invalid uses measured shallow\-coast qualification; masks are specific to their authored map\.|
+|rtx.water.cameraMediumMaterialHash|string||||Hexadecimal source material hash supplied by SetCameraMediumMaterial for water\. Empty disables water classification; unrelated glass media remain unchanged\.|
 |rtx.water.causticsTexture|string||||DDS pattern used by receiver caustics\.|
 |rtx.water.foamColorTexture|string||||DDS albedo and coverage texture for foam shaded through scene materials\.|
 |rtx.water.foamCompositeTexture|string||||DDS pattern for the screen\-space foam display\.|

@@ -17,14 +17,18 @@
 #define CAUSTICS_PRIMARY_RADIANCE 43
 #define CAUSTICS_SECONDARY_RADIANCE 44
 #define CAUSTICS_ACTIVE_PIXELS 45
+#define CAUSTICS_SURFACE_INPUT 46
+#define CAUSTICS_ENVELOPE 47
 
 struct WaterCausticsArgs {
   float strength;
   float scale;
   float speed;
   float maxDepth;
-  vec3 transmittance;
-  float transmittanceDistance;
+  // This row supplies the shared solar projection while retaining the 128-byte layout.
+  float solarSurfaceHeight;
+  uint solarProjectionEnabled;
+  vec2 solarPadding; // Envelope final mip level and maximum texture dimension.
   uint randomized;
   float reflectedStrength;
   float reflectedHeight;
@@ -57,5 +61,5 @@ struct WaterCausticsArgs {
   // Reuses the word that was an unused `localPadding0`, keeping the 128-byte layout
   // and every other member offset unchanged.
   float dispersion;
-  float localPadding1;
+  float solarContrast;
 };
