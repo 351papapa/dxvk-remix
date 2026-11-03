@@ -1,5 +1,13 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Exclude submerged surfaces from puddles
+
+Actual animated-water boundaries suppress ground puddles and their rain-contact
+particles. A cached water-height test covers mapped ground; shoreline ambiguity
+and stacked surfaces query matching ordered and unordered geometry. Water above
+a solid floor does not suppress puddles in the room below it. No options or
+preset values change. Commits: this change.
+
 ## 2026-11-04 — Terrain puddles and retained surface wetness
 
 Puddles use a rising water level over small ground unevenness and an optional

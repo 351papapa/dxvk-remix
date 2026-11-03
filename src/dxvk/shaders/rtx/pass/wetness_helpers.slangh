@@ -22,6 +22,7 @@
 #pragma once
 #include "rtx/utility/procedural_noise.slangh"
 #include "rtx/pass/instance_definitions.h"
+#include "rtx/pass/rain_map/rain_map_water.slangh"
 
 // Puddle water level, rain-map sampling and wind ripples are adapted from xoxor4d/dxvk-remix,
 // commit 7f5210e1a7cd1356bf0271230f82e6132b08ad8c, with world-unit and surface-tag integration.
@@ -41,9 +42,7 @@ float2 wetGroundPosition(float3 position) { return cb.isZUp ? position.xy : posi
 float3 wetWorldVector(float3 value) { return cb.isZUp ? value : value.xzy; }
 
 bool wetStaticGround(Surface surface) {
-  const uint wetClass = surface.wetnessTag >> 24;
-  return surface.isStatic && surface.isFullyOpaque && !surface.isParticle && !surface.isAnimatedWater
-    && !surface.isDecal && !surface.isPlayerModel && wetClass != 1u && wetClass != 3u;
+  return rainMapStaticGround(surface);
 }
 
 float wetRainIntensity(uint tag) {
@@ -72,6 +71,63 @@ float4 wetSampleRainMap(float2 ground, out float weight) {
   const float units = max(cb.metersToWorldUnitScale, 0.0001f);
   weight = value.y > args.rainMapTraceBottom - 0.5f * units ? fade : 0.0f;
   return value;
+}
+
+bool wetUnderwater(float3 position, float rainMapWeight, bool onMappedGround) {
+  const WetnessArgs args = cb.wetnessArgs;
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  const float height = wetUpNormal(position);
+  if (onMappedGround && rainMapWeight >= 0.999f) {
+    const float2 grid = (wetGroundPosition(position) - float2(args.rainMapOriginX, args.rainMapOriginY))
+      / args.rainMapTexel - 0.5f;
+    const int2 cell = int2(floor(grid));
+    const float2 fraction = frac(grid);
+    const int2 offsets[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
+    const float weights[4] = {
+      (1.0f - fraction.x) * (1.0f - fraction.y), fraction.x * (1.0f - fraction.y),
+      (1.0f - fraction.x) * fraction.y, fraction.x * fraction.y
+    };
+    uint wetCells = 0;
+    bool sameGround = true;
+    float groundHeight = 0.0f;
+    float minWaterHeight = 3.402823e38f;
+    float maxWaterHeight = -3.402823e38f;
+    [unroll]
+    for (uint i = 0; i < 4; ++i) {
+      const float4 value = wetnessRainMapHeight.Load(int3(cell + offsets[i], 0));
+      sameGround = sameGround && value.x > args.rainMapTraceBottom - 0.5f * units;
+      groundHeight += value.x * weights[i];
+      if (value.w > 0.5f) {
+        wetCells += 1;
+        minWaterHeight = min(minWaterHeight, value.z);
+        maxWaterHeight = max(maxWaterHeight, value.z);
+      }
+    }
+    // Relief tolerates half a meter, but water classification must distinguish closely stacked floors.
+    if (sameGround && abs(groundHeight - height) < 0.002f * units) {
+      if (!wetCells) {
+        return false;
+      }
+      if (wetCells == 4u && height < minWaterHeight - 0.01f * units) {
+        return true;
+      }
+      if (wetCells == 4u && height > maxWaterHeight + 0.01f * units) {
+        return false;
+      }
+    }
+  }
+
+  // Shore edges, stacked surfaces and positions outside the map use their actual water boundary.
+  float waterHeight;
+  const float reach = max(100.0f, args.puddleDetailDistance) * units;
+  return rainMapWaterAbove(position, reach, waterHeight);
+}
+
+bool wetUnderwater(float3 position) {
+  float weight;
+  const float4 rainMap = wetSampleRainMap(wetGroundPosition(position), weight);
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  return wetUnderwater(position, weight, weight > 0.5f && abs(rainMap.y - wetUpNormal(position)) < 0.5f * units);
 }
 
 float wetRainExposureRay(float3 position) {
@@ -119,6 +175,9 @@ WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStren
   float rainMapWeight;
   const float4 rainMap = wetSampleRainMap(ground, rainMapWeight);
   const bool onMappedGround = rainMapWeight > 0.5f && abs(rainMap.y - wetUpNormal(position)) < 0.5f * units;
+  if (wetUnderwater(position, rainMapWeight, onMappedGround)) {
+    return result;
+  }
   const float mapWeight = args.rainMapEnabled ? rainMapWeight : 1.0f;
   result.rainExposure = 1.0f;
   if (onMappedGround) {

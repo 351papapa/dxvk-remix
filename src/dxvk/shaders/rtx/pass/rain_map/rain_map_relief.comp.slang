@@ -8,7 +8,7 @@
 
 float2 rainMapLoad(int2 texel) {
   const int last = int(cb.wetnessArgs.rainMapResolution) - 1;
-  return rainMapHeightInput[clamp(texel, int2(0, 0), int2(last, last))];
+  return rainMapHeightInput[clamp(texel, int2(0, 0), int2(last, last))].xy;
 }
 
 bool rainMapLoadHeight(int2 texel, out float height) {

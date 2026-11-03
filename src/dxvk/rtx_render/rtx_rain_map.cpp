@@ -90,7 +90,7 @@ namespace dxvk {
     }
     Rc<DxvkContext> context = &ctx;
     const VkExtent3D extent = { resolution, resolution, 1 };
-    m_height = Resources::createImageResource(context, "Rain map height", extent, VK_FORMAT_R32G32_SFLOAT);
+    m_height = Resources::createImageResource(context, "Rain map ground and water height", extent, VK_FORMAT_R32G32B32A32_SFLOAT);
     m_map = Resources::createImageResource(context, "Rain map", extent, VK_FORMAT_R32G32B32A32_SFLOAT);
     m_resolution = resolution;
     m_traced = false;
@@ -109,6 +109,7 @@ namespace dxvk {
     ctx.bindCommonRayTracingResources(rtOutput);
     // The common descriptor must not sample the image written by the relief dispatch.
     ctx.bindResourceView(BINDING_RAIN_MAP, placeholderView(ctx), nullptr);
+    ctx.bindResourceView(BINDING_RAIN_MAP_HEIGHT, placeholderView(ctx), nullptr);
     ctx.bindResourceView(RAIN_MAP_BINDING_HEIGHT_OUTPUT, m_height.view, nullptr);
     ctx.getCommandList()->trackResource<DxvkAccess::Write>(m_height.image);
     ctx.bindShader(VK_SHADER_STAGE_COMPUTE_BIT, RainMapTraceShader::getShader());
@@ -141,6 +142,14 @@ namespace dxvk {
     if (m_enabled && m_traced && m_dispatchedFrame == m_preparedFrame && m_map.isValid()) {
       ctx.getCommandList()->trackResource<DxvkAccess::Read>(m_map.image);
       return m_map.view;
+    }
+    return placeholderView(ctx);
+  }
+
+  Rc<DxvkImageView> RtxRainMap::heightView(RtxContext& ctx) {
+    if (m_enabled && m_traced && m_dispatchedFrame == m_preparedFrame && m_height.isValid()) {
+      ctx.getCommandList()->trackResource<DxvkAccess::Read>(m_height.image);
+      return m_height.view;
     }
     return placeholderView(ctx);
   }

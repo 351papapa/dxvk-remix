@@ -25,11 +25,18 @@ The map fades over its outer fifth, and points away from mapped ground do not
 inherit that ground's depression. Bridge decks use an upward rain ray and the
 procedural water level. Existing no-rain zones and force-disable rules still apply.
 
+Actual animated-water geometry excludes submerged ground from puddles and rain
+contact particles. The map caches water height above each ground texel; ambiguous
+shore edges and stacked surfaces use an upward query against the matching ordered
+and unordered scene. A nearer solid surface blocks water above another room.
+This uses water geometry in the scene, not a global sea level or camera medium.
+
 This is a height-field pooling approximation, not fluid simulation. A single
 height/cover layer cannot fully represent stacked floors. Only geometry resident
 in the scene acceleration structure can contribute. At default resolution there
-are 512 x 512 downward ray queries each frame, plus 16 relief samples and the
-cover tent filter (normally 13 x 13 taps, capped at 25 x 25). Measure this GPU cost
+are 512 x 512 downward ray queries each frame and water-boundary queries for valid
+ground texels, plus 16 relief samples and the cover tent filter (normally 13 x 13
+taps, capped at 25 x 25). Measure this GPU cost
 in representative scenes; this feature does not promise an FPS gain.
 
 ## Configuration

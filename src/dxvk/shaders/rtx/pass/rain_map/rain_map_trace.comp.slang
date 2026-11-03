@@ -7,6 +7,7 @@
 #include "rtx/pass/instance_definitions.slangh"
 #include "rtx/utility/math.slangh"
 #include "rtx/concept/surface/surface.slangh"
+#include "rtx/pass/rain_map/rain_map_water.slangh"
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -39,9 +40,7 @@ void main(uint2 threadId : SV_DispatchThreadID) {
       continue;
     }
     const Surface surface = surfaces[nonuniformEXT(id)];
-    const uint wetClass = surface.wetnessTag >> 24;
-    if (!surface.isStatic || !surface.isFullyOpaque || surface.isParticle || surface.isAnimatedWater
-        || surface.isDecal || surface.isPlayerModel || wetClass == 1u || wetClass == 3u) {
+    if (!rainMapStaticGround(surface)) {
       continue;
     }
     const float height = args.rainMapTraceTop - query.CandidateTriangleRayT();
@@ -50,10 +49,14 @@ void main(uint2 threadId : SV_DispatchThreadID) {
   }
 
   if (bottom > args.rainMapTraceTop) {
-    rainMapHeightOutput[threadId] = float2(args.rainMapTraceBottom - units);
+    rainMapHeightOutput[threadId] = float4(args.rainMapTraceBottom - units, args.rainMapTraceBottom - units, 0.0f, 0.0f);
     return;
   }
   const float minCoverHeight = max(args.rainOcclusionMinHeight, 0.01f * units);
   const float cover = top - bottom >= minCoverHeight ? top : bottom;
-  rainMapHeightOutput[threadId] = float2(bottom, cover);
+  const float3 groundPosition = cb.isZUp ? float3(ground, bottom) : float3(ground.x, bottom, ground.y);
+  float waterHeight;
+  const float waterReach = max(args.rainMapTraceTop - bottom, max(100.0f, args.puddleDetailDistance) * units);
+  const bool waterValid = rainMapWaterAbove(groundPosition, waterReach, waterHeight);
+  rainMapHeightOutput[threadId] = float4(bottom, cover, waterHeight, float(waterValid));
 }

@@ -2172,9 +2172,14 @@ namespace dxvk {
     bindResourceBuffer(BINDING_SURFACE_MATERIAL_DATA_BUFFER, materials != nullptr ? DxvkBufferSlice(materials) : DxvkBufferSlice());
     bindResourceBuffer(BINDING_WETNESS_ZONES, m_wetnessZoneBuffer != nullptr ? DxvkBufferSlice(m_wetnessZoneBuffer) : DxvkBufferSlice());
     bindResourceView(BINDING_RAIN_MAP, getCommonObjects()->metaRainMap().view(*this), nullptr);
+    bindResourceView(BINDING_RAIN_MAP_HEIGHT, getCommonObjects()->metaRainMap().heightView(*this), nullptr);
+    const auto unordered = getResourceManager().getTLAS(Tlas::Unordered).accelStructure;
+    bindAccelerationStructure(BINDING_ACCELERATION_STRUCTURE_UNORDERED, unordered);
     bindResourceSampler(BINDING_ATMOSPHERE_SKY_VIEW_SAMPLER,
       getResourceManager().getSampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
-    return constants != nullptr && surfaces != nullptr && materials != nullptr;
+    const bool unorderedReady = !getResourceManager().getRaytracingOutput().m_raytraceArgs.enableSeparateUnorderedApproximations
+      || unordered != nullptr;
+    return constants != nullptr && surfaces != nullptr && materials != nullptr && unorderedReady;
   }
 
   void RtxContext::bindCommonRayTracingResources(const Resources::RaytracingOutput& rtOutput) {
@@ -2231,6 +2236,7 @@ namespace dxvk {
     getCommonObjects()->metaNumos().bindCommonResources(*this);
     getCommonObjects()->metaWater().bindShoreWetnessResources(this);
     bindResourceView(BINDING_RAIN_MAP, getCommonObjects()->metaRainMap().view(*this), nullptr);
+    bindResourceView(BINDING_RAIN_MAP_HEIGHT, getCommonObjects()->metaRainMap().heightView(*this), nullptr);
   }
 
   void RtxContext::bindResourceView(const uint32_t slot, const Rc<DxvkImageView>& imageView, const Rc<DxvkBufferView>& bufferView)

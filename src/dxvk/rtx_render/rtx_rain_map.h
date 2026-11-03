@@ -24,6 +24,7 @@ namespace dxvk {
 
     // Returns the map matching the most recently prepared constants, or a defined miss texture.
     Rc<DxvkImageView> view(RtxContext& ctx);
+    Rc<DxvkImageView> heightView(RtxContext& ctx);
 
   private:
     void ensureResources(RtxContext& ctx, uint32_t resolution);

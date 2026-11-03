@@ -57,6 +57,7 @@
 #define BINDING_SHORE_WETNESS_FIELD 235
 #define BINDING_SHORE_WETNESS_HEIGHT 236
 #define BINDING_RAIN_MAP 237
+#define BINDING_RAIN_MAP_HEIGHT 238
 #define BINDING_WINDOW_ISLANDS                   222
 
 // Sky provider (NUMOS, submodules/numos) outputs, at slots 200-217, clear of pass-local slots. The
@@ -122,6 +123,7 @@
   STRUCTURED_BUFFER(BINDING_WINDOW_ISLANDS)                       \
   TEXTURE2D(BINDING_SHORE_WETNESS_FIELD)                          \
   TEXTURE2D(BINDING_RAIN_MAP)                                    \
+  TEXTURE2D(BINDING_RAIN_MAP_HEIGHT)                             \
   TEXTURE2D(BINDING_SHORE_WETNESS_HEIGHT)                         \
   STRUCTURED_BUFFER(BINDING_WETNESS_ZONES)                         \
   STRUCTURED_BUFFER(BINDING_VOLUME_MATERIAL_DATA_BUFFER)            \

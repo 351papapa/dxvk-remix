@@ -4,12 +4,12 @@
 
 #include "rtx/pass/rain_map/rain_map_binding_indices.h"
 
-// Lowest opaque static height and cover height, measured on the world up axis.
-layout(binding = RAIN_MAP_BINDING_HEIGHT_OUTPUT, rg32f)
-RWTexture2D<float2> rainMapHeightOutput;
+// Ground and cover heights, nearest water height above that ground, and water validity.
+layout(binding = RAIN_MAP_BINDING_HEIGHT_OUTPUT, rgba32f)
+RWTexture2D<float4> rainMapHeightOutput;
 
 layout(binding = RAIN_MAP_BINDING_HEIGHT_INPUT)
-Texture2D<float2> rainMapHeightInput;
+Texture2D<float4> rainMapHeightInput;
 
 // Rain cover, ground height, depression in world units, and dimensionless slope.
 layout(binding = RAIN_MAP_BINDING_MAP_OUTPUT, rgba32f)

@@ -397,6 +397,9 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
     if (particleSystem.desc.spawnOnWetRoads) {
       uint surfaceId;
       float wet = wetRoadAtContact(candidate.spawnPosition, surfaceId, contactPosition);
+      if (wet > 0.0f && wetUnderwater(contactPosition)) {
+        wet = 0.0f;
+      }
       contactValid = wet > 0.0f;
       candidate.color.w *= wet;
     } else {
