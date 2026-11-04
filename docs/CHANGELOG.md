@@ -1,5 +1,11 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Bridge retained interface lookup
+
+The bridge server keeps the validated V2 and V3 function tables for each
+loaded runtime. Alternating between a V3 update and a shared V2 command can
+reuse both tables. Failed lookups remain retryable.
+
 ## 2026-11-04 — Scheduled captures retain original mesh identities
 
 Frame-triggered USD capture requests original surface identities before the

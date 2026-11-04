@@ -63,6 +63,7 @@ util_header = files([
   'util_remixapi_gpu_instancing.h',
   'util_remixapi_light_update.h',
 	'util_remixapi_retained_error.h',
+	'util_remixapi_retained_interface_cache.h',
 	'util_scopedlock.h',
 	'util_seh.h',
 	'util_semaphore.h',

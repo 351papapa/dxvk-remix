@@ -24,6 +24,7 @@
 #include "util_remixapi_gpu_instancing.h"
 #include "util_remixapi_light_update.h"
 #include "util_remixapi_retained_error.h"
+#include "util_remixapi_retained_interface_cache.h"
 #include <remix/remix_game_surface.h>
 #include <remix/remix_legacy_surface_validation.h>
 #include <windows.h>
@@ -396,8 +397,7 @@ void ProcessDeviceCommandQueue() {
   uint64_t lightUpdateCount = 0;
   uint64_t lightUpdateErrors = 0;
   remixapi_ErrorCode lightUpdateError = REMIXAPI_ERROR_CODE_SUCCESS;
-  remixapi_RetainedInterface retainedInterface = {};
-  HMODULE retainedModule = nullptr;
+  remixapi::retained::InterfaceCache retainedInterfaces;
   uint64_t retainedBridgeEpoch = 0;
   remixapi_ErrorCode retainedBridgeError = REMIXAPI_ERROR_CODE_SUCCESS;
   // Loop until the client sends terminate instruction
@@ -2981,20 +2981,11 @@ void ProcessDeviceCommandQueue() {
         const uint32_t version = command == RemixApi_RetainedGetInterfaceV3 || command == RemixApi_RetainedUpsertV3
           ? REMIXAPI_RETAINED_VERSION : REMIXAPI_RETAINED_VERSION_2;
         remixapi_RetainedInterface retained = {};
-        auto result = REMIXAPI_ERROR_CODE_SUCCESS;
-        if (retainedModule != ghModule || !retainedInterface.BatchUpsert || retainedInterface.version != version) {
-          retainedInterface = {};
-          retainedModule = ghModule;
+        auto result = retainedInterfaces.get(ghModule, version, [&](uint32_t requested, remixapi_RetainedInterface& table) {
           const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedInterface>(
             GetProcAddress(ghModule, REMIXAPI_GET_RETAINED_INTERFACE_NAME));
-          result = getter ? getter(version, sizeof(retainedInterface), &retainedInterface)
-                          : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
-          if (result == REMIXAPI_ERROR_CODE_SUCCESS && retainedInterface.version != version) {
-            result = REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
-            retainedInterface = {};
-          }
-        }
-        retained = retainedInterface;
+          return getter ? getter(requested, sizeof(table), &table) : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+        }, retained);
         uint64_t epoch = 0;
         if (!getInterface && command != RemixApi_RetainedStatus) {
           void* data = nullptr;
@@ -3073,7 +3064,7 @@ void ProcessDeviceCommandQueue() {
           message.send_data(static_cast<uint32_t>(result));
           message.send_data(sizeof(status), &status);
         } else if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
-          remixapi::retained::latchError(retained, retainedBridgeEpoch, result, retainedBridgeError);
+          remixapi::retained::latchError(retained.Clear ? retained : retainedInterfaces.errorInterface(), retainedBridgeEpoch, result, retainedBridgeError);
           Logger::err("Retained instance command failed; replay suspended until Clear");
         }
         break;
