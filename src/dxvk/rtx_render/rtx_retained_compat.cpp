@@ -718,7 +718,7 @@ void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
       " cleanReuses=", m_orderedStats.cleanReuses, " rebuilds=", m_orderedStats.rebuilds,
       " failures=", m_orderedStats.failures, " transformCandidates=", m_orderedStats.transformCandidates,
       " transformReuses=", m_orderedStats.transformReuses, " transformEmptyReuses=", m_orderedStats.transformEmptyReuses,
-      " transformMultipleReuses=", m_orderedStats.transformMultipleReuses));
+      " transformSingleReuses=", m_orderedStats.transformSingleReuses, " transformMultipleReuses=", m_orderedStats.transformMultipleReuses));
     if (traceOrderedMoves()) {
       constexpr const char* names[] = { "accepted", "dirty", "hidden", "priorFrame", "inspect", "childCount", "noChild",
         "notDirect", "queued", "expansionEmpty", "expansionOriginal", "expansionSingle", "expansionMultiple",
@@ -806,6 +806,7 @@ void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, con
         entry.published.publish(entry.state, entry.record);
         ++m_orderedStats.transformReuses;
         if (kind == retained_compat::OrderedMoveKind::EmptyReplacement) ++m_orderedStats.transformEmptyReuses;
+        if (kind == retained_compat::OrderedMoveKind::SingleReplacement) ++m_orderedStats.transformSingleReuses;
         if (kind == retained_compat::OrderedMoveKind::MultipleReplacement) ++m_orderedStats.transformMultipleReuses;
       } else {
         entry.dirty = true;

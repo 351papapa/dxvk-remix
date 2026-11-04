@@ -300,6 +300,11 @@ namespace dxvk {
           kind = retained_compat::OrderedMoveKind::EmptyReplacement;
           return true;
         }
+        if (!entry.subs.empty() && tryMoveOrderedParts(entry, absolute)) {
+          kind = entry.subs.size() == 1 ? retained_compat::OrderedMoveKind::SingleReplacement
+                                        : retained_compat::OrderedMoveKind::MultipleReplacement;
+          return true;
+        }
       }
       if (!gate) return false;
       if (entry.expansion && (!entry.expansion->graphTemplates.empty() || !entry.expansion->lightTemplates.empty())) return reject(Gate::ExpansionServices);
@@ -419,9 +424,7 @@ namespace dxvk {
     if (!retained_compat::updateRigidParts(entry.subs.size(), check, update)) {
       return false;
     }
-    auto& transforms = entry.desc.drawCall.modifyTransformData();
-    transforms.objectToWorld = absolute;
-    transforms.objectToView = transforms.worldToView * absolute;
+    retained_compat::storeOrderedTransform(entry.desc.drawCall.modifyTransformData(), absolute);
     applyVisibility(entry);
     return true;
   }

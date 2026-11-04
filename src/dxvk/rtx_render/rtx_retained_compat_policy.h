@@ -12,7 +12,7 @@
 
 namespace dxvk::retained_compat {
 
-enum class OrderedMoveKind : uint8_t { Original, EmptyReplacement, MultipleReplacement };
+enum class OrderedMoveKind : uint8_t { Original, EmptyReplacement, SingleReplacement, MultipleReplacement };
 
 template<class Bucket>
 bool currentOrderedBucket(const std::shared_ptr<const Bucket>& built, const std::shared_ptr<const Bucket>& live) {
