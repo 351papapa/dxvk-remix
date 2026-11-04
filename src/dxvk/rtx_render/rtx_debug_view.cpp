@@ -162,6 +162,8 @@ namespace dxvk {
                                 "4: Roughness, 5: Metallic, 6: Emissive"},
 
         {DEBUG_VIEW_CASCADE_LEVEL, "Terrain: Cascade Level"},
+        {DEBUG_VIEW_WATER_SHORE_PROBE, "Water: Shoreline Probes",
+          "Resolved water only. Red is fully faded, green is unchanged deep water, and yellow is the transition."},
         {DEBUG_VIEW_WETNESS_PUDDLES, "Terrain: Puddles",
           "Red = standing water coverage, green = damp shore, blue = base ground wetness times 0.3. "
           "Submerged ground has no red or green."},

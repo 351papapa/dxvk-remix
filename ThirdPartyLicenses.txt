@@ -5973,7 +5973,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-xoxor4d/dxvk-remix terrain puddles and rain map
+xoxor4d/dxvk-remix terrain puddles, rain map and translucent water shoreline probes
 Source: https://github.com/xoxor4d/dxvk-remix/tree/7f5210e1a7cd1356bf0271230f82e6132b08ad8c
 Adapted for this runtime; see CREDITS.md.
 

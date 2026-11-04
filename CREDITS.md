@@ -169,3 +169,11 @@ VC surface classifications and the existing weather/no-rain-zone integration.
 The existing NVIDIA MIT notices and unmodified procedural-noise implementation
 are retained. No code from the unlicensed gta4-rtx plugin is copied. Surface
 wetness retention is an independently implemented state machine.
+
+## Translucent water shoreline probes
+
+The ground probes, object-distance probe and thin-layer transition in
+`water_shore_probe.slangh` are adapted from xoxor4d/dxvk-remix game/gta4 at
+`7f5210e1a7cd1356bf0271230f82e6132b08ad8c` under its zlib/libpng license.
+The VC adaptation selects translucent AnimatedWater surfaces and preserves the
+native camera-water volume when the camera is submerged.

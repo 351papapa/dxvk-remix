@@ -2013,6 +2013,7 @@ namespace dxvk {
     // Underwater look, see integrator_direct.slangh (after Mochabeanproto/dxvk-remix legacyrt ef6f42f,
     // used with permission).
     constants.cameraWaterVolumeActive = m_common->metaWater().cameraMedium().active;
+    WaterSystem::fillShoreProbeArgs(constants);
     constants.cameraWaterSurfaceHeight = m_common->metaWater().cameraLightSurface().height;
     constants.cameraWaterSurfaceValid = m_common->metaWater().cameraLightSurface().valid;
     constants.underwaterEnable = RtxOptions::Underwater::enable() && !m_common->metaWater().cameraMedium().active ? 1u : 0u;

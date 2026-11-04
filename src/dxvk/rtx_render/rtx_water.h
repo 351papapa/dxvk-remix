@@ -11,6 +11,7 @@
 #include "../../../public/include/remixapi/water_controls.h"
 
 struct WetnessArgs;
+struct RaytraceArgs;
 
 namespace dxvk {
 class RtCamera;
@@ -37,6 +38,7 @@ public:
   void fillShoreWetnessArgs(WetnessArgs& args);
   void bindShoreWetnessResources(RtxContext* ctx);
   static WaterOpticalProperties opticalProperties();
+  static void fillShoreProbeArgs(RaytraceArgs& args);
   void updateCameraMedium(const SceneManager& scene);
   const WaterMediumState& cameraMedium() const { return m_cameraMedium; }
   const WaterLightSurface& cameraLightSurface() const { return m_cameraLightSurface; }

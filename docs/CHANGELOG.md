@@ -1,5 +1,13 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Optional shoreline probes for translucent water
+
+Enable **Shoreline probes** under Water to fade shallow intersections with
+static ground and nearby opaque objects. The default is off. The probes use
+world units and preserve the underwater camera volume. Set `objectFadeWidth`
+to zero to disable the view-direction probe. Debug view 892 shows resolved
+water in red where fully faded and green where unchanged.
+
 ## 2026-11-04 — Live plugin INI settings and DLSS-NR diagnostics
 
 Game integrations may supply `rtx-remix/host-settings.txt` beside the game to expose

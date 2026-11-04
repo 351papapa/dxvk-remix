@@ -21,6 +21,17 @@
 
 namespace dxvk {
 namespace {
+struct ShoreProbeOptions {
+  RTX_OPTION("rtx.water", bool, shoreFadeEnable, false, "Trace the opaque bottom and nearby objects at translucent AnimatedWater hits to soften shorelines. Disable to use the original water material without shore probes.");
+  RTX_OPTION_ARGS("rtx.water", float, shoreFadeDistance, 10.0f, "Downward ground probe range in world units, raised to cover the animated fade band.", args.minValue = 0.0f);
+  RTX_OPTION_ARGS("rtx.water", float, shoreCutDepth, 0.25f, "Depth in world units below which calm shoreline water fades out.", args.minValue = 0.0f);
+  RTX_OPTION_ARGS("rtx.water", float, shoreFadeWidth, 0.2f, "Depth range in world units over which shoreline water fades in.", args.minValue = 0.0f);
+  RTX_OPTION_ARGS("rtx.water", float, shoreHeightScale, 2.0f, "Animated waterline displacement in world units per unit of normal slope. Use zero for a depth-only fade.", args.minValue = 0.0f);
+  RTX_OPTION_ARGS("rtx.water", float, shoreProbeSpread, 0.5f, "Horizontal offset in world units for the two crack-confirmation probes after a ground miss, in addition to the ray footprint.", args.minValue = 0.0f);
+  RTX_OPTION_ARGS("rtx.water", float, objectFadeWidth, 1.0f, "Soft intersection width along the view ray in world units. Zero disables the object probe.", args.minValue = 0.0f);
+  RTX_OPTION("rtx.water", bool, shoreThinLayer, true, "Treat thick water inside the partial shoreline fade as a thin layer at the measured depth. Deep water keeps volumetric absorption.");
+};
+
 struct CameraWaterParticleOptions {
   RTX_OPTION("rtx.water", float, underwaterRainParticleExtinctionPerMeter, 0.0f,
     "Additional neutral extinction per meter for a submerged camera in rain, from 0 to 1. Zero keeps the dry water clarity. The particle scattering fraction controls how much light is scattered.");
@@ -50,6 +61,21 @@ WaterOpticalProperties WaterSystem::opticalProperties() {
   const float particlesPerWorldUnit = std::isfinite(worldUnitsPerMeter) && worldUnitsPerMeter > 0.0f
     ? particlesPerMeter / (std::max)(worldUnitsPerMeter, 0.000001f) : 0.0f;
   return waterOpticalProperties(transmittanceColor(), transmittanceDistance(), particlesPerWorldUnit);
+}
+
+void WaterSystem::fillShoreProbeArgs(RaytraceArgs& args) {
+  const auto nonnegative = [](float value) {
+    return std::isfinite(value) ? (std::max)(value, 0.0f) : 0.0f;
+  };
+  args.waterShoreFadeEnable = enabled() && ShoreProbeOptions::shoreFadeEnable();
+  args.waterShoreCutDepth = nonnegative(ShoreProbeOptions::shoreCutDepth());
+  args.waterShoreFadeWidth = nonnegative(ShoreProbeOptions::shoreFadeWidth());
+  args.waterShoreHeightScale = nonnegative(ShoreProbeOptions::shoreHeightScale());
+  args.waterShoreFadeDistance = (std::max)(nonnegative(ShoreProbeOptions::shoreFadeDistance()),
+    args.waterShoreCutDepth + args.waterShoreFadeWidth + args.waterShoreHeightScale);
+  args.waterShoreProbeSpread = nonnegative(ShoreProbeOptions::shoreProbeSpread());
+  args.waterObjectFadeWidth = nonnegative(ShoreProbeOptions::objectFadeWidth());
+  args.waterShoreThinLayer = ShoreProbeOptions::shoreThinLayer();
 }
 
 void WaterSystem::updateCameraMedium(const SceneManager& scene) {
@@ -454,6 +480,18 @@ void WaterSystem::showImguiSettings() {
   constexpr auto flags = ImGuiSliderFlags_AlwaysClamp;
   RemixGui::Checkbox("Enable new water system", &enabledObject());
   ImGui::BeginDisabled(!enabled());
+  if (ImGui::CollapsingHeader("Shoreline probes")) {
+    RemixGui::Checkbox("Fade translucent water near shore", &ShoreProbeOptions::shoreFadeEnableObject());
+    ImGui::BeginDisabled(!ShoreProbeOptions::shoreFadeEnable());
+    RemixGui::SliderFloat("Ground probe range", &ShoreProbeOptions::shoreFadeDistanceObject(), 0.0f, 100.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Shore cut depth", &ShoreProbeOptions::shoreCutDepthObject(), 0.0f, 5.0f, "%.3f", flags);
+    RemixGui::SliderFloat("Shore fade width", &ShoreProbeOptions::shoreFadeWidthObject(), 0.0f, 5.0f, "%.3f", flags);
+    RemixGui::SliderFloat("Waterline height scale", &ShoreProbeOptions::shoreHeightScaleObject(), 0.0f, 20.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Ground probe spread", &ShoreProbeOptions::shoreProbeSpreadObject(), 0.0f, 5.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Object fade width", &ShoreProbeOptions::objectFadeWidthObject(), 0.0f, 10.0f, "%.2f", flags);
+    RemixGui::Checkbox("Thin layer in shore transition", &ShoreProbeOptions::shoreThinLayerObject());
+    ImGui::EndDisabled();
+  }
   if (ImGui::CollapsingHeader("Water appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
     RemixGui::Checkbox("Override water material", &overrideMaterialObject());
     RemixGui::ColorEdit3("Transmittance color", &transmittanceColorObject());

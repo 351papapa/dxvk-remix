@@ -36,6 +36,7 @@
 #include "rtx/algorithm/view_distance.slangh"
 #include "rtx/algorithm/volume_lighting_consumer.slangh"
 #include "rtx/algorithm/water_volume_segment.slangh"
+#include "rtx/algorithm/water_shore_probe.slangh"
 
 #ifndef GBUFFER_FEATURE_OBJECT_PICKING
 #define GBUFFER_FEATURE_OBJECT_PICKING 1
@@ -606,6 +607,20 @@ void resolveVertex<T: IBasePayloadState>(
 
     TranslucentSurfaceMaterialInteraction translucentSurfaceMaterialInteraction =
       translucentSurfaceMaterialInteractionCreate(translucentSurfaceMaterial, surface, surfaceInteraction, rayInteraction);
+
+    // A submerged camera uses the thick interface to leave its tracked water medium.
+    if (cb.waterShoreFadeEnable != 0 && cb.cameraWaterVolumeActive == 0 && surface.isAnimatedWater) {
+      const float shore = waterShoreFade(translucentSurfaceMaterial, surfaceInteraction, rayInteraction, translucentSurfaceMaterialInteraction);
+#if defined(RAY_TRACING_PRIMARY_RAY) && (defined(RAY_PIPELINE) || (defined(GBUFFER_FEATURE_DEBUG_VIEW) && GBUFFER_FEATURE_DEBUG_VIEW))
+      if (cb.debugView == DEBUG_VIEW_WATER_SHORE_PROBE) {
+        storeInDebugView(getDispatchRaysIndex().xy, float3(1.0f - shore, shore, 0.0f));
+      }
+#endif
+      if (shore <= 0.0f && resolveVertexState.continueResolving) {
+        resolveVertexFinalContinue(ray, surfaceInteraction, teleport, teleportMatrix, resolveVertexState);
+        return;
+      }
+    }
 
     // Blend any decal(s) that happened before this interaction
     if (decalMaterialBlending && resolveVertexState.decalEncountered)

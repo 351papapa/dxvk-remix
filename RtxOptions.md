@@ -1577,6 +1577,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.localFlowDrag|float|0.35|||Local wake velocity damping per second\.|
 |rtx.water.localFlowStrength|float|1|||Boat forward flow force multiplier\.|
 |rtx.water.localFlowSwirl|float|1|||Boat counter\-rotating wake force multiplier\.|
+|rtx.water.objectFadeWidth|float|1|0||Soft intersection width along the view ray in world units\. Zero disables the object probe\.|
 |rtx.water.oceanWaveStrength|float|1.25|||Overall ocean swell and beach\-wave height multiplier, applied on the GPU\.|
 |rtx.water.overrideMaterial|bool|False|||Apply water color, distance and non\-thin\-walled shading to translucent AnimatedWater surfaces\.|
 |rtx.water.particleExtinctionPerMeter|float|0|||Added neutral suspended\-particle extinction per meter, 0 to 1\. Zero preserves authored water transmittance\. Increases the same total extinction for water materials, caustics and underwater lighting; respects scene scale\.|
@@ -1586,6 +1587,10 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.reflectedCausticsEnabled|bool|False|||Approximate sunlight reflected from water onto nearby opaque receivers\.|
 |rtx.water.reflectedCausticsHeight|float|5|||Maximum receiver height above water in world units\.|
 |rtx.water.reflectedCausticsStrength|float|1|||Reflected caustic strength, independent of underwater strength\.|
+|rtx.water.shoreCutDepth|float|0.25|0||Depth in world units below which calm shoreline water fades out\.|
+|rtx.water.shoreFadeDistance|float|10|0||Downward ground probe range in world units, raised to cover the animated fade band\.|
+|rtx.water.shoreFadeEnable|bool|False|||Trace the opaque bottom and nearby objects at translucent AnimatedWater hits to soften shorelines\. Disable to use the original water material without shore probes\.|
+|rtx.water.shoreFadeWidth|float|0.2|0||Depth range in world units over which shoreline water fades in\.|
 |rtx.water.shoreFoamEnabled|bool|False|||Continuous noise foam at rendered water/geometry intersections\. No shoreline texture cards\.|
 |rtx.water.shoreFoamFrustumCulling|bool|False|||Cull intersection foam outside the expanded main camera view\. Saves GPU contact queries and geometry work; offscreen reflections may omit foam\.|
 |rtx.water.shoreFoamLifetime|float|7|||Seconds for waterborne foam to decay to five percent without a new source\.|
@@ -1596,6 +1601,9 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.water.shoreFoamTextureScale|float|3|||World units per waterborne foam texture repeat\.|
 |rtx.water.shoreFoamWaveResponse|float|2.5|||Foam generation response to the measured GPU water\-surface rise and fall\.|
 |rtx.water.shoreFoamWidth|float|0.85|||World\-space contact distance for shoreline foam\.|
+|rtx.water.shoreHeightScale|float|2|0||Animated waterline displacement in world units per unit of normal slope\. Use zero for a depth\-only fade\.|
+|rtx.water.shoreProbeSpread|float|0.5|0||Horizontal offset in world units for the two crack\-confirmation probes after a ground miss, in addition to the ray footprint\.|
+|rtx.water.shoreThinLayer|bool|True|||Treat thick water inside the partial shoreline fade as a thin layer at the measured depth\. Deep water keeps volumetric absorption\.|
 |rtx.water.shoreWetnessLifetime|float|20|||Seconds for exposed beach wetness to decay to five percent\. The beach carries wetness, never residual foam\.|
 |rtx.water.shoreWetnessStrength|float|1|||Darkening and smoothness of terrain recently covered by the ocean\. Independent of rain wetness\.|
 |rtx.water.simulationRadius|float|54|||Circular geometric wave and interaction radius around the player, in world units \(16\-96\)\. Fixed grid resolution: larger radii reduce spatial detail rather than increase the cell count\.|

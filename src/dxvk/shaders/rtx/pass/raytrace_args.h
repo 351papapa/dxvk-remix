@@ -572,6 +572,15 @@ struct RaytraceArgs {
   float cameraWaterSurfaceHeight;
   uint cameraWaterSurfaceValid;
 
+  uint waterShoreFadeEnable;
+  float waterShoreFadeDistance;
+  float waterShoreCutDepth;
+  float waterShoreFadeWidth;
+  float waterShoreHeightScale;
+  float waterShoreProbeSpread;
+  float waterObjectFadeWidth;
+  uint waterShoreThinLayer;
+
   // NOTE: Add structs to the top section of RaytraceArgs, not the bottom.
   // NOTE: bool does not work in debug builds, use uint instead.
 };
@@ -587,5 +596,7 @@ static_assert(offsetof(RaytraceArgs, particleFroxelRawScale) == offsetof(Raytrac
 static_assert(offsetof(RaytraceArgs, cameraWaterVolumeActive) == offsetof(RaytraceArgs, particleFroxelRawScale) + 4);
 static_assert(offsetof(RaytraceArgs, cameraWaterSurfaceHeight) == offsetof(RaytraceArgs, cameraWaterVolumeActive) + 4);
 static_assert(offsetof(RaytraceArgs, cameraWaterSurfaceValid) == offsetof(RaytraceArgs, cameraWaterSurfaceHeight) + 4);
+static_assert(offsetof(RaytraceArgs, waterShoreFadeEnable) == offsetof(RaytraceArgs, cameraWaterSurfaceValid) + 4);
+static_assert(offsetof(RaytraceArgs, waterShoreThinLayer) == offsetof(RaytraceArgs, waterShoreFadeEnable) + 28);
 static_assert(sizeof(RaytraceArgs) % 16 == 0, "RaytraceArgs must cover complete constant-buffer rows.");
 #endif
