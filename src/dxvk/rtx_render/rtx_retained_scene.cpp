@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_retained_scene.h"
+#include "rtx_retained_rigid_parts.h"
 #include "rtx_retained_compat.h"
 #include "rtx_retained_compat_policy.h"
 #include "rtx_retained_batch_policy.h"
@@ -350,6 +351,77 @@ namespace dxvk {
       state.legacySurface ? &*state.legacySurface : nullptr);
     retained_compat::storeOrderedTransform(entry.desc.drawCall.modifyTransformData(), absolute);
     m_settle.push_back(instance);
+    applyVisibility(entry);
+    return true;
+  }
+
+  bool RetainedScene::tryMoveOrderedParts(Entry& entry, const Matrix4& absolute) {
+    // The caller checked the winning USD bucket, capture/picking, the frame boundary
+    // and parent visibility. Use the expanded draw set built from that same bucket.
+    const ExternalDrawState& desc = entry.desc;
+    const auto& expansion = entry.expansion;
+    if (!expansion || !expansion->lightTemplates.empty() || !expansion->graphTemplates.empty() ||
+        !expansion->lights.empty() || !expansion->graphs.empty() || !desc.frontendResolved ||
+        !desc.resolvedMaterial || !desc.inlineSubmeshes || !desc.inlineSubmeshParts ||
+        entry.subs.size() != desc.inlineSubmeshes->size() || entry.subs.size() != desc.inlineSubmeshParts->size() ||
+        entry.stamped || entry.replacement || entry.mergedPass || desc.deforming) {
+      return false;
+    }
+    const uint32_t frame = m_scene.device()->getCurrentFrameId();
+    RTX_OPTION_INVALIDATION_SCOPE(RtxOptionFlags::InvalidatesDrawcallTranslation);
+    ExternalDrawState state = desc;
+    state.drawCall.modifyTransformData().objectToWorld = rebase(absolute);
+    m_scene.prepareExternalDrawCall(state);
+    const DrawCallTransforms parent = state.drawCall.getTransformData();
+    // Most USD parts own their materials. For parts inheriting the original, the
+    // legacy fallback is provable until a live texture replacement appears. A
+    // prior merged USD material requires the normal source translation again.
+    std::optional<bool> originalMaterialValid;
+    const auto check = [&](size_t i) {
+      const Submesh& sub = entry.subs[i];
+      const auto& part = (*desc.inlineSubmeshParts)[i];
+      if (!sub.rigidOrderedPart || !sub.geometry || sub.geometry->retired || sub.geometry->key.owner ||
+          sub.geometry->key.mesh != reinterpret_cast<uintptr_t>(desc.mesh) || sub.geometry->key.submesh != i) {
+        return false;
+      }
+      const auto& blas = sub.geometry->blas;
+      const auto* instance = sub.instance;
+      if (!instance || instance->isMarkedForGC() || instance->getBlas() != &blas ||
+          instance->getSceneOwnedHandle() != entry.handle || instance->isCreatedThisFrame(frame) ||
+          instance->getFrameLastUpdated() == frame) {
+        return false;
+      }
+      if ((!part.material || part.material == desc.resolvedMaterial) && !originalMaterialValid.has_value()) {
+        const auto texture = desc.drawCall.getMaterialData().getColorTexture().getImageHash();
+        originalMaterialValid = desc.resolvedMaterial->usesLegacyDefaults() && !m_scene.m_pReplacer->getReplacementMaterial(texture);
+      }
+      // acquireGeometry's equal-input branch accepts a shared rigid BLAS even
+      // after a sibling updated it this frame. processSceneObject handles that
+      // BLAS's current previous-position buffer, independently of this instance.
+      const RasterGeometry& geometry = (*desc.inlineSubmeshes)[i];
+      return originalMaterialValid.value_or(true) &&
+        geometry.getHashForRule<rules::FullGeometryHash>() == blas.input.getGeometryData().getHashForRule<rules::FullGeometryHash>() &&
+        desc.drawCall.getSkinningState().boneHash == blas.input.getSkinningState().boneHash;
+    };
+    const auto update = [&](size_t i) {
+      Submesh& sub = entry.subs[i];
+      auto& blas = sub.geometry->blas;
+      std::shared_ptr<MaterialData> keepAlive;
+      const auto& fallback = m_scene.prepareExternalSubmeshDrawCall(state, state.inlineSubmeshes, i, keepAlive);
+      const auto& material = retained_compat::applyExpandedPart(state.drawCall, parent, (*state.inlineSubmeshParts)[i], fallback);
+      // buildDirect passes no source alpha/legacy overrides to expanded parts.
+      // Preserve the ordinary first update, including its motion and OMM listeners.
+      blas.cacheMaterial(state.drawCall.getMaterialData());
+      m_scene.m_instanceManager.processSceneObject(m_scene.m_cameraManager, m_scene.m_rayPortalManager,
+        blas, state.drawCall, material, sub.instance, nullptr, nullptr);
+      m_settle.push_back(sub.instance);
+    };
+    if (!retained_compat::updateRigidParts(entry.subs.size(), check, update)) {
+      return false;
+    }
+    auto& transforms = entry.desc.drawCall.modifyTransformData();
+    transforms.objectToWorld = absolute;
+    transforms.objectToView = transforms.worldToView * absolute;
     applyVisibility(entry);
     return true;
   }
@@ -1182,22 +1254,7 @@ namespace dxvk {
       std::shared_ptr<MaterialData> keepAlive;
       const MaterialData* materialPtr = &m_scene.prepareExternalSubmeshDrawCall(state, submeshesRef, i, keepAlive);
       if (const ExternalDrawState::SubmeshPart* part = submeshPart(state, i)) {
-        // As buildReplacementMeshDrawCallState: the prim at objectToWorld * submeshToObject, its placements, its
-        // categories and its material. Mesh replacements have no texture transform or texgen.
-        DrawCallTransforms& transforms = state.drawCall.modifyTransformData();
-        transforms = baseTransforms;
-        transforms.objectToWorld = baseTransforms.objectToWorld * part->submeshToObject;
-        transforms.objectToView = transforms.worldToView * transforms.objectToWorld;
-        if (part->meshReplacement) {
-          transforms.textureTransform = Matrix4();
-          transforms.texgenMode = TexGenMode::None;
-          transforms.instancesToObject = part->instancesToObject;
-          transforms.instancesFromHost = false;
-        }
-        state.drawCall.modifyCategoryFlags() = part->categories;
-        if (part->material != nullptr) {
-          materialPtr = part->material.get();
-        }
+        materialPtr = &retained_compat::applyExpandedPart(state.drawCall, baseTransforms, *part, *materialPtr);
       }
       const MaterialData& material = *materialPtr;
       const SceneDraw& drawCall = state.drawCall;
@@ -1335,6 +1392,12 @@ namespace dxvk {
       if (service.flags != 0) {
         m_services.push_back(service);
       }
+      // A two-sided or blended leaf still takes its real material/alpha update.
+      // Billboard lists, instancers, particles and other per-build services stay on the full path.
+      sub.rigidOrderedPart = hasParts && service.flags == 0 && !state.deforming && !state.optionalParticleDesc &&
+        !state.drawCall.getSkinningState().numBones && !state.drawCall.getTransformData().instancesToObject &&
+        !baseTransforms.instancesToObject && !instance->getBillboardCount() && !instance->usesUnorderedApproximations() &&
+        !instance->surface.alphaState.isDecal && !instance->surface.eyeParams;
       if (count == 1 && service.flags == 0 && state.frontendResolved && state.resolvedMaterial && state.inlineSubmeshes &&
           !hasParts && !state.deforming && !drawCall.getTransformData().instancesToObject && !drawCall.getSkinningState().numBones &&
           !instance->usesUnorderedApproximations() && !instance->getBillboardCount() &&

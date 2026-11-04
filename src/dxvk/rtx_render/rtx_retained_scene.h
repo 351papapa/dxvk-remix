@@ -215,6 +215,7 @@ namespace dxvk {
     struct Submesh {
       RtInstance* instance = nullptr;
       Geometry* geometry = nullptr;
+      bool rigidOrderedPart = false;  // Capture of buildDirect's immutable per-part service/instancing decision.
     };
 
     struct Entry {
@@ -328,6 +329,7 @@ namespace dxvk {
     void queueBuild(Entry& entry);
     void build(const Rc<DxvkContext>& ctx, Entry& entry, FrameStats& stats);
     bool buildDirect(const Rc<DxvkContext>& ctx, Entry& entry);
+    bool tryMoveOrderedParts(Entry& entry, const Matrix4& absolute);
     bool buildReplaced(const Rc<DxvkContext>& ctx, Entry& entry, const std::shared_ptr<const ReplacementBucket>& bucket,
                        const std::shared_ptr<const std::vector<RasterGeometry>>& submeshesRef);
     void releaseReplacement(Entry& entry);

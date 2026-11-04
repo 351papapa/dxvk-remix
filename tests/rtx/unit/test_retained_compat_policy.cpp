@@ -5,12 +5,15 @@
 // CPU tests of the policy used by Compat and RetainedScene, not a GPU visibility test.
 #define REMIX_ALLOW_X86
 #include <remix/remix_retained_validation.h>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <vector>
 #include "../../../src/dxvk/rtx_render/rtx_retained_compat_policy.h"
 #include "../../../src/util/util_matrix.h"
+#include "../../../src/dxvk/rtx_render/rtx_retained_rigid_parts.h"
 
 namespace {
 unsigned checks = 0;
@@ -213,6 +216,69 @@ void testAdmissionAndPublishedSources() {
   require(published.source == movedB && !published.pending, "applied transform without pending geometry shares immutable source");
 }
 
+void testRigidExpandedParts() {
+  using namespace dxvk;
+  enum class Texgen { None, Authored };
+  struct Transforms {
+    Matrix4 objectToWorld, objectToView, worldToView, textureTransform;
+    Texgen texgenMode = Texgen::Authored;
+    int instancesToObject = 23;
+    bool instancesFromHost = true;
+  } parent;
+  struct Draw {
+    Transforms transforms; unsigned category = 0;
+    Transforms& modifyTransformData() { return transforms; }
+    unsigned& modifyCategoryFlags() { return category; }
+  } draw;
+  struct Part {
+    Matrix4 submeshToObject;
+    bool meshReplacement = true;
+    int instancesToObject = 0;
+    unsigned categories = 0;
+    const int* material = nullptr;
+  };
+  const int original = 5, bark = 13, leaves = 29;
+  std::array<Part, 3> parts {};
+  parts[0].material = &bark; parts[0].categories = 31;
+  auto& local = parts[0].submeshToObject;
+  local[0][0] = 1.5f; local[1][1] = 1.5f; local[2][2] = 1.4f;
+  local[3].x = -0.788252f; local[3].y = -0.000046f; local[3].z = 0.012931f;
+  parts[1].material = &leaves; parts[1].categories = 63;
+  const float angle = -15.f * 3.14159265f / 180.f;
+  auto& turned = parts[1].submeshToObject;
+  turned[0][0] = 0.9f * std::cos(angle); turned[0][1] = 0.9f * std::sin(angle);
+  turned[1][0] = -turned[0][1]; turned[1][1] = turned[0][0]; turned[2][2] = 0.9f;
+  parts[2].meshReplacement = false;
+  parent.objectToWorld[0][0] = 0.f; parent.objectToWorld[0][1] = 1.f;
+  parent.objectToWorld[1][0] = -1.f; parent.objectToWorld[1][1] = 0.f;
+  parent.objectToWorld[3].x = -240.46234f; parent.objectToWorld[3].y = -1183.42578f;
+  parent.worldToView[3].x = 130.f; parent.textureTransform[3].y = 44.f;
+  std::vector<int> updates;
+  size_t failed = 1;
+  const auto run = [&] {
+    return retained_compat::updateRigidParts(parts.size(), [&](size_t i){ return i != failed; }, [&](size_t i){
+      const int& mat = retained_compat::applyExpandedPart(draw, parent, parts[i], original);
+      updates.push_back(mat);
+      const Matrix4 world = parent.objectToWorld * parts[i].submeshToObject;
+      const Matrix4 view = parent.worldToView * world;
+      require(!std::memcmp(&world, &draw.transforms.objectToWorld, sizeof(world)) &&
+              !std::memcmp(&view, &draw.transforms.objectToView, sizeof(view)), "expanded part uses parent-local matrices and current camera");
+      require(draw.category == parts[i].categories, "expanded parts retain independent categories");
+      if (i < 2) {
+        require(draw.transforms.textureTransform[3].y == 0 && draw.transforms.texgenMode == Texgen::None &&
+                draw.transforms.instancesToObject == 0 && !draw.transforms.instancesFromHost, "mesh replacement resets native texture state");
+      } else {
+        require(draw.transforms.textureTransform[3].y == 44 && draw.transforms.texgenMode == Texgen::Authored &&
+                draw.transforms.instancesToObject == 23 && draw.transforms.instancesFromHost, "includeOriginal inherits its source state");
+      }
+    });
+  };
+  require(!run() && updates.empty(), "invalid middle part never updates a healthy prefix");
+  failed = 2; require(!run() && updates.empty(), "invalid last part preserves all temporal updates for the full rebuild");
+  failed = parts.size(); require(run() && updates == std::vector<int>({bark,leaves,original}), "distinct bark, leaf and fallback materials in authored order");
+  require(!retained_compat::updateRigidParts(0, [](size_t){return true;}, [](size_t){}), "empty expansion handled separately");
+}
+
 void testRelativeTransform() {
   using namespace dxvk;
   Matrix4 parent; parent[0][0] = 2; parent[1][1] = 3; parent[3].x = 20;
@@ -400,6 +466,7 @@ void testOrderedValidation() {
 }
 int main() {
   testEmptyOrderedReplacement();
+  testRigidExpandedParts();
   testVisibilityDelta();
   testOrderedMoves();
   testOrderedValidation();
