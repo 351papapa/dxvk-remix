@@ -414,6 +414,7 @@ dxvk_src = files([
   'rtx_render/rtx_postFx.cpp',
   'rtx_render/rtx_postFx.h',
   'rtx_render/rtx_postFx_sun_flare.cpp',
+  'rtx_render/rtx_postFx_local_starbursts.cpp',
   'rtx_render/rtx_preserved_object_picking.h',
   'rtx_render/rtx_srgb_dither.cpp',
   'rtx_render/rtx_srgb_dither.h',

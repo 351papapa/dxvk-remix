@@ -31,6 +31,8 @@
 #include "rtx_light_manager.h"
 #include "rtx_lights.h"
 #include "rtx_objectpicking.h"
+#include "rtx_postFx.h"
+#include <remix/remix_local_starbursts.h>
 #include "rtx_option.h"
 #include "rtx_globals.h"
 #include "rtx_options.h"
@@ -3070,6 +3072,28 @@ namespace {
 
 extern "C"
 {
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SubmitLocalStarbursts(
+    uint32_t version, uint32_t stride, uint32_t count, const void* records) {
+    const auto src = static_cast<const remixapi_LocalStarburstSource*>(records);
+    if (!remixapi::starbursts::valid(version, stride, count, src)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    auto* device = tryAsDxvk();
+    if (!device) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    std::vector<remixapi_LocalStarburstSource> snapshot;
+    if (count) {
+      snapshot.assign(src, src + count);
+    }
+    auto lock = device->LockDevice();
+    device->EmitCs([sources = std::move(snapshot)](dxvk::DxvkContext* ctx) mutable {
+      ctx->getCommonObjects()->metaPostFx().setLocalStarbursts(
+        ctx->getDevice()->getCurrentFrameId(), ctx->getCommonObjects()->getSceneManager().clearEpoch(), std::move(sources));
+    });
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedVisibilityInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedVisibilityInterface* pOut) {
     if (!pOut || structSize != sizeof(*pOut)) {
@@ -3301,7 +3325,15 @@ extern "C"
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
     std::string value;
-    if (std::strcmp(key, "vc.api.gameSurfaceVersion") == 0 ||
+    if (std::strcmp(key, "__remix.starbursts.bridgeVersion") == 0) {
+      return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+    }
+    if (std::strcmp(key, "__remix.starbursts.runtimeVersion") == 0) {
+      if (!tryAsDxvk()) {
+        return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+      }
+      value = "1";
+    } else if (std::strcmp(key, "vc.api.gameSurfaceVersion") == 0 ||
         std::strcmp(key, "vc.api.gameTextureMaterialVersion") == 0 ||
         std::strcmp(key, "vc.api.legacySurfaceVersion") == 0 ||
         std::strcmp(key, "vc.api.zeroLegacyMaterialVersion") == 0 ||

@@ -45,6 +45,7 @@
 #include "util_modulecommand.h"
 #include "util_process.h"
 #include "util_remixapi.h"
+#include <remix/remix_local_starbursts.h>
 #include "util_seh.h"
 #include "util_semaphore.h"
 #include "util_sharedheap.h"
@@ -399,6 +400,9 @@ void ProcessDeviceCommandQueue() {
   remixapi_ErrorCode lightUpdateError = REMIXAPI_ERROR_CODE_SUCCESS;
   remixapi::retained::InterfaceCache retainedInterfaces;
   std::vector<uint64_t> retainedVisibilityIds;
+  const auto submitStarbursts = ghModule ? reinterpret_cast<PFN_remixapi_SubmitLocalStarbursts>(
+    GetProcAddress(ghModule, REMIXAPI_SUBMIT_LOCAL_STARBURSTS_NAME)) : nullptr;
+
   const auto getRetainedVisibility = [&](remixapi_RetainedVisibilityInterface& out) {
     return retainedInterfaces.getVisibility(ghModule, [](remixapi_RetainedVisibilityInterface& table) {
       const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedVisibilityInterface>(
@@ -3778,6 +3782,25 @@ void ProcessDeviceCommandQueue() {
         break;
       }
 
+      case RemixApi_SubmitLocalStarbursts: {
+        const uint32_t count = DeviceBridge::get_data();
+        void* data = nullptr;
+        const uint32_t size = count ? DeviceBridge::get_data(&data) : 0;
+        // The ring's blob may only be DWORD-aligned.
+        if (submitStarbursts && count <= REMIXAPI_LOCAL_STARBURST_LIMIT &&
+            size == count * sizeof(remixapi_LocalStarburstSource) && (!size || data)) {
+          std::array<remixapi_LocalStarburstSource, REMIXAPI_LOCAL_STARBURST_LIMIT> aligned;
+          if (size) {
+            std::memcpy(aligned.data(), data, size);
+          }
+          const auto result = submitStarbursts(1, sizeof(aligned[0]), count, aligned.data());
+          if (result != REMIXAPI_ERROR_CODE_SUCCESS) {
+            Logger::warn("[Starbursts] Runtime rejected frame snapshot.");
+          }
+        }
+        break;
+      }
+
       case RemixApi_SetGameValue:
       {
         void* key_ptr = nullptr;
@@ -3822,7 +3845,12 @@ void ProcessDeviceCommandQueue() {
         remixapi_ErrorCode result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
         uint32_t actual_size = 0;
 
-        if (std::strcmp(key_str.c_str(), remixapi::light_update::serverVersionKey) == 0) {
+        if (std::strcmp(key_str.c_str(), "__remix.starbursts.bridgeVersion") == 0) {
+          if (submitStarbursts && remixapi::g_remix.GetGameValue) {
+            result = remixapi::g_remix.GetGameValue("__remix.starbursts.runtimeVersion",
+              buf.data(), kMaxValueSize, &actual_size);
+          }
+        } else if (std::strcmp(key_str.c_str(), remixapi::light_update::serverVersionKey) == 0) {
           result = REMIXAPI_ERROR_CODE_SUCCESS;
           buf[0] = '0'; buf[1] = 0; actual_size = 2;
           if (remixapi::g_remix.GetGameValue && remixapi::g_remix.UpdateLightDefinition) {

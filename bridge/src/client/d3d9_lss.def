@@ -29,3 +29,4 @@ EXPORTS
   BridgeClient_SetOuterDevice @ 46
   remixapi_GetRetainedInterface
   remixapi_GetRetainedVisibilityInterface
+  remixapi_SubmitLocalStarbursts

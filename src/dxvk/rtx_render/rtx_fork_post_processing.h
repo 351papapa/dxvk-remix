@@ -34,6 +34,7 @@ namespace dxvk {
       Tonemapping,
       NtscVhs,
       SunFlare,
+      LocalStarbursts,
       LensRain,
       LensEffects,
       SRGBDither,

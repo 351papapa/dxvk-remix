@@ -32,6 +32,7 @@
 #include "util_remixapi.h"
 #include <remix/remix_retained_validation.h>
 #include <remix/remix_game_surface.h>
+#include <remix/remix_local_starbursts.h>
 #include <remix/remix_legacy_surface_validation.h>
 #include "util_remixapi_gpu_instancing.h"
 #include "util_remixapi_light_update.h"
@@ -749,6 +750,32 @@ constexpr bool strings_equal(char const * a, char const * b) {
 }
 
 extern "C" {
+  DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_SubmitLocalStarbursts(
+    uint32_t version, uint32_t stride, uint32_t count, const void* records) {
+    if (!g_bInterfaceInitialized) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    if (!starbursts::valid(version, stride, count, static_cast<const remixapi_LocalStarburstSource*>(records))) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    static std::atomic<bool> supported { false };
+    if (!supported.load(std::memory_order_relaxed)) {
+      char reply[2] {};
+      uint32_t size = 0;
+      if (remixapi_GetGameValue("__remix.starbursts.bridgeVersion", reply, sizeof(reply), &size) != REMIXAPI_ERROR_CODE_SUCCESS ||
+          size != 2 || reply[0] != '1' || reply[1] != 0) {
+        return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+      }
+      supported.store(true, std::memory_order_relaxed);
+    }
+    ClientMessage message(Commands::RemixApi_SubmitLocalStarbursts);
+    message.send_data(count);
+    if (count) {
+      message.send_data(stride * count, records);
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedVisibilityInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedVisibilityInterface* pOut) {
     if (!pOut || structSize != sizeof(*pOut)) {

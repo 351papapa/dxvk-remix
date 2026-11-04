@@ -6,6 +6,8 @@ grouped by purpose. The header itself
 ([`public/include/remix/remix_c.h`](../public/include/remix/remix_c.h))
 is the source of truth; this page exists to make it discoverable.
 
+Hosts that submit local lamp optics can use the optional [local starburst snapshot](../documentation/LocalStarbursts.md).
+
 To move an integration from the public `rebased-9-19` runtime to this API, see
 [`RemixApi-Migration.md`](RemixApi-Migration.md).
 For the local fixed-width catalog and captured-surface bridge extension used by existing hosts, see

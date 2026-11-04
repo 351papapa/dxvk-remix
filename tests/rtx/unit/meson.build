@@ -213,6 +213,12 @@ exe = executable('test_gbuffer_variant_coverage',  files('test_gbuffer_variant_c
 test('test_gbuffer_variant_coverage', exe, env: test_env)
 tests += exe
 
+exe = executable('test_local_starburst_packet', files('test_local_starburst_packet.cpp'),
+  include_directories : [remix_api_include_path], dependencies : test_unit_deps,
+  win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_local_starburst_packet', exe, env: test_env)
+tests += exe
+
 # Fixed-width v2/v3 boundary and the actual visibility/relative-transform policy, no runtime link.
 exe = executable('test_retained_compat_policy', files('test_retained_compat_policy.cpp'),
   include_directories : [test_include_path, remix_api_include_path], dependencies : test_unit_deps,

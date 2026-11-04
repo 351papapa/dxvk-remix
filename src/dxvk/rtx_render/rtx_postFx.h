@@ -25,6 +25,7 @@
 #include "dxvk_include.h"
 #include "dxvk_context.h"
 #include "rtx_objectpicking.h"
+#include <remix/remix_local_starbursts.h>
 #include "rtx_resources.h"
 #include "rtx_texture.h"
 
@@ -100,6 +101,17 @@ namespace dxvk {
     void showLensRainImguiSettings();
     void dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
     void showNtscImguiSettings();
+    void setLocalStarbursts(uint32_t frame, uint64_t sceneEpoch, std::vector<remixapi_LocalStarburstSource>&& sources);
+    void dispatchLocalStarbursts(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
+    void showLocalStarburstSettings();
+
+    RTX_OPTION("rtx.starbursts", bool, enabled, false, "Draw local star masks from sources submitted for this game frame.");
+    RTX_OPTION("rtx.starbursts", std::string, maskTexture, "", "Star mask texture path relative to the game root or absolute. Empty disables drawing.");
+    RTX_OPTION("rtx.starbursts", float, brightness, 1.0f, "Display-space local star brightness multiplier.");
+    RTX_OPTION("rtx.starbursts", float, angularScale, 1.0f, "Multiplier for the host-supplied apparent star width.");
+    RTX_OPTION("rtx.starbursts", int, sourceBudget, 256, "Maximum star masks drawn per frame. When capped, brighter sources have priority.");
+    RTX_OPTION("rtx.starbursts", float, endpointBias, 0.05f, "Meters before the lamp at which its occlusion ray ends to avoid self-shadowing.");
+
     void dispatchSunFlare(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
     void showSunFlareImguiSettings();
 
@@ -240,6 +252,13 @@ namespace dxvk {
     Rc<vk::DeviceFn> m_vkd;
     Rc<DxvkBuffer> m_highlightingValues;
     Resources::Resource m_dofFocusState;
+    std::vector<remixapi_LocalStarburstSource> m_localStars;
+    uint32_t m_localStarsFrame = 0;
+    uint64_t m_localStarsEpoch = 0;
+    Rc<DxvkBuffer> m_localStarInputs;
+    Rc<DxvkBuffer> m_localStarSprites;
+    TextureRef m_localStarMask;
+    std::string m_localStarPath;
     Resources::Resource m_sunFlareState;
     std::array<TextureRef, 5> m_sunFlareTextures;
     std::string m_sunFlareLoadedDirectory;

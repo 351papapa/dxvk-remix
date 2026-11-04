@@ -1,5 +1,9 @@
 ## Remix API Changelog
 
+## 2026-11-04 — Optional local starburst snapshot
+
+Added the standalone `remixapi_SubmitLocalStarbursts` version 1 export and matching bridge support. The fixed-width records describe presentation optics for the current frame. See [Local starbursts](LocalStarbursts.md).
+
 ## 2026-11-04 — Retained visibility batches
 
 Added `remixapi_GetRetainedVisibilityInterface` to the local V3 compatibility

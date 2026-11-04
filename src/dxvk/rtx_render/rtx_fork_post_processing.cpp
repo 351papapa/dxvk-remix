@@ -20,7 +20,7 @@ namespace dxvk {
 
   namespace {
     constexpr size_t kInvalidIndex = static_cast<size_t>(-1);
-    constexpr size_t kEffectCount = 9;
+    constexpr size_t kEffectCount = 10;
     constexpr const char* kExternalPrefix = "external:";
 
     std::string joinConfigIds(const std::vector<std::string>& ids) {
@@ -91,6 +91,7 @@ namespace dxvk {
       { EffectId::Tonemapping, "Tonemapping",    "tonemapping",  EffectDomain::HDR,      false },
       { EffectId::NtscVhs,     "NTSC / VHS",     "ntsc_vhs",     EffectDomain::Display, true  },
       { EffectId::SunFlare,    "Sun Flare",      "sun_flare",    EffectDomain::Display,  true  },
+      { EffectId::LocalStarbursts, "Local Starbursts", "local_starbursts", EffectDomain::Display, true },
       { EffectId::LensRain, "Lens Rain", "lens_rain", EffectDomain::Display, true },
       { EffectId::LensEffects, "Lens Effects",   "lens_effects", EffectDomain::Display,  true  },
       { EffectId::SRGBDither,  "sRGB + Dither",  "srgb_dither",  EffectDomain::Terminal, false },
@@ -143,6 +144,7 @@ namespace dxvk {
       { false, EffectId::Tonemapping, {} },
       { false, EffectId::NtscVhs, {} },
       { false, EffectId::SunFlare, {} },
+      { false, EffectId::LocalStarbursts, {} },
       { false, EffectId::LensRain, {} },
       { false, EffectId::LensEffects, {} },
       { false, EffectId::SRGBDither, {} },
@@ -222,7 +224,7 @@ namespace dxvk {
         const size_t lensIndex = findEffect(parsedOrder, "lens_effects");
         const size_t rainIndex = findEffect(parsedOrder, "lens_rain");
         const size_t flareIndex = rainIndex != kInvalidIndex ? rainIndex : lensIndex;
-        if (entry.builtInId == EffectId::SunFlare && flareIndex != kInvalidIndex) {
+        if ((entry.builtInId == EffectId::SunFlare || entry.builtInId == EffectId::LocalStarbursts) && flareIndex != kInvalidIndex) {
           parsedOrder.insert(parsedOrder.begin() + flareIndex, entry);
         } else if (entry.builtInId == EffectId::LensRain && lensIndex != kInvalidIndex) {
           parsedOrder.insert(parsedOrder.begin() + lensIndex, entry);
@@ -393,6 +395,9 @@ namespace dxvk {
       case EffectId::NtscVhs:
         ctx->dispatchPostFxNtsc(rtOutput);
         break;
+      case EffectId::LocalStarbursts:
+        ctx->getCommonObjects()->metaPostFx().dispatchLocalStarbursts(ctx, rtOutput);
+        break;
       case EffectId::SunFlare:
         ctx->getCommonObjects()->metaPostFx().dispatchSunFlare(ctx, rtOutput);
         break;
@@ -517,6 +522,9 @@ namespace dxvk {
           break;
         case EffectId::NtscVhs:
           enabledOption = &postFx.ntscEnableObject();
+          break;
+        case EffectId::LocalStarbursts:
+          enabledOption = &postFx.enabledObject();
           break;
         case EffectId::SunFlare:
           enabledOption = &postFx.sunFlareEnableObject();
@@ -648,6 +656,9 @@ namespace dxvk {
         break;
       case EffectId::NtscVhs:
         postFx.showNtscImguiSettings();
+        break;
+      case EffectId::LocalStarbursts:
+        postFx.showLocalStarburstSettings();
         break;
       case EffectId::SunFlare:
         postFx.showSunFlareImguiSettings();

@@ -1,5 +1,9 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Local lamp starbursts
+
+Hosts can submit one optional packet of starburst sources per frame. The new Local Starbursts display pass uses the host mask and finite, material-aware visibility rays for those sources. Enable and tune the pass with `rtx.starbursts.enabled`, `maskTexture`, `brightness`, `angularScale`, `sourceBudget` and `endpointBias`. The effect defaults off. See [Local starbursts](../documentation/LocalStarbursts.md).
+
 ## 2026-11-04 — Optional shoreline probes for translucent water
 
 Enable **Shoreline probes** under Water to fade shallow intersections with
