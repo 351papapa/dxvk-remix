@@ -51,7 +51,7 @@ namespace dxvk {
   // CS thread only, except the command queue's producers.
   class TransientLane;
   class RetainedCompat;
-  namespace retained_compat { enum class OrderedMoveGate : uint8_t; }
+  namespace retained_compat { enum class OrderedMoveGate : uint8_t; enum class OrderedMoveKind : uint8_t; }
 
   class RetainedScene {
     friend class TransientLane;  // The transient lane builds from the same geometry table.
@@ -76,7 +76,8 @@ namespace dxvk {
     void describe(uint64_t handle, ExternalDrawState&& state);
     // lightsFollow false leaves the lights of an expanded mesh replacement where they are.
     void setTransform(uint64_t handle, const Matrix4& absolute, bool lightsFollow = true);
-    bool tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate);
+    bool tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate,
+                             retained_compat::OrderedMoveKind& kind);
     void setVisible(uint64_t handle, bool visible);
     // The decal draw order of the entry's decal instances (ExternalDrawState::sortOrder); kept for rebuilds.
     void setSortOrder(uint64_t handle, uint8_t order);
@@ -243,6 +244,7 @@ namespace dxvk {
       // A USD mesh replacement the resolver expanded from a frontend's asset keys (buildNow), with the lights and graph
       // instances the entry owns for it.
       struct Expansion {
+        std::shared_ptr<const ReplacementBucket> sourceBucket;
         // What one prim index of the replacement is in the entry: a submesh, a light (an index into lights) or a graph.
         struct PrimSlot {
           PrimInstance::Type type = PrimInstance::Type::None;

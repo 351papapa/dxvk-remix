@@ -262,6 +262,42 @@ void testVisibilityDelta() {
   }
 }
 
+void testEmptyOrderedReplacement() {
+  using namespace dxvk;
+  using namespace dxvk::retained_compat;
+  struct Bucket { std::atomic<bool> stale {false}; std::vector<int> replacements; };
+  struct Expansion {
+    std::shared_ptr<const Bucket> sourceBucket;
+    std::vector<int> primSlots, lightTemplates, lights, graphTemplates, graphs;
+  } expansion;
+  auto built = std::make_shared<Bucket>();
+  expansion.sourceBucket = built;
+  std::shared_ptr<const Bucket> current = built;
+  require(currentOrderedBucket(expansion.sourceBucket, current) && suppressesOnly(expansion), "current empty bucket suppresses original");
+  built->replacements.push_back(1);
+  require(!suppressesOnly(expansion), "even an uncached prim or attached service needs the normal build");
+  built->replacements.clear();
+  for (auto* pending : {&expansion.primSlots, &expansion.lightTemplates, &expansion.lights, &expansion.graphTemplates, &expansion.graphs}) {
+    pending->push_back(1);
+    require(!suppressesOnly(expansion), "an expansion with a live or pending service is not empty");
+    pending->clear();
+  }
+  current.reset();
+  require(!currentOrderedBucket(expansion.sourceBucket, current), "removing a replacement restores the full build");
+  current = std::make_shared<Bucket>();
+  require(!currentOrderedBucket(expansion.sourceBucket, current), "replacement by another empty bucket still rebuilds");
+  built->stale.store(true);
+  require(!currentOrderedBucket(expansion.sourceBucket, expansion.sourceBucket), "a stale winning bucket rebuilds");
+  struct Transforms { Matrix4 objectToWorld, worldToView, objectToView; } transforms;
+  transforms.worldToView[0][0] = 2;
+  Matrix4 absolute;
+  absolute[3].x = 7;
+  absolute[1][0] = std::numeric_limits<float>::denorm_min();
+  storeOrderedTransform(transforms, absolute);
+  require(std::memcmp(&transforms.objectToWorld, &absolute, sizeof(absolute)) == 0 && transforms.objectToView[3].x == 14,
+    "suppressed original keeps the exact current matrix and derived view placement for reappearance");
+}
+
 void testOrderedMoves() {
   using namespace dxvk::retained_compat;
   struct Entry {
@@ -363,6 +399,7 @@ void testOrderedValidation() {
 }
 }
 int main() {
+  testEmptyOrderedReplacement();
   testVisibilityDelta();
   testOrderedMoves();
   testOrderedValidation();

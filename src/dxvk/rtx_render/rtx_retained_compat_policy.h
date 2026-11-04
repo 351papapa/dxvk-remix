@@ -6,10 +6,30 @@
 
 #include <cstdint>
 #include <chrono>
+#include <atomic>
 #include <memory>
 #include <remix/remix_retained_validation.h>
 
 namespace dxvk::retained_compat {
+
+enum class OrderedMoveKind : uint8_t { Original, EmptyReplacement, MultipleReplacement };
+
+template<class Bucket>
+bool currentOrderedBucket(const std::shared_ptr<const Bucket>& built, const std::shared_ptr<const Bucket>& live) {
+  return built && built == live && !built->stale.load(std::memory_order_acquire);
+}
+
+template<class Expansion>
+bool suppressesOnly(const Expansion& expansion) {
+  return expansion.sourceBucket && expansion.sourceBucket->replacements.empty() && expansion.primSlots.empty() &&
+    expansion.lightTemplates.empty() && expansion.lights.empty() && expansion.graphTemplates.empty() && expansion.graphs.empty();
+}
+
+template<class Transforms, class Matrix>
+void storeOrderedTransform(Transforms& transforms, const Matrix& absolute) {
+  transforms.objectToWorld = absolute;
+  transforms.objectToView = transforms.worldToView * absolute;
+}
 
 enum class OrderedMoveGate : uint8_t {
   Accepted, Dirty, Hidden, PriorFrame, Inspect, ChildCount, NoChild, NotDirect, Queued,

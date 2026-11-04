@@ -272,7 +272,8 @@ namespace dxvk {
     }
   }
 
-  bool RetainedScene::tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate) {
+  bool RetainedScene::tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate,
+                                         retained_compat::OrderedMoveKind& kind) {
     using Gate = retained_compat::OrderedMoveGate;
     auto reject = [&](Gate reason) { if (gate) *gate = reason; return false; };
     const auto found = m_entries.find(handle);
@@ -282,6 +283,23 @@ namespace dxvk {
     if (!entry.visible || entry.hiddenApplied) return reject(Gate::Hidden);
     if (entry.queued) return reject(Gate::Queued);
     if (entry.expansion || entry.desc.inlineSubmeshParts) {
+      if (entry.expansion && entry.desc.assetKeys && entry.desc.frontendResolved && !entry.replacement && !entry.bucket && !entry.mergedPass) {
+        const auto& buffers = m_scene.m_bufferCache;
+        if (buffers.getTotalCount() >= kBufferCacheLimit && buffers.getActiveCount() >= kBufferCacheLimit) return reject(Gate::BufferLimit);
+        uint32_t matched = 0;
+        const auto winner = m_scene.findMeshReplacements(*entry.desc.assetKeys, &matched);
+        if (!retained_compat::currentOrderedBucket(entry.expansion->sourceBucket, winner)) return reject(Gate::NewMeshReplacement);
+        if (entry.subs.empty() && entry.desc.inlineSubmeshes && entry.desc.inlineSubmeshes->empty() &&
+            entry.desc.inlineSubmeshParts && entry.desc.inlineSubmeshParts->empty() && retained_compat::suppressesOnly(*entry.expansion) &&
+            !entry.desc.optionalParticleDesc && !entry.desc.drawCall.getCategoryFlags().test(InstanceCategories::ParticleEmitter) &&
+            entry.desc.resolvedMaterial && !entry.desc.resolvedMaterial->getParticleSystemDesc()) {
+          // The active USD bucket suppresses the original and contains no prim or service.
+          // Keep its absolute host transform for the next build after a mod change.
+          retained_compat::storeOrderedTransform(entry.desc.drawCall.modifyTransformData(), absolute);
+          kind = retained_compat::OrderedMoveKind::EmptyReplacement;
+          return true;
+        }
+      }
       if (!gate) return false;
       if (entry.expansion && (!entry.expansion->graphTemplates.empty() || !entry.expansion->lightTemplates.empty())) return reject(Gate::ExpansionServices);
       if (entry.subs.empty()) return reject(Gate::ExpansionEmpty);
@@ -330,9 +348,7 @@ namespace dxvk {
     m_scene.m_instanceManager.processSceneObject(m_scene.m_cameraManager, m_scene.m_rayPortalManager,
       blas, state.drawCall, material, instance, state.alphaState ? &*state.alphaState : nullptr,
       state.legacySurface ? &*state.legacySurface : nullptr);
-    auto& transforms = entry.desc.drawCall.modifyTransformData();
-    transforms.objectToWorld = absolute;
-    transforms.objectToView = transforms.worldToView * absolute;
+    retained_compat::storeOrderedTransform(entry.desc.drawCall.modifyTransformData(), absolute);
     m_settle.push_back(instance);
     applyVisibility(entry);
     return true;
@@ -461,6 +477,7 @@ namespace dxvk {
       uint32_t matchedKey = 0;
       if (const std::shared_ptr<const ReplacementBucket> bucket = m_scene.findMeshReplacements(*state.assetKeys, &matchedKey)) {
         expansion = std::make_unique<Entry::Expansion>();
+        expansion->sourceBucket = bucket;
         if (const char* reason = expandReplacement(state, *bucket, *expansion, result.bounds, result.lightBounds)) {
           result.kind = frontend::InstanceFeedback::Kind::Rejected;
           result.reason = reason;
