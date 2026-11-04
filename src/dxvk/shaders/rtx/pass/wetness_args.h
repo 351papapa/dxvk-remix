@@ -90,6 +90,10 @@ struct WetnessArgs {
   float rainMapTexel = 0.25f;
   float rainMapTraceTop = 0.0f;
   float rainMapTraceBottom = 0.0f;
+  float worldGroundMinRoughness = 0.0f;
+  uint pad0 = 0;
+  uint pad1 = 0;
+  uint pad2 = 0;
 };
 
 #ifndef __cplusplus
@@ -102,7 +106,7 @@ float resolveWeatherWetness(uint tag, WetnessArgs wetness) {
 
 #ifdef __cplusplus
 static_assert((sizeof(WetnessArgs) & 15) == 0);
-static_assert(sizeof(WetnessArgs) == 224); // Shared C++/Slang frame-constant layout.
+static_assert(sizeof(WetnessArgs) == 240); // Shared C++/Slang frame-constant layout.
 
 #include <algorithm>
 #include <cmath>
@@ -136,6 +140,7 @@ struct WetnessOptions {
   RTX_OPTION("rtx.wetness", float, puddleEdgeWidth, 0.025f, "Water depth in meters over which a puddle edge becomes fully covered.");
   RTX_OPTION("rtx.wetness", float, puddleShoreWidth, 0.02f, "Height in meters of the damp band above the puddle water line.");
   RTX_OPTION("rtx.wetness", float, puddleShoreDarkening, 0.8f, "Albedo multiplier of the damp puddle shore.");
+  RTX_OPTION("rtx.wetness", float, worldGroundMinRoughness, 0.0f, "Minimum base roughness for rain-wet static world ground, capped at the dry material roughness. Standing water uses its own roughness. 0 disables the floor.");
   RTX_OPTION("rtx.wetness", float, puddleRoughness, 0.035f, "Roughness of standing water, from 0 to 1.");
   RTX_OPTION("rtx.wetness", float, puddleOcclusion, 0.5f, "How strongly static overhead cover suppresses puddles, from 0 to 1.");
   RTX_OPTION("rtx.wetness", float, puddleDetailDistance, 400.0f, "Maximum puddle shading distance in meters.");
@@ -190,6 +195,7 @@ public:
     args.puddleEdgeWidth = puddleEdgeWidth();
     args.puddleShoreWidth = puddleShoreWidth();
     args.puddleShoreDarkening = puddleShoreDarkening();
+    args.worldGroundMinRoughness = worldGroundMinRoughness();
     args.puddleRoughness = puddleRoughness();
     args.puddleOcclusion = puddleOcclusion();
     args.puddleDetailDistance = puddleDetailDistance();
@@ -235,6 +241,7 @@ public:
     args.puddleShoreWidth = finite(args.puddleShoreWidth, 0.02f, 0.0001f, 1.0f);
     args.puddleShoreDarkening = finite(args.puddleShoreDarkening, 0.8f, 0.0f, 1.0f);
     args.puddleAlbedoDarken = finite(args.puddleAlbedoDarken, 0.25f, 0.0f, 1.0f);
+    args.worldGroundMinRoughness = finite(args.worldGroundMinRoughness, 0.0f, 0.0f, 1.0f);
     args.puddleRoughness = finite(args.puddleRoughness, 0.035f, 0.0f, 1.0f);
     args.puddleOcclusion = finite(args.puddleOcclusion, 0.5f, 0.0f, 1.0f);
     args.puddleDetailDistance = finite(args.puddleDetailDistance, 400.0f, 0.0f, 10000.0f);

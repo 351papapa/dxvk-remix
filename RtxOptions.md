@@ -1695,6 +1695,7 @@ This file is generated from the source by `scripts/gen_rtx_options_md.py`. Run `
 |rtx.wetness.surfaceRetentionEnabled|bool|False|||Keep authored surface wetness after rain stops, then dry it gradually\. Rain impacts continue to follow the current rainfall\.|
 |rtx.wetness.waterWaveScale|float|1|||Water \(AnimatedWater\) micro\-wave size multiplier\. Larger = bigger, sparser chop\.|
 |rtx.wetness.waterWaveStrength|float|0.5|||Water \(AnimatedWater\) micro\-wave normal wobble amplitude\. 0 = off\.|
+|rtx.wetness.worldGroundMinRoughness|float|0|||Minimum base roughness for rain\-wet static world ground, capped at the dry material roughness\. Standing water uses its own roughness\. 0 disables the floor\.|
 |rtx.windowLight.enabled|bool|False|||Enable per\-window emission and clock\-driven street lamps\.|
 |rtx.windowLight.endHour|float|5|||Night end in game hours, from 0 to 24\. Night can cross midnight\.|
 |rtx.windowLight.litRatio|float|0.3|||Share of window islands lit at the start of the night, from 0 to 1\. The share falls to zero by the end hour\.|

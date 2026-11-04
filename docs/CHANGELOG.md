@@ -1,5 +1,14 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Ground puddle contours and rain impacts
+
+The second ground-noise octave now has the reference weight. Sloping ground can
+receive exposed rain impacts while standing water stays on flat ground. The new
+`rtx.wetness.worldGroundMinRoughness` defaults to zero. The VC example uses 0.2
+to separate wet ground from standing water. Debug view 891 displays the puddle,
+shore and base-wetness masks. Commits: this change.
+See [terrain wetness](../documentation/TerrainWetness.md).
+
 ## 2026-11-04 — Exclude submerged surfaces from puddles
 
 Actual animated-water boundaries suppress ground puddles and their rain-contact

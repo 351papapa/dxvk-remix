@@ -1063,9 +1063,9 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
     const bool wetnessAllowed = (wetnessTag & 0x800u) == 0u &&
       ((wetnessTag >> 24) != 2u || cb.wetnessArgs.roadOnly == 0u || (wetnessTag & 0x500u) != 0u || roughnessOnly);
     const bool bypassZones = (wetnessTag & 0x400u) != 0u || cb.wetnessArgs.respectNoRainZones == 0u;
-    const float wetStrength = wetnessAllowed
-      ? resolveWeatherWetness(wetnessTag, cb.wetnessArgs)
-        * (bypassZones ? 1.0f : wetnessExposure(surfaceInteraction.position)) : 0.0f;
+    const float zoneExposure = !wetnessAllowed ? 0.0f
+      : (bypassZones ? 1.0f : wetnessExposure(surfaceInteraction.position));
+    const float wetStrength = resolveWeatherWetness(wetnessTag, cb.wetnessArgs) * zoneExposure;
     const uint wetClass = (wetnessTag >> 24) & 0xFFu;
 
     if (wetStrength > 0.0f) {
@@ -1076,16 +1076,26 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
       const float dryRoughness = roughness;
       roughness = saturate(lerp(roughness, roughness * wetRoughnessScale, wetBlend));
 
+      const bool wetWorldGround = wetClass == 2u && wetStaticGround(surface);
+      if (wetWorldGround) {
+        roughness = max(roughness, min(dryRoughness, cb.wetnessArgs.worldGroundMinRoughness));
+      }
+
 #if defined(RAY_TRACING_PRIMARY_RAY)
-      const bool puddleEligible = wetClass == 2u && !roughnessOnly && wetStaticGround(surface);
-      const float camDist = length(surfaceInteraction.position - cameraGetWorldPosition(cb.camera));
-      const float units = max(cb.metersToWorldUnitScale, 0.0001f);
-      float wetPuddleMask = 0.0f;
-      float rainExposure = 0.0f;
-      if (puddleEligible) {
-        const WetPuddleSample puddle = wetEvaluatePuddle(surfaceInteraction.position, zNormal, wetStrength);
-        wetPuddleMask = puddle.coverage;
-        rainExposure = puddle.rainExposure;
+      if (wetWorldGround && !roughnessOnly) {
+        const float camDist = length(surfaceInteraction.position - cameraGetWorldPosition(cb.camera));
+        const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+        const float rain = wetRainIntensity(wetnessTag) * zoneExposure;
+        const float distFade = 1.0f - smoothstep(25.0f * units, 40.0f * units, camDist);
+        const float flatness = saturate((zNormal - 0.55f) / 0.45f);
+        const bool needsRainExposure = rain > 0.0f && distFade > 0.001f && flatness > 0.05f && wetBlend > 0.05f;
+        const WetPuddleSample puddle = wetEvaluatePuddle(surfaceInteraction.position, zNormal, wetStrength, needsRainExposure);
+        const float wetPuddleMask = puddle.coverage;
+#if defined(RAY_PIPELINE) || (defined(GBUFFER_FEATURE_DEBUG_VIEW) && GBUFFER_FEATURE_DEBUG_VIEW)
+        if (cb.debugView == DEBUG_VIEW_WETNESS_PUDDLES) {
+          storeInDebugView(getDispatchRaysIndex().xy, float3(wetPuddleMask, puddle.shore, wetBlend * wetStrength * 0.3f));
+        }
+#endif
         albedo *= lerp(1.0f, cb.wetnessArgs.puddleShoreDarkening, puddle.shore);
         albedo *= lerp(1.0f, cb.wetnessArgs.puddleAlbedoDarken,
           wetPuddleMask * saturate(puddle.depth / (0.02f * units)));
@@ -1098,16 +1108,9 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
             normal = normalize(normal + wetWindRipples(surfaceInteraction.position, camDist) * wetPuddleMask);
           }
         }
-      }
 
-      const float rainStrength = wetRainIntensity(wetnessTag)
-        * (bypassZones ? 1.0f : wetnessExposure(surfaceInteraction.position)) * rainExposure;
-      if (puddleEligible && rainStrength > 0.0f) {
-        const float flatW = wetUpNormal(surfaceInteraction.geometryNormal);
-        const float flatness = saturate((flatW - 0.55f) / 0.45f);
-
-        const float distFade = 1.0f - smoothstep(25.0f * units, 40.0f * units, camDist);
-        if (flatness > 0.05f && wetBlend > 0.05f && distFade > 0.001f) {
+        const float rainStrength = rain * puddle.rainExposure;
+        if (needsRainExposure && rainStrength > 0.0f) {
           const float animTime = cb.timeSinceStartSeconds * 0.4f;
           const int GRID_NEIGHBOR = 2;
           const float gridScale = max(cb.wetnessArgs.rippleGridScale, 0.5f);
@@ -1174,7 +1177,7 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
             }
 
           if (rippleMask > 0.0001f) {
-            const float normalIntensity = saturate(flatW * 2.0f) * rippleMask;
+            const float normalIntensity = saturate(zNormal * 2.0f) * rippleMask;
             normal = normalize(normal + wetWorldVector(accNorm) * normalIntensity);
             roughness = saturate(roughness + saturate(accRough) * 0.28f * rainStrength * distFade);
           }

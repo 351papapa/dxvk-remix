@@ -161,33 +161,37 @@ struct WetPuddleSample {
 };
 
 // Both surface shading and contact particles use the same height, wetness and exposure calculation.
-WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStrength) {
+WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStrength, bool needsRainExposure) {
   WetPuddleSample result = {};
   const WetnessArgs args = cb.wetnessArgs;
   const float units = max(cb.metersToWorldUnitScale, 0.0001f);
   const float cameraDistance = length(position - cameraGetWorldPosition(cb.camera));
   wetStrength = saturate(wetStrength);
-  if (wetStrength <= 0.0f || zNormal <= 0.95f || cameraDistance > args.puddleDetailDistance * units) {
+  const bool canPool = wetStrength > 0.0f && zNormal > 0.95f && cameraDistance <= args.puddleDetailDistance * units;
+  if (!canPool && !needsRainExposure) {
     return result;
   }
 
   const float2 ground = wetGroundPosition(position);
   float rainMapWeight;
   const float4 rainMap = wetSampleRainMap(ground, rainMapWeight);
+  const float mapWeight = args.rainMapEnabled ? rainMapWeight : 1.0f;
+  if (mapWeight <= 0.0f && !needsRainExposure) {
+    return result;
+  }
   const bool onMappedGround = rainMapWeight > 0.5f && abs(rainMap.y - wetUpNormal(position)) < 0.5f * units;
   if (wetUnderwater(position, rainMapWeight, onMappedGround)) {
     return result;
   }
-  const float mapWeight = args.rainMapEnabled ? rainMapWeight : 1.0f;
   result.rainExposure = 1.0f;
   if (onMappedGround) {
     result.rainExposure = 1.0f - saturate(rainMap.x);
-  } else if (cameraDistance < 120.0f * units) {
+  } else if ((needsRainExposure || args.puddleOcclusion > 0.0f) && cameraDistance < 120.0f * units) {
     // A bridge deck must not inherit the street's relief or overhead cover.
     result.rainExposure = lerp(wetRainExposureRay(position), 1.0f,
       smoothstep(60.0f * units, 120.0f * units, cameraDistance));
   }
-  if (mapWeight <= 0.0f) {
+  if (!canPool || mapWeight <= 0.0f) {
     return result;
   }
 
@@ -196,7 +200,7 @@ WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStren
   const float n1 = wetNoise(groundMeters, frequency, 53.0f).x;
   const float n2 = wetNoise(groundMeters, frequency * 2.7f, 61.0f).x;
   const float amplitude = max(args.puddleMicroAmplitude, 0.0001f) * units;
-  const float micro = (n1 + 0.35f * n2) * (amplitude / 1.35f);
+  const float micro = (n1 + 0.5f * n2) * (amplitude / 1.5f);
   const float depression = onMappedGround ? max(rainMap.z, 0.0f) * args.puddleDepressionWeight : 0.0f;
   const float slopeFade = onMappedGround
     ? 1.0f - smoothstep(args.puddleSlopeLimit, args.puddleSlopeLimit * (1.0f + args.puddleSlopeFeather), rainMap.w)
@@ -216,7 +220,7 @@ WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStren
 }
 
 float wetPuddleCoverage(float3 position, float zNormal, float wetStrength) {
-  return wetEvaluatePuddle(position, zNormal, wetStrength).coverage;
+  return wetEvaluatePuddle(position, zNormal, wetStrength, false).coverage;
 }
 
 float3 wetWindRipples(float3 position, float cameraDistance) {

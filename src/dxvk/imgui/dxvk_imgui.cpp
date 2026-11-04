@@ -3448,6 +3448,7 @@ namespace dxvk {
         RemixGui::DragFloat("Puddle edge depth (m)", &WetnessOptions::puddleEdgeWidthObject(), 0.01f, 0.0001f, 1.0f);
         RemixGui::DragFloat("Damp shore width (m)", &WetnessOptions::puddleShoreWidthObject(), 0.01f, 0.0001f, 1.0f);
         RemixGui::DragFloat("Damp shore multiplier", &WetnessOptions::puddleShoreDarkeningObject(), 0.01f, 0.0f, 1.0f);
+        RemixGui::DragFloat("Wet ground minimum roughness", &WetnessOptions::worldGroundMinRoughnessObject(), 0.01f, 0.0f, 1.0f);
         RemixGui::DragFloat("Puddle roughness", &WetnessOptions::puddleRoughnessObject(), 0.01f, 0.0f, 1.0f);
         RemixGui::DragFloat("Rain cover influence", &WetnessOptions::puddleOcclusionObject(), 0.01f, 0.0f, 1.0f);
         RemixGui::DragFloat("Puddle detail distance (m)", &WetnessOptions::puddleDetailDistanceObject(), 0.01f, 0.0f, 10000.0f);

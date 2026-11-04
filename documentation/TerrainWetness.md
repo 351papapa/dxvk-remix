@@ -10,7 +10,9 @@ cover. Cars, characters, particles, decals and animated water are excluded.
 The map window snaps to its texel grid. Distances are in meters and support both
 Y-up and Z-up scenes. The optional map and surface retention default off.
 
-The water level rises with wetness over noise minus the measured depression.
+The two signed noise samples use frequencies 1 and 2.7 relative to the cell
+size. Their weights are 2/3 and 1/3. The water level rises with wetness over
+the resulting ground height minus the measured depression.
 Slope drains the surface, a damp shore surrounds the edge, and standing water
 replaces normal-map detail and roughness. Six directional wind waves fade with
 pixel footprint. Full puddle detail is evaluated for primary/PSR hits; indirect
@@ -42,8 +44,18 @@ in representative scenes; this feature does not promise an FPS gain.
 ## Configuration
 
 Enable the existing wetness system and `rainMapEnabled` for measured depressions.
-The standard reference uses `puddleCellSize = 2.8`, `puddleCoverage = 0.7`,
-`puddleMicroAmplitude = 0.03`, and `puddleRoughness = 0.035`.
+The GTA4 Standard preset sets the cell size to 2.8 m, coverage to 0.7 and
+detail distance to 400 m. Its shipped rtx.conf sets puddle roughness to 0.035.
+The reference runtime supplies the 0.03 m microrelief amplitude.
+The VC configuration example sets `worldGroundMinRoughness = 0.2` for the
+rain-wet base of static world ground. The runtime default is 0. The floor is
+capped at the authored dry roughness before the standing-water layer is applied.
+Nearby sloping ground can show rain impacts even when its slope prevents pooling.
+Rain impacts and standing water share the same water-boundary and rain-cover check.
+
+The **Terrain: Puddles** debug view (891) shows standing-water coverage in red,
+damp shores in green and base ground wetness at 30% brightness in blue.
+Submerged ground can retain blue while its red and green channels are zero.
 Coverage controls water level, not a guaranteed percentage of screen pixels.
 
 `surfaceRetentionEnabled` holds authored world-ground wetness after rain stops for

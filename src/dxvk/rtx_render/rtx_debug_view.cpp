@@ -162,6 +162,9 @@ namespace dxvk {
                                 "4: Roughness, 5: Metallic, 6: Emissive"},
 
         {DEBUG_VIEW_CASCADE_LEVEL, "Terrain: Cascade Level"},
+        {DEBUG_VIEW_WETNESS_PUDDLES, "Terrain: Puddles",
+          "Red = standing water coverage, green = damp shore, blue = base ground wetness times 0.3. "
+          "Submerged ground has no red or green."},
 
         {DEBUG_VIEW_VIRTUAL_HIT_DISTANCE, "Virtual Hit Distance"},
         {DEBUG_VIEW_PRIMARY_DEPTH, "Primary Depth"},
