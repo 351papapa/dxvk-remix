@@ -9,7 +9,7 @@ layout(push_constant) ConstantBuffer<LocalStarburstArgs> args;
 layout(binding = STARBURST_INPUT) StructuredBuffer<LocalStarburstInput> sources;
 layout(binding = STARBURST_SPRITES) RWStructuredBuffer<LocalStarburstSprite> sprites;
 
-// Volumetric street/headlight sources may lie inside their replacement bulb. Use its
+// Street and vehicle lamp sources may lie inside their replacement bulb. Use its
 // visible surface as the endpoint only when the geometry on both sides of the
 // source belongs to the same emitting shell. Keep regular visibility up to that face.
 bool nearestFixtureFace(Ray ray, float tMin, float tMax, uint8_t mask,
@@ -96,7 +96,8 @@ void main(uint i : SV_DispatchThreadID) {
   ray.coneRadius = 0;
   ray.spreadAngle = 0;
   const uint8_t mask = uint8_t(OBJECT_MASK_OPAQUE | OBJECT_MASK_ALPHA_BLEND | OBJECT_MASK_TRANSLUCENT);
-  if (source.kind == 1u || source.kind == 2u) {
+  // Street fixtures, headlights and vehicle signal bulbs can each sit behind an emissive lens.
+  if (source.kind == 1u || source.kind == 2u || source.kind == 3u) {
     ray.tMax = fixtureVisibilityEnd(ray, distance, mask);
   }
   const VisibilityResult visibility = traceVisibilityRay<visibilityModeDisableCulling
