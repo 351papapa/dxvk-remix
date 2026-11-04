@@ -24,6 +24,7 @@
 #include <sstream>
 
 #include "rtx_context.h"
+#include <remix/remix_local_starbursts.h>
 #include "rtx_postFx.h"
 #include "dxvk_device.h"
 #include "dxvk_scoped_annotation.h"

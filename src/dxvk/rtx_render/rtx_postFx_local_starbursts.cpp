@@ -2,6 +2,7 @@
 #include <cmath>
 #include <utility>
 
+#include <remix/remix_local_starbursts.h>
 #include "rtx_postFx.h"
 #include "rtx_asset_data_manager.h"
 #include "rtx_context.h"

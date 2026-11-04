@@ -25,13 +25,14 @@
 #include "dxvk_include.h"
 #include "dxvk_context.h"
 #include "rtx_objectpicking.h"
-#include <remix/remix_local_starbursts.h>
 #include "rtx_resources.h"
 #include "rtx_texture.h"
 
 #include "../spirv/spirv_code_buffer.h"
 #include "../util/util_matrix.h"
 #include "rtx_options.h"
+
+struct remixapi_LocalStarburstSource;
 
 namespace dxvk {
 
