@@ -16,8 +16,7 @@ bool rainMapLoadHeight(int2 texel, out float height) {
   return height > cb.wetnessArgs.rainMapTraceBottom - 0.5f * max(cb.metersToWorldUnitScale, 0.0001f);
 }
 
-float rainMapLoadCover(int2 texel) {
-  const float2 value = rainMapLoad(texel);
+float rainMapCover(float2 value) {
   if (value.x <= cb.wetnessArgs.rainMapTraceBottom - 0.5f * max(cb.metersToWorldUnitScale, 0.0001f)) {
     return -1.0f;
   }
@@ -26,16 +25,55 @@ float rainMapLoadCover(int2 texel) {
   return value.y - value.x >= minCoverHeight ? 1.0f : 0.0f;
 }
 
+// An 8x8 workgroup shares the clamped cover samples in its feather footprint.
+static const int kGroupSize = 8;
+static const int kMaxRadius = 12;
+static const int kMaxTileWidth = kGroupSize + 2 * kMaxRadius;
+groupshared float s_cover[kMaxTileWidth * kMaxTileWidth];
+groupshared uint s_hasGround;
+
 [shader("compute")]
-[numthreads(8, 8, 1)]
-void main(uint2 threadId : SV_DispatchThreadID) {
+[numthreads(kGroupSize, kGroupSize, 1)]
+void main(uint2 threadId : SV_DispatchThreadID, uint2 localId : SV_GroupThreadID, uint lane : SV_GroupIndex) {
   const WetnessArgs args = cb.wetnessArgs;
-  if (any(threadId >= args.rainMapResolution)) {
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  const bool inBounds = all(threadId < args.rainMapResolution);
+  const float2 center = rainMapLoad(int2(threadId));
+  const float height = center.x;
+  const bool missing = height <= args.rainMapTraceBottom - 0.5f * units;
+  const int radius = clamp(int(round(args.rainOcclusionFeather / args.rainMapTexel)), 0, kMaxRadius);
+  const int width = kGroupSize + 2 * radius;
+  const int2 centerInTile = int2(localId) + radius;
+  s_cover[centerInTile.y * width + centerInTile.x] = rainMapCover(center);
+
+  if (radius > 0) {
+    if (lane == 0) {
+      s_hasGround = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const bool waveHasGround = WaveActiveAnyTrue(inBounds && !missing);
+    if (WaveIsFirstLane() && waveHasGround) {
+      InterlockedOr(s_hasGround, 1u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // A uniformly empty group needs no halo reads. All lanes help partial or edge groups.
+    if (s_hasGround != 0) {
+      const int2 tileOrigin = int2(threadId) - centerInTile;
+      for (int i = int(lane); i < width * width; i += kGroupSize * kGroupSize) {
+        const int2 p = int2(i % width, i / width);
+        if (any(p < radius) || any(p >= radius + kGroupSize)) {
+          s_cover[i] = rainMapCover(rainMapLoad(tileOrigin + p));
+        }
+      }
+      GroupMemoryBarrierWithGroupSync();
+    }
+  }
+
+  if (!inBounds) {
     return;
   }
-  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
-  const float height = rainMapLoad(int2(threadId)).x;
-  if (height <= args.rainMapTraceBottom - 0.5f * units) {
+  if (missing) {
     rainMapOutput[threadId] = float4(0.0f, args.rainMapTraceBottom - units, 0.0f, 0.0f);
     return;
   }
@@ -75,12 +113,11 @@ void main(uint2 threadId : SV_DispatchThreadID) {
   const float gx = sxx > 0.0f ? sxh / sxx : 0.0f;
   const float gy = syy > 0.0f ? syh / syy : 0.0f;
 
-  const int radius = clamp(int(round(args.rainOcclusionFeather / args.rainMapTexel)), 0, 12);
   float coverSum = 0.0f;
   float coverWeight = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {
     for (int dx = -radius; dx <= radius; ++dx) {
-      const float covered = rainMapLoadCover(int2(threadId) + int2(dx, dy));
+      const float covered = s_cover[(centerInTile.y + dy) * width + centerInTile.x + dx];
       if (covered >= 0.0f) {
         const float weight = float((radius + 1 - abs(dx)) * (radius + 1 - abs(dy)));
         coverSum += covered * weight;
