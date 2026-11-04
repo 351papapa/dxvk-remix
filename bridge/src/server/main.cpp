@@ -398,6 +398,14 @@ void ProcessDeviceCommandQueue() {
   uint64_t lightUpdateErrors = 0;
   remixapi_ErrorCode lightUpdateError = REMIXAPI_ERROR_CODE_SUCCESS;
   remixapi::retained::InterfaceCache retainedInterfaces;
+  std::vector<uint64_t> retainedVisibilityIds;
+  const auto getRetainedVisibility = [&](remixapi_RetainedVisibilityInterface& out) {
+    return retainedInterfaces.getVisibility(ghModule, [](remixapi_RetainedVisibilityInterface& table) {
+      const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedVisibilityInterface>(
+        GetProcAddress(ghModule, REMIXAPI_GET_RETAINED_VISIBILITY_INTERFACE_NAME));
+      return getter ? getter(REMIXAPI_RETAINED_VISIBILITY_VERSION, sizeof(table), &table) : REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+    }, out);
+  };
   uint64_t retainedBridgeEpoch = 0;
   remixapi_ErrorCode retainedBridgeError = REMIXAPI_ERROR_CODE_SUCCESS;
   // Loop until the client sends terminate instruction
@@ -2974,11 +2982,13 @@ void ProcessDeviceCommandQueue() {
       case RemixApi_RetainedDrawOrdered:
       case RemixApi_RetainedGetInterfaceV3:
       case RemixApi_RetainedUpsertV3:
+      case RemixApi_RetainedSetVisibility:
       {
         const auto command = rpcHeader.command;
         const bool getInterface = command == RemixApi_RetainedGetInterface || command == RemixApi_RetainedGetInterfaceV3;
         const bool upsert = command == RemixApi_RetainedUpsert || command == RemixApi_RetainedUpsertV3;
-        const uint32_t version = command == RemixApi_RetainedGetInterfaceV3 || command == RemixApi_RetainedUpsertV3
+        const bool setVisibility = command == RemixApi_RetainedSetVisibility;
+        const uint32_t version = setVisibility || command == RemixApi_RetainedGetInterfaceV3 || command == RemixApi_RetainedUpsertV3
           ? REMIXAPI_RETAINED_VERSION : REMIXAPI_RETAINED_VERSION_2;
         remixapi_RetainedInterface retained = {};
         auto result = retainedInterfaces.get(ghModule, version, [&](uint32_t requested, remixapi_RetainedInterface& table) {
@@ -3000,7 +3010,27 @@ void ProcessDeviceCommandQueue() {
             command != RemixApi_RetainedClear && (!epoch || epoch != retainedBridgeEpoch)) {
           result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
         }
-        if (upsert || command == RemixApi_RetainedRemove || command == RemixApi_RetainedDrawOrdered) {
+        if (setVisibility) {
+          const uint32_t visible = DeviceBridge::get_data();
+          void* pData = nullptr;
+          const uint32_t bytes = DeviceBridge::get_data(&pData);
+          if (visible > 1 || !bytes || bytes % sizeof(uint64_t) || bytes > REMIXAPI_RETAINED_MAX_BATCH * sizeof(uint64_t)) {
+            result = REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+          }
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && retainedBridgeError == REMIXAPI_ERROR_CODE_SUCCESS) {
+            remixapi_RetainedVisibilityInterface table {};
+            result = getRetainedVisibility(table);
+            if (result == REMIXAPI_ERROR_CODE_SUCCESS) {
+              try {
+                retainedVisibilityIds.resize(bytes / sizeof(uint64_t));
+                std::memcpy(retainedVisibilityIds.data(), pData, bytes);
+                result = table.BatchSetVisibility(epoch, visible, static_cast<uint32_t>(retainedVisibilityIds.size()), retainedVisibilityIds.data());
+              } catch (const std::bad_alloc&) {
+                result = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+              }
+            }
+          }
+        } else if (upsert || command == RemixApi_RetainedRemove || command == RemixApi_RetainedDrawOrdered) {
           void* data = nullptr;
           const uint32_t size = DeviceBridge::get_data(&data);
           const uint32_t stride = upsert ? sizeof(remixapi_RetainedInstance) : sizeof(uint64_t);
@@ -3798,6 +3828,15 @@ void ProcessDeviceCommandQueue() {
           if (remixapi::g_remix.GetGameValue && remixapi::g_remix.UpdateLightDefinition) {
             result = remixapi::g_remix.GetGameValue(remixapi::light_update::runtimeVersionKey,
               buf.data(), kMaxValueSize, &actual_size);
+          }
+        } else if (std::strcmp(key_str.c_str(), remixapi_retained::bridgeDeltaKey) == 0) {
+          remixapi_RetainedVisibilityInterface table {};
+          result = getRetainedVisibility(table);
+          if (result == REMIXAPI_ERROR_CODE_SUCCESS && remixapi::g_remix.GetGameValue) {
+            result = remixapi::g_remix.GetGameValue(remixapi_retained::runtimeDeltaKey,
+              buf.data(), kMaxValueSize, &actual_size);
+          } else {
+            result = REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
           }
         } else if (std::strcmp(key_str.c_str(), remixapi_retained::bridgeVisibilityKey) == 0) {
           const auto getter = reinterpret_cast<PFN_remixapi_GetRetainedInterface>(

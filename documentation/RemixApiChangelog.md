@@ -1,5 +1,11 @@
 ## Remix API Changelog
 
+## 2026-11-04 — Retained visibility batches
+
+Added `remixapi_GetRetainedVisibilityInterface` to the local V3 compatibility
+protocol. Version 1 allows a host to set visibility for a list of existing
+unordered IDs in the current epoch. See [visibility-only batches](../docs/RemixRetainedCompatibility.md#visibility-only-batches).
+
 ## 2026-11-03 — Camera medium for external effects
 
 The external frame buffer exposes cameraMediumFlags at byte 1356 (formerly

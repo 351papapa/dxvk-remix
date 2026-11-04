@@ -473,6 +473,7 @@ namespace Commands {
     RemixApi_UpdateLightDefinition,
     RemixApi_RetainedGetInterfaceV3,
     RemixApi_RetainedUpsertV3,
+    RemixApi_RetainedSetVisibility,
   };
 
   // Maybe this will be useful...  
@@ -522,6 +523,7 @@ namespace Commands {
     case RemixApi_RetainedDrawOrdered: return "RemixApi_RetainedDrawOrdered";
     case RemixApi_RetainedGetInterfaceV3: return "RemixApi_RetainedGetInterfaceV3";
     case RemixApi_RetainedUpsertV3: return "RemixApi_RetainedUpsertV3";
+    case RemixApi_RetainedSetVisibility: return "RemixApi_RetainedSetVisibility";
     case RemixApi_GetTextureHash: return "RemixApi_GetTextureHash";
 
     case RemixApi_CreateTexture: return "RemixApi_CreateTexture";

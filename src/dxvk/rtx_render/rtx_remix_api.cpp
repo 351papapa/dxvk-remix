@@ -2097,6 +2097,26 @@ namespace {
     return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION, epoch, count, instances);
   }
 
+  remixapi_ErrorCode REMIXAPI_CALL retainedSetVisibility(uint64_t epoch, uint32_t visible, uint32_t count, const uint64_t* pIds) {
+    auto* pDevice = tryAsDxvk();
+    if (!pDevice) {
+      return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED;
+    }
+    if (!remixapi_retained::validVisibilityBatch(epoch, visible, count, pIds)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    try {
+      std::vector<uint64_t> ids(pIds, pIds + count);
+      std::lock_guard lock { s_mutex };
+      pDevice->EmitCs([epoch, visible, ids = std::move(ids)](dxvk::DxvkContext* ctx) {
+        ctx->getCommonObjects()->getSceneManager().retainedScene().compat().setVisibility(epoch, visible != 0, ids);
+      });
+    } catch (const std::bad_alloc&) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
     auto* device = tryAsDxvk();
     if (!device) {
@@ -3050,6 +3070,19 @@ namespace {
 
 extern "C"
 {
+  REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedVisibilityInterface(
+    uint32_t version, uint32_t structSize, remixapi_RetainedVisibilityInterface* pOut) {
+    if (!pOut || structSize != sizeof(*pOut)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    *pOut = {};
+    if (version != REMIXAPI_RETAINED_VISIBILITY_VERSION) {
+      return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+    }
+    *pOut = { version, sizeof(*pOut), retainedSetVisibility };
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
     if (!outInterface || !remixapi_retained::supportedVersion(version) || structSize != sizeof(*outInterface)) {
@@ -3274,6 +3307,8 @@ extern "C"
         std::strcmp(key, "vc.api.zeroLegacyMaterialVersion") == 0 ||
         std::strcmp(key, "vc.api.retainedOrderedVersion") == 0 ||
         std::strcmp(key, "__remix.lightDefinitions.version") == 0) {
+      value = "1";
+    } else if (std::strcmp(key, remixapi_retained::runtimeDeltaKey) == 0) {
       value = "1";
     } else if (std::strcmp(key, remixapi_retained::runtimeVisibilityKey) == 0) {
       value = "3";

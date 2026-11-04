@@ -24,6 +24,28 @@ Transform/HIDDEN-only upserts update existing child transforms and visibility wi
 
 A bridge v3 request requires `GetGameValue("vc.client.retainedVisibilityVersion") == "3"`. The client rewrites to a bridge-only key; the matching server must obtain a v3 runtime table and query the runtime-only key before returning the capability. The v3 table request also waits for runtime acknowledgement. Old endpoints cannot advertise this support merely by forwarding a native capability query. The two new wire commands are appended; all v2 command numbers remain unchanged.
 
+## Visibility-only batches
+
+A V3 host can send visibility changes for existing unordered instances using
+`remixapi_GetRetainedVisibilityInterface(1, sizeof(table), &table)`. In a bridged
+process, require `GetGameValue("vc.client.retainedVisibilityDeltaVersion")` to
+return the two bytes `1\0`. The matching server checks the native extension
+table and the native capability. Older endpoints keep the V3 full-upsert path.
+
+`BatchSetVisibility(epoch, visible, count, ids)` accepts 1–4096 nonzero 64-bit
+IDs and one shared visibility value of 0 or 1. A repeated ID applies the same
+intent. The renderer validates every ID before changing any record. An unknown
+or ordered ID latches the retained error and suspends replay until a newer
+`Clear`. A successful call enqueues the command on the retained submission
+stream. Use existing status and epoch recovery for asynchronous errors.
+
+Send new or changed descriptions through `BatchUpsert`. Use visibility-only
+batches for IDs whose geometry, material, transform and tags are unchanged.
+Keep those sets disjoint and enqueue them before `CommitFrame`. Each such ID
+uses 8 payload bytes, compared with 168 bytes for a complete record. Both
+routes use the same visibility policy for scene children and replacement
+effects. The graphics presets do not control the protocol.
+
 ## Original-surface fusion
 
 `rtx.scene.aggregateLegacyRetainedGeometry` defaults to `True`. The developer

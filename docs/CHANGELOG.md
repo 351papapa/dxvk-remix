@@ -1,5 +1,12 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Compact retained visibility commands
+
+The bridged and native V3 interfaces can negotiate an optional visibility
+command. Hosts send one shared visibility value and 8 bytes per unchanged
+instance ID. The existing 168-byte update remains available for description
+changes and older endpoints. See [the protocol](RemixRetainedCompatibility.md#visibility-only-batches).
+
 ## 2026-11-04 — Retained geometry aggregation control
 
 `rtx.scene.aggregateLegacyRetainedGeometry` defaults to `True` and preserves

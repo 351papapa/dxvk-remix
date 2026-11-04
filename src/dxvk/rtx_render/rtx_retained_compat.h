@@ -26,6 +26,7 @@ public:
   void upsert(uint64_t epoch, std::vector<remixapi_RetainedInstance>&& records,
               std::vector<frontend::PreparedInstance>&& states);
   void remove(uint64_t epoch, const std::vector<uint64_t>& ids);
+  void setVisibility(uint64_t epoch, bool desired, const std::vector<uint64_t>& ids);
   void clear(uint64_t epoch);
   void commit(const Rc<DxvkContext>& ctx, uint64_t epoch);
   void drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, const std::vector<uint64_t>& ids);
@@ -117,6 +118,7 @@ private:
   bool m_active = false;
   bool checkEpoch(uint64_t epoch);
   void fail();
+  void setVisibilityIntent(Entry& entry, bool desired, bool active);
   void eraseChildren(Entry& entry);
   bool prepare(const Rc<DxvkContext>& ctx, const ExternalDrawState& source,
                std::vector<ExternalDrawState>* pStates);

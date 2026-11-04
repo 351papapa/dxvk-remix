@@ -41,6 +41,15 @@ void testProtocol() {
   require(!valid(record, 3), "hidden support does not bypass transform validation");
   require(std::strcmp(clientQueryKey(clientVisibilityKey), bridgeVisibilityKey) == 0, "client key requires matching bridge");
   require(std::strcmp(clientQueryKey(runtimeVisibilityKey), runtimeVisibilityKey) == 0, "native key remains native");
+  require(std::strcmp(clientQueryKey(clientDeltaKey), bridgeDeltaKey) == 0 &&
+          std::strcmp(bridgeDeltaKey, runtimeDeltaKey) != 0, "delta capability requires the matching server");
+  uint64_t ids[] = { UINT64_MAX, 7, 7 };
+  require(validVisibilityBatch(1, 0, 3, ids) && validVisibilityBatch(1, 1, 3, ids), "full-width and repeated IDs are valid");
+  require(!validVisibilityBatch(0, 1, 3, ids) && !validVisibilityBatch(1, 2, 3, ids), "scope and boolean validation");
+  require(!validVisibilityBatch(1, 0, 0, ids) && !validVisibilityBatch(1, 1, 4097, ids) &&
+          !validVisibilityBatch(1, 1, 3, nullptr), "count and storage validation");
+  ids[2] = 0;
+  require(!validVisibilityBatch(1, 1, 3, ids), "reject a zero ID at the end of the batch");
   require(std::strcmp(clientVisibilityKey, runtimeVisibilityKey) && std::strcmp(bridgeVisibilityKey, runtimeVisibilityKey),
           "old bridge forwarding unknown key cannot obtain native capability");
   record = instance(); require(visibleUnordered(record), "visible unordered counted");
@@ -221,6 +230,38 @@ void testRelativeTransform() {
   require(std::memcmp(&original, &parent, sizeof(parent)) == 0, "original surface stays at parent transform");
 }
 
+void testVisibilityDelta() {
+  using namespace dxvk;
+  struct Entry { remixapi_RetainedInstance record {}; bool desiredVisible = true; } entry;
+  entry.record = instance();
+  uint32_t count = 1, updates = 0;
+  std::vector<uint64_t> queued;
+  const auto update = [&](bool target, const std::vector<uint64_t>& ids) {
+    return retained_compat::applyValidatedGroup(ids,
+      [&](uint64_t id) { return id == entry.record.id && !(entry.record.flags & REMIXAPI_RETAINED_ORDERED); },
+      [&](uint64_t) {
+        retained_compat::setVisibilityIntent(entry, target, count,
+          [&](uint64_t id) { queued.push_back(id); }, [&] { ++updates; });
+        return true;
+      });
+  };
+  const auto original = entry.record;
+  require(!update(false, {entry.record.id, 0}) && entry.desiredVisible && queued.empty(), "invalid suffix leaves the group intact");
+  require(update(false, {entry.record.id, entry.record.id}) && count == 0 && updates == 1, "duplicate hide applies once");
+  require(!entry.desiredVisible && (entry.record.flags & REMIXAPI_RETAINED_HIDDEN), "hidden intent is stored in the original record");
+  require(update(true, {entry.record.id}) && count == 1 && updates == 2 &&
+          std::memcmp(&entry.record, &original, sizeof(original)) == 0, "show restores the exact unchanged description");
+  entry.record.flags = REMIXAPI_RETAINED_ORDERED;
+  require(!update(false, {entry.record.id}) && count == 1 && updates == 2, "ordered record stays outside the visibility lane");
+  entry.record.flags = 0;
+  try {
+    retained_compat::setVisibilityIntent(entry, false, count, [](uint64_t) { throw std::bad_alloc(); }, [&] { ++updates; });
+    require(false, "allocation failure must propagate");
+  } catch (const std::bad_alloc&) {
+    require(entry.desiredVisible && entry.record.flags == 0 && count == 1 && updates == 2, "queue failure preserves intent");
+  }
+}
+
 void testOrderedValidation() {
   using namespace dxvk::retained_compat;
   constexpr uint64_t rule = 65;
@@ -243,22 +284,23 @@ void testOrderedValidation() {
     return id < 3 && checkSurface(true, id != 1 || middleMaterialLive, true, rule, rule, true) == SurfaceCheck::Valid;
   };
   const auto draw = [&](unsigned id) { drawn.push_back(id); return true; };
-  require(drawValidatedGroup(ids, validate, draw) && validated == ids && drawn == ids,
+  require(applyValidatedGroup(ids, validate, draw) && validated == ids && drawn == ids,
           "valid ordered group preserves duplicate ids and draw order");
   validated.clear(); drawn.clear();
   middleMaterialLive = false;
-  require(!drawValidatedGroup(ids, validate, draw) && validated == std::vector<unsigned>({2, 1}) && drawn.empty(),
+  require(!applyValidatedGroup(ids, validate, draw) && validated == std::vector<unsigned>({2, 1}) && drawn.empty(),
           "a material destroyed after successful replay prevents the next whole group from drawing");
   middleMaterialLive = true;
-  require(drawValidatedGroup(ids, validate, draw) && drawn == ids,
+  require(applyValidatedGroup(ids, validate, draw) && drawn == ids,
           "recheck accepts the recreated valid material");
   validated.clear(); drawn.clear();
   ids[1] = 7;
-  require(!drawValidatedGroup(ids, validate, draw) && drawn.empty(),
+  require(!applyValidatedGroup(ids, validate, draw) && drawn.empty(),
           "invalid middle record leaves even the valid prefix undrawn");
 }
 }
 int main() {
+  testVisibilityDelta();
   testOrderedValidation();
   testProtocol(); testClassification(); testLifetime(); testWorldUpdateLifetime(); testAdmissionAndPublishedSources(); testRelativeTransform();
   std::printf("Retained Compat v2/v3: %u CPU policy checks passed\n", checks);

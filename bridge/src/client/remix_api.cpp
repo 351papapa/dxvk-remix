@@ -419,6 +419,20 @@ remixapi_ErrorCode REMIXAPI_CALL retainedBatchUpsertV3(uint64_t epoch, uint32_t 
   return retainedBatchUpsertVersion(REMIXAPI_RETAINED_VERSION, epoch, count, instances);
 }
 
+remixapi_ErrorCode REMIXAPI_CALL retainedSetVisibility(uint64_t epoch, uint32_t visible, uint32_t count, const uint64_t* pIds) {
+  if (!g_bInterfaceInitialized) {
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  }
+  if (!remixapi_retained::validVisibilityBatch(epoch, visible, count, pIds)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  ClientMessage message(Commands::RemixApi_RetainedSetVisibility);
+  message.send_data(sizeof(epoch), &epoch);
+  message.send_data(visible);
+  message.send_data(count * sizeof(*pIds), pIds);
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
 remixapi_ErrorCode REMIXAPI_CALL retainedBatchRemove(uint64_t epoch, uint32_t count, const uint64_t* ids) {
   if (!g_bInterfaceInitialized) { return REMIXAPI_ERROR_CODE_NOT_INITIALIZED; }
   if (!epoch || count > REMIXAPI_RETAINED_MAX_BATCH || (count && !ids)) {
@@ -735,6 +749,26 @@ constexpr bool strings_equal(char const * a, char const * b) {
 }
 
 extern "C" {
+  DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedVisibilityInterface(
+    uint32_t version, uint32_t structSize, remixapi_RetainedVisibilityInterface* pOut) {
+    if (!pOut || structSize != sizeof(*pOut)) {
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    *pOut = {};
+    if (!g_bInterfaceInitialized) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    char reply[2] {};
+    uint32_t size = 0;
+    if (version != REMIXAPI_RETAINED_VISIBILITY_VERSION ||
+        remixapi_GetGameValue(remixapi_retained::clientDeltaKey, reply, sizeof(reply), &size) != REMIXAPI_ERROR_CODE_SUCCESS ||
+        size != 2 || reply[0] != '1' || reply[1] != 0) {
+      return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+    }
+    *pOut = { version, sizeof(*pOut), retainedSetVisibility };
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   DLLEXPORT remixapi_ErrorCode REMIXAPI_CALL remixapi_GetRetainedInterface(
     uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface) {
     if (!outInterface || !remixapi_retained::supportedVersion(version) || structSize != sizeof(*outInterface)) {

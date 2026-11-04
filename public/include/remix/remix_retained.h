@@ -7,6 +7,8 @@
 #define REMIXAPI_RETAINED_HIDDEN 2u
 #define REMIXAPI_RETAINED_MAX_BATCH 4096u
 #define REMIXAPI_GET_RETAINED_INTERFACE_NAME "remixapi_GetRetainedInterface"
+#define REMIXAPI_RETAINED_VISIBILITY_VERSION 1u
+#define REMIXAPI_GET_RETAINED_VISIBILITY_INTERFACE_NAME "remixapi_GetRetainedVisibilityInterface"
 
 // Versions 2 and 3 have the same layout. Version 3 adds persistent HIDDEN unordered records.
 // ORDERED and HIDDEN are mutually exclusive. Mesh surfaces own their material handles.
@@ -85,6 +87,16 @@ typedef struct remixapi_RetainedInterface {
 
 typedef remixapi_ErrorCode (REMIXAPI_PTR* PFN_remixapi_GetRetainedInterface)(
   uint32_t version, uint32_t structSize, remixapi_RetainedInterface* outInterface);
+
+// Optional V3 companion. Each batch addresses 1..4096 live unordered IDs in the same epoch.
+// All IDs use the same visibility (0 or 1). Submit changed descriptions separately before CommitFrame.
+typedef struct remixapi_RetainedVisibilityInterface {
+  uint32_t version;
+  uint32_t structSize;
+  remixapi_ErrorCode (REMIXAPI_PTR* BatchSetVisibility)(uint64_t epoch, uint32_t visible, uint32_t count, const uint64_t* ids);
+} remixapi_RetainedVisibilityInterface;
+typedef remixapi_ErrorCode (REMIXAPI_PTR* PFN_remixapi_GetRetainedVisibilityInterface)(
+  uint32_t version, uint32_t structSize, remixapi_RetainedVisibilityInterface* outInterface);
 
 #ifdef __cplusplus
 static_assert(sizeof(remixapi_RetainedBlend) == 80, "Retained blend wire ABI");

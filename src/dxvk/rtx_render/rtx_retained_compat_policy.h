@@ -7,8 +7,26 @@
 #include <cstdint>
 #include <chrono>
 #include <memory>
+#include <remix/remix_retained.h>
 
 namespace dxvk::retained_compat {
+
+template<typename Entry, typename Queue, typename Apply>
+void setVisibilityIntent(Entry& entry, bool desired, uint32_t& count, Queue&& queue, Apply&& apply) {
+  if (entry.desiredVisible == desired) {
+    return;
+  }
+  queue(entry.record.id);
+  entry.desiredVisible = desired;
+  if (desired) {
+    entry.record.flags &= ~REMIXAPI_RETAINED_HIDDEN;
+    ++count;
+  } else {
+    entry.record.flags |= REMIXAPI_RETAINED_HIDDEN;
+    --count;
+  }
+  apply();
+}
 
 enum class SurfaceCheck { Valid, MissingMaterial, IncompatibleLegacy };
 
@@ -23,16 +41,16 @@ inline SurfaceCheck checkSurface(bool hasMaterialHandle, bool hasMaterial, bool 
   return SurfaceCheck::Valid;
 }
 
-// No id may change visibility or consume a sort ordinal until the whole group was validated.
-template<typename Ids, typename Validate, typename Draw>
-bool drawValidatedGroup(const Ids& ids, Validate&& validate, Draw&& draw) {
+// No ID may change visibility or consume a sort ordinal until the whole group passes validation.
+template<typename Ids, typename Validate, typename Apply>
+bool applyValidatedGroup(const Ids& ids, Validate&& validate, Apply&& apply) {
   for (auto id : ids) {
     if (!validate(id)) {
       return false;
     }
   }
   for (auto id : ids) {
-    if (!draw(id)) {
+    if (!apply(id)) {
       return false;
     }
   }

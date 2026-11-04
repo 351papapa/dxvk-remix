@@ -7,11 +7,28 @@ namespace remixapi_retained {
 inline constexpr const char* clientVisibilityKey = "vc.client.retainedVisibilityVersion";
 inline constexpr const char* bridgeVisibilityKey = "vc.bridge.retainedVisibilityVersion";
 inline constexpr const char* runtimeVisibilityKey = "vc.api.retainedVisibilityVersion";
+inline constexpr const char* clientDeltaKey = "vc.client.retainedVisibilityDeltaVersion";
+inline constexpr const char* bridgeDeltaKey = "vc.bridge.retainedVisibilityDeltaVersion";
+inline constexpr const char* runtimeDeltaKey = "vc.api.retainedVisibilityDeltaVersion";
 inline bool supportedVersion(uint32_t version) {
   return version == REMIXAPI_RETAINED_VERSION_2 || version == REMIXAPI_RETAINED_VERSION;
 }
 inline const char* clientQueryKey(const char* key) {
+  if (std::strcmp(key, clientDeltaKey) == 0) {
+    return bridgeDeltaKey;
+  }
   return std::strcmp(key, clientVisibilityKey) == 0 ? bridgeVisibilityKey : key;
+}
+inline bool validVisibilityBatch(uint64_t epoch, uint32_t visible, uint32_t count, const uint64_t* pIds) {
+  if (!epoch || visible > 1 || !count || count > REMIXAPI_RETAINED_MAX_BATCH || !pIds) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!pIds[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 inline bool valid(const remixapi_RetainedInstance& instance, uint32_t version = REMIXAPI_RETAINED_VERSION_2) {
   const uint32_t allowed = REMIXAPI_RETAINED_ORDERED | (version == REMIXAPI_RETAINED_VERSION ? REMIXAPI_RETAINED_HIDDEN : 0u);

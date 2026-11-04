@@ -29,6 +29,24 @@ static void drain() { for (auto& command : queue) { command(); } queue.clear(); 
 static remixapi_ErrorCode REMIXAPI_CALL upsert(uint64_t, uint32_t, const remixapi_RetainedInstance*) { return REMIXAPI_ERROR_CODE_SUCCESS; }
 static remixapi_ErrorCode REMIXAPI_CALL ids(uint64_t, uint32_t, const uint64_t*) { return REMIXAPI_ERROR_CODE_SUCCESS; }
 static remixapi_ErrorCode REMIXAPI_CALL status(remixapi_RetainedStatus*) { return REMIXAPI_ERROR_CODE_SUCCESS; }
+static remixapi_ErrorCode REMIXAPI_CALL visibility(uint64_t, uint32_t, uint32_t, const uint64_t*) { return REMIXAPI_ERROR_CODE_SUCCESS; }
+static void testVisibilityCache() {
+  remixapi::retained::InterfaceCache cache;
+  remixapi_RetainedVisibilityInterface table {};
+  int moduleA = 0, moduleB = 0;
+  uint32_t calls = 0;
+  auto get = [&](int* pModule) {
+    return cache.getVisibility(pModule, [&](remixapi_RetainedVisibilityInterface& out) {
+      ++calls;
+      out = {1, sizeof(out), calls == 1 ? nullptr : visibility};
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }, table);
+  };
+  check(get(&moduleA) == REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION && !table.BatchSetVisibility);
+  check(get(&moduleA) == REMIXAPI_ERROR_CODE_SUCCESS && calls == 2 && table.BatchSetVisibility == visibility);
+  check(get(&moduleA) == REMIXAPI_ERROR_CODE_SUCCESS && calls == 2);
+  check(get(&moduleB) == REMIXAPI_ERROR_CODE_SUCCESS && calls == 3);
+}
 static void testInterfaceCache() {
   remixapi::retained::InterfaceCache cache;
   remixapi_RetainedInterface table {};
@@ -70,6 +88,7 @@ static void testInterfaceCache() {
   check(get(&moduleB, v3) == REMIXAPI_ERROR_CODE_SUCCESS && table.version == v3 && fetches == 7);
 }
 int main() {
+  testVisibilityCache();
   testInterfaceCache();
   remixapi_RetainedInterface api {};
   api.Clear = clear;

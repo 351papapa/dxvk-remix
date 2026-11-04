@@ -141,12 +141,7 @@ void RetainedCompat::upsert(uint64_t epoch, std::vector<remixapi_RetainedInstanc
         remixapi_retained::sameDescription(entry.record, record)) {
       const bool moved = !remixapi_retained::sameTransform(entry.record, record);
       const bool desired = !(record.flags & REMIXAPI_RETAINED_HIDDEN);
-      if (entry.desiredVisible != desired) {
-        m_visibleUnorderedCount = desired ? m_visibleUnorderedCount + 1 : m_visibleUnorderedCount - 1;
-        entry.desiredVisible = desired;
-        m_visibilityDirty.push_back(record.id);
-        visible(entry, m_active && m_commitFrame == m_scene.device()->getCurrentFrameId());
-      }
+      setVisibilityIntent(entry, desired, m_active && m_commitFrame == m_scene.device()->getCurrentFrameId());
       entry.record = record;
       entry.state = std::move(states[i].m_state);
       if (moved) {
@@ -183,6 +178,44 @@ void RetainedCompat::upsert(uint64_t epoch, std::vector<remixapi_RetainedInstanc
     m_dirty.push_back(record.id);
   }
   m_status.instanceCount = static_cast<uint32_t>(m_entries.size());
+}
+
+void RetainedCompat::setVisibilityIntent(Entry& entry, bool desired, bool active) {
+  retained_compat::setVisibilityIntent(entry, desired, m_visibleUnorderedCount,
+    [&](uint64_t id) { m_visibilityDirty.push_back(id); }, [&] { visible(entry, active); });
+}
+
+void RetainedCompat::setVisibility(uint64_t epoch, bool desired, const std::vector<uint64_t>& ids) {
+  if (!checkEpoch(epoch) || m_status.lastError) {
+    return;
+  }
+  const auto oldSize = m_visibilityDirty.size();
+  const auto oldCount = m_visibleUnorderedCount;
+  const bool active = m_active && m_commitFrame == m_scene.device()->getCurrentFrameId();
+  const auto validate = [&](uint64_t id) {
+    const auto it = m_entries.find(id);
+    return it != m_entries.end() && !(it->second.record.flags & REMIXAPI_RETAINED_ORDERED);
+  };
+  const auto apply = [&](uint64_t id) {
+    setVisibilityIntent(m_entries.at(id), desired, active);
+    return true;
+  };
+  try {
+    if (retained_compat::applyValidatedGroup(ids, validate, apply)) {
+      return;
+    }
+  } catch (const std::exception&) {
+    // Undo changed intent before latching the error. A partially shown child must also be hidden.
+    for (size_t i = oldSize; i < m_visibilityDirty.size(); ++i) {
+      Entry& entry = m_entries.at(m_visibilityDirty[i]);
+      entry.record.flags ^= REMIXAPI_RETAINED_HIDDEN;
+      entry.desiredVisible = !desired;
+      entry.visible = true;
+    }
+    m_visibilityDirty.resize(oldSize);
+    m_visibleUnorderedCount = oldCount;
+  }
+  fail();
 }
 
 void RetainedCompat::remove(uint64_t epoch, const std::vector<uint64_t>& ids) {
@@ -743,7 +776,7 @@ void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, con
     ++m_status.submittedCount;
     return true;
   };
-  if (!retained_compat::drawValidatedGroup(ids, validate, draw)) {
+  if (!retained_compat::applyValidatedGroup(ids, validate, draw)) {
     ++m_orderedStats.failures;
   }
 }
