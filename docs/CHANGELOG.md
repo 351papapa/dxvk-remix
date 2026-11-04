@@ -1,5 +1,16 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Live plugin INI settings and DLSS-NR diagnostics
+
+Game integrations may supply `rtx-remix/host-settings.txt` beside the game to expose
+hot-reloaded plugin INI values through Host Settings and Game Settings. Each row
+contains a game-local INI filename, section, key, type (`bool` or `float`), default,
+minimum, maximum, quoted group and quoted display label. The menu edits the
+existing INI key and refreshes while open. Only declare values the plugin reloads.
+
+The DLSS-NR log now records the first successfully evaluated frame after each model
+initialization, including the requested network preset and number of passes.
+
 ## 2026-11-04 — Rain and storm visibility below water
 
 Water settings now include separate rain and storm particle extinction values.

@@ -422,6 +422,11 @@ namespace dxvk {
 
     // A rejected evaluation left the history where the previous one put it, so the next frame
     // would reproject across the gap. Held until an evaluation actually succeeds.
+    if (evaluated && m_loggedEvaluationInit != m_initCount) {
+      Logger::info(str::format("[DLSS-NR] Evaluated ", passes, " pass(es) at ", m_displaySize[0], "x", m_displaySize[1],
+                               " via driver NGX, preset hint ", m_createdPreset, ", style ", int(model())));
+      m_loggedEvaluationInit = m_initCount;
+    }
     m_forceHistoryReset = !evaluated;
     m_evaluatedLastFrame = evaluated;
     m_statusReason = evaluated ? "active" : "evaluate failed";

@@ -262,6 +262,7 @@ namespace dxvk {
 
     // Diagnostics for the developer panel.
     uint32_t m_initCount = 0;
+    uint32_t m_loggedEvaluationInit = 0;
     const char* m_statusReason = "not dispatched yet";
   };
 } // namespace dxvk

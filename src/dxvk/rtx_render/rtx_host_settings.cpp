@@ -6,6 +6,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <charconv>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+
+#include "../../util/util_env.h"
+#include "../../util/util_string.h"
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -20,6 +28,10 @@ namespace dxvk::host_settings {
       std::string label;
       std::string section;
       std::string tooltip;
+      std::filesystem::path iniPath;
+      std::wstring iniSection;
+      std::wstring iniKey;
+      bool iniWriteFailed = false;
       remixapi_HostSettingType type = REMIXAPI_HOST_SETTING_TYPE_BOOL;
       uint32_t flags = 0;
       double minValue = 0.0;
@@ -67,11 +79,91 @@ namespace dxvk::host_settings {
       return v;
     }
 
+    bool s_iniLoaded = false;
+
+    double readIniValue(const Entry& e) {
+      wchar_t value[64] {};
+      GetPrivateProfileStringW(e.iniSection.c_str(), e.iniKey.c_str(), L"", value, _countof(value), e.iniPath.c_str());
+      const std::string text = str::fromws(value);
+      double number = e.defaultValue;
+      const auto result = std::from_chars(text.data(), text.data() + text.size(), number);
+      return result.ec == std::errc() && result.ptr == text.data() + text.size() ? sanitize(e, number) : e.defaultValue;
+    }
+
+    void loadIniSettings() {
+      if (s_iniLoaded) {
+        return;
+      }
+      s_iniLoaded = true;
+      const auto game = std::filesystem::u8path(env::getExePath()).parent_path();
+      std::ifstream schema(game / L"rtx-remix" / L"host-settings.txt");
+      std::string line;
+      while (std::getline(schema, line)) {
+        if (line.empty() || line[0] == '#') {
+          continue;
+        }
+        std::istringstream row(line);
+        row.imbue(std::locale::classic());
+        std::string file, section, key, type;
+        Entry e;
+        if (!(row >> file >> section >> key >> type >> e.defaultValue >> e.minValue >> e.maxValue
+                  >> std::quoted(e.section) >> std::quoted(e.label))
+            || (type != "bool" && type != "float") || !std::isfinite(e.defaultValue)
+            || !std::isfinite(e.minValue) || !std::isfinite(e.maxValue) || e.minValue >= e.maxValue
+            || e.defaultValue < e.minValue || e.defaultValue > e.maxValue || file.empty() || file.front() == '.'
+            || file.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.") != std::string::npos
+            || std::filesystem::path(file).extension() != ".ini") {
+          continue;
+        }
+        e.iniPath = game / file;
+        const DWORD attr = GetFileAttributesW(e.iniPath.c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES || (attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+          continue;
+        }
+        e.key = "ini." + file + "." + section + "." + key;
+        if (s_byKey.count(e.key)) {
+          continue;
+        }
+        e.iniSection = str::tows(section.c_str());
+        e.iniKey = str::tows(key.c_str());
+        e.type = type == "bool" ? REMIXAPI_HOST_SETTING_TYPE_BOOL : REMIXAPI_HOST_SETTING_TYPE_FLOAT;
+        e.flags = REMIXAPI_HOST_SETTING_FLAG_USER_MENU;
+        e.tooltip = file + " [" + section + "] " + key;
+        e.value = e.startupValue = readIniValue(e);
+        s_entries.push_back(std::move(e));
+        s_byKey.emplace(s_entries.back().key, uint32_t(s_entries.size()));
+        s_empty.store(false, std::memory_order_release);
+      }
+    }
+
+    void refreshIniValues() {
+      static ULONGLONG nextRead = 0;
+      const ULONGLONG now = GetTickCount64();
+      if (now >= nextRead) {
+        nextRead = now + 1000;
+        for (auto& e : s_entries) {
+          if (!e.iniPath.empty()) {
+            e.value = readIniValue(e);
+          }
+        }
+      }
+    }
+
     // Menu-side write; bumps the generation so the host re-reads.
     void setFromMenu(Entry& e, double v) {
       v = sanitize(e, v);
       if (v == e.value && e.type != REMIXAPI_HOST_SETTING_TYPE_ACTION) {
         return;
+      }
+      if (!e.iniPath.empty()) {
+        char text[64];
+        const auto result = std::to_chars(text, text + sizeof(text), v, std::chars_format::general, 7);
+        const auto value = str::tows(std::string(text, result.ptr).c_str());
+        if (result.ec != std::errc() || !WritePrivateProfileStringW(e.iniSection.c_str(), e.iniKey.c_str(), value.c_str(), e.iniPath.c_str())) {
+          e.iniWriteFailed = true;
+          return;
+        }
+        e.iniWriteFailed = false;
       }
       e.value = v;
       s_generation.fetch_add(1, std::memory_order_release);
@@ -153,6 +245,7 @@ namespace dxvk::host_settings {
   void clear() {
     std::lock_guard lock { s_mutex };
     s_entries.clear();
+    s_iniLoaded = false;
     s_byKey.clear();
     s_empty.store(true, std::memory_order_release);
     s_generation.fetch_add(1, std::memory_order_release);
@@ -163,6 +256,8 @@ namespace dxvk::host_settings {
   }
 
   bool empty() {
+    std::lock_guard lock { s_mutex };
+    loadIniSettings();
     return s_empty.load(std::memory_order_acquire);
   }
 
@@ -393,6 +488,9 @@ namespace dxvk::host_settings {
           RemixGui::SetTooltipUnformatted(tip.c_str());
         }
       }
+      if (e.iniWriteFailed) {
+        ImGui::TextWrapped("Could not save %s. Check write access to the plugin INI.", e.tooltip.c_str());
+      }
       ImGui::PopID();
     }
   }
@@ -401,6 +499,7 @@ namespace dxvk::host_settings {
     static char s_filter[64] = {};
 
     std::lock_guard lock { s_mutex };
+    refreshIniValues();
     if (s_entries.empty()) {
       ImGui::TextWrapped("No host settings registered.");
       return;
@@ -465,6 +564,7 @@ namespace dxvk::host_settings {
 
   bool hasUserMenuSettings() {
     std::lock_guard lock { s_mutex };
+    loadIniSettings();
     for (const auto& e : s_entries) {
       if (e.flags & REMIXAPI_HOST_SETTING_FLAG_USER_MENU) {
         return true;
@@ -475,6 +575,7 @@ namespace dxvk::host_settings {
 
   void showUserMenuSettings() {
     std::lock_guard lock { s_mutex };
+    refreshIniValues();
     for (auto& e : s_entries) {
       if (e.flags & REMIXAPI_HOST_SETTING_FLAG_USER_MENU) {
         drawEntry(e);
