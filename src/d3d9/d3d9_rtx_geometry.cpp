@@ -1,5 +1,6 @@
 #include <vector>
 #include "d3d9_device.h"
+#include "d3d9_worker_read.h"
 #include "d3d9_rtx.h"
 #include "d3d9_rtx_utils.h"
 #include "d3d9_state.h"
@@ -76,7 +77,7 @@ namespace dxvk {
 
   template<typename T>
   void hashGeometryData(const size_t indexCount, const uint32_t maxIndexValue, const void* pIndexData,
-                        DxvkBuffer* indexBufferRef, const HashQuery vertexRegions[VertexRegions::Count], GeometryHashes& hashesOut) {
+                        const HashQuery vertexRegions[VertexRegions::Count], GeometryHashes& hashesOut) {
     ScopedCpuProfileZone();
 
     const HashRule& globalHashRule = RtxOptions::geometryHashGenerationRule();
@@ -86,7 +87,7 @@ namespace dxvk {
     std::vector<T>& uniqueIndices = tlsUniqueIndices;
     uniqueIndices.clear();
     if constexpr (!std::is_same<T, NoIndices>::value) {
-      assert((indexCount > 0 && indexBufferRef));
+      assert(indexCount > 0 && pIndexData != nullptr);
       deduplicateSortIndices(pIndexData, indexCount, maxIndexValue, uniqueIndices);
 
       if (globalHashRule.test(HashComponents::Indices)) {
@@ -98,9 +99,6 @@ namespace dxvk {
         hashesOut[HashComponents::LegacyIndices] = hashIndicesLegacy<T>(pIndexData, indexCount);
       }
 
-      // Release this memory back to the staging allocator
-      indexBufferRef->release(DxvkAccess::Read);
-      indexBufferRef->decRef();
     }
 
     // Do vertex based rules
@@ -123,17 +121,6 @@ namespace dxvk {
       hashRegionLegacy(vertexRegions[VertexRegions::Position], hashesOut[HashComponents::LegacyPositions0], hashesOut[HashComponents::LegacyPositions1]);
     }
 
-    // Release this memory back to the staging allocator
-    for (uint32_t i = 0; i < VertexRegions::Count; i++) {
-      const HashQuery& region = vertexRegions[i];
-      if (region.size == 0)
-        continue;
-
-      if (region.ref) {
-        region.ref->release(DxvkAccess::Read);
-        region.ref->decRef();
-      }
-    }
   }
 
   Future<GeometryHashes> D3D9Rtx::computeHash(RasterGeometry& geoData, const uint32_t maxIndexValue, const XXH64_hash_t memoizationKey) {
@@ -168,27 +155,18 @@ namespace dxvk {
     const uint32_t indexCount = geoData.indexCount;
     const uint32_t vertexCount = geoData.vertexCount;
 
-    HashQuery vertexRegions[VertexRegions::Count];
-    memset(&vertexRegions[0], 0, sizeof(vertexRegions));
+    HashQuery vertexRegions[VertexRegions::Count] {};
 
     if (!getVertexRegion(geoData.positionBuffer, vertexCount, vertexRegions[VertexRegions::Position]))
       return Future<GeometryHashes>(); //invalid
 
-    // Acquire prevents the staging allocator from re-using this memory
-    vertexRegions[VertexRegions::Position].ref->acquire(DxvkAccess::Read);
-    vertexRegions[VertexRegions::Position].ref->incRef();
+    getVertexRegion(geoData.texcoordBuffer, vertexCount, vertexRegions[VertexRegions::Texcoord]);
 
-    if (getVertexRegion(geoData.texcoordBuffer, vertexCount, vertexRegions[VertexRegions::Texcoord])) {
-      vertexRegions[VertexRegions::Texcoord].ref->acquire(DxvkAccess::Read);
-      vertexRegions[VertexRegions::Texcoord].ref->incRef();
-    }
-
-    // Make sure we hold a ref to the index buffer while hashing.
-    const Rc<DxvkBuffer> indexBufferRef = geoData.indexBuffer.buffer();
-    if (indexBufferRef.ptr()) {
-      indexBufferRef->acquire(DxvkAccess::Read);
-      indexBufferRef->incRef();
-    }
+    std::array<D3D9WorkerRead, 3> reads {
+      D3D9WorkerRead(vertexRegions[VertexRegions::Position].ref),
+      D3D9WorkerRead(vertexRegions[VertexRegions::Texcoord].ref),
+      D3D9WorkerRead(geoData.indexBuffer.buffer().ptr())
+    };
     const void* pIndexData = geoData.indexBuffer.defined() ? geoData.indexBuffer.mapPtr(0) : nullptr;
     const size_t indexStride = geoData.indexBuffer.stride();
     const size_t indexDataSize = indexCount * indexStride;
@@ -222,10 +200,10 @@ namespace dxvk {
       vertexLayoutHash = hashVertexLayout(geoData);
     }
 
-    return m_pGeometryWorkers->ScheduleOrRun([this, memoizationKey, vertexRegions, indexBufferRef = indexBufferRef.ptr(),
+    return m_pGeometryWorkers->ScheduleOrRun([this, memoizationKey, vertexRegions, reads = std::move(reads),
                                  pIndexData, indexStride, indexDataSize, indexCount,
                                  maxIndexValue, vertexShaderHash, geometryDescriptorHash,
-                                 vertexLayoutHash, selfCheck]() -> GeometryHashes {
+                                 vertexLayoutHash, selfCheck]() mutable -> GeometryHashes {
       ScopedCpuProfileZone();
 
       GeometryHashes hashes;
@@ -235,17 +213,20 @@ namespace dxvk {
       hashes[HashComponents::VertexLayout] = vertexLayoutHash;
       hashes[HashComponents::VertexShader] = vertexShaderHash;
 
-      // Index hash
-      switch (indexStride) {
-      case 2:
-        hashGeometryData<uint16_t>(indexCount, maxIndexValue, pIndexData, indexBufferRef, vertexRegions, hashes);
-        break;
-      case 4:
-        hashGeometryData<uint32_t>(indexCount, maxIndexValue, pIndexData, indexBufferRef, vertexRegions, hashes);
-        break;
-      default:
-        hashGeometryData<NoIndices>(indexCount, maxIndexValue, pIndexData, indexBufferRef, vertexRegions, hashes);
-        break;
+      {
+        auto ownedReads = std::move(reads);
+        // Index hash
+        switch (indexStride) {
+        case 2:
+          hashGeometryData<uint16_t>(indexCount, maxIndexValue, pIndexData, vertexRegions, hashes);
+          break;
+        case 4:
+          hashGeometryData<uint32_t>(indexCount, maxIndexValue, pIndexData, vertexRegions, hashes);
+          break;
+        default:
+          hashGeometryData<NoIndices>(indexCount, maxIndexValue, pIndexData, vertexRegions, hashes);
+          break;
+        }
       }
 
       assert(hashes[HashComponents::VertexPosition] != kEmptyHash);
@@ -307,10 +288,9 @@ namespace dxvk {
       return Future<AxisAlignedBoundingBox>();
     }
 
-    auto vertexBuffer = geoData.positionBuffer.buffer().ptr();
-    vertexBuffer->incRef();
-
-    return m_pGeometryWorkers->ScheduleOrRun([pVertexData, vertexCount, vertexStride, vertexBuffer]()->AxisAlignedBoundingBox {
+    return m_pGeometryWorkers->ScheduleOrRun([pVertexData, vertexCount, vertexStride,
+                                          read = D3D9WorkerRead(geoData.positionBuffer.buffer().ptr())]() mutable -> AxisAlignedBoundingBox {
+      auto ownedRead = std::move(read);
       ScopedCpuProfileZone();
 
 #if defined(_M_ARM64) || defined(_M_ARM64EC)
@@ -354,8 +334,6 @@ namespace dxvk {
         Vector3{ maxPos.m128_f32[0], maxPos.m128_f32[1], maxPos.m128_f32[2] }
       };
 #endif
-
-      vertexBuffer->decRef();
 
       return boundingBox;
     });

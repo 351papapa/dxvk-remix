@@ -1,5 +1,12 @@
 # Remix Plus changelog
 
+## 2026-11-05 — Reduce host memory retained by native D3D9 draws
+
+Native D3D9 draws now use 1 MiB staging pages that can be reused once all draw,
+worker and GPU references are gone. Geometry workers also release the last
+buffer reference when a job finishes or is cancelled. Both fixes apply with
+index-buffer memoization enabled or disabled.
+
 ## 2026-11-04 — Local lamp starbursts
 
 Hosts can submit one optional packet of starburst sources per frame. The new Local Starbursts display pass uses the host mask and finite, material-aware visibility rays for those sources. Enable and tune the pass with `rtx.starbursts.enabled`, `maskTexture`, `brightness`, `angularScale`, `sourceBudget` and `endpointBias`. The effect defaults off. See [Local starbursts](../documentation/LocalStarbursts.md).

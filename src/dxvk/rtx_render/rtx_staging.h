@@ -47,6 +47,10 @@ namespace dxvk {
     // but this is not always the case when alignment requirements come from how the buffer is actually used rather than its usage flags.
     DxvkBufferSlice alloc(VkDeviceSize align, VkDeviceSize size);
 
+    // CPU draw packets and memoized ranges keep slices long after allocation.
+    // Rewind only when the allocator holds the page's last reference.
+    DxvkBufferSlice allocForDraw(VkDeviceSize align, VkDeviceSize size);
+
     /**
      * \brief Deletes all staging buffers
      * 
@@ -70,6 +74,8 @@ namespace dxvk {
     const char*     m_name = nullptr;
 
     std::queue<Rc<DxvkBuffer>> m_buffers;
+
+    DxvkBufferSlice allocImpl(VkDeviceSize align, VkDeviceSize size, VkDeviceSize pageSize, bool requireUnique);
 
     Rc<DxvkBuffer> createBuffer(VkDeviceSize size);
   };

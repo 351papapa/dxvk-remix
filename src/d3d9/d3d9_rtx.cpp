@@ -9,6 +9,7 @@
 #include "d3d9_buffer.h"
 
 #include "d3d9_rtx.h"
+#include "d3d9_worker_read.h"
 #include "d3d9_device.h"
 #include "d3d9_swapchain.h"
 
@@ -193,10 +194,7 @@ namespace dxvk {
       D3D9CommonBuffer::RemixIndexBufferMemoizationData result;
 
       // Get our slice of the staging ring buffer
-      result.slice = m_rtStagingData.alloc(CACHE_LINE_SIZE, size);
-
-      // Acquire prevents the staging allocator from re-using this memory
-      result.slice.buffer()->acquire(DxvkAccess::Read);
+      result.slice = m_rtStagingData.allocForDraw(CACHE_LINE_SIZE, size);
 
       const uint8_t* pBaseIndex = (uint8_t*) indexCtx.indexBuffer.mapPtr + offset;
 
@@ -423,10 +421,7 @@ namespace dxvk {
             clone->rename(ctx.mappedSlice);
             streamCopies[element.Stream] = DxvkBufferSlice(clone, ctx.buffer.offset() + vertexOffset, numVertexBytes);
           } else {
-            streamCopies[element.Stream] = m_rtStagingData.alloc(CACHE_LINE_SIZE, numVertexBytes);
-
-            // Acquire prevents the staging allocator from re-using this memory
-            streamCopies[element.Stream].buffer()->acquire(DxvkAccess::Read);
+            streamCopies[element.Stream] = m_rtStagingData.allocForDraw(CACHE_LINE_SIZE, numVertexBytes);
 
             memcpy(streamCopies[element.Stream].mapPtr(0), (uint8_t*) ctx.mappedSlice.mapPtr + vertexOffset, availableBytes);
             if (availableBytes < numVertexBytes) {
@@ -1194,7 +1189,7 @@ namespace dxvk {
 
     const uint32_t vertexCount = geoData.vertexCount;
 
-    HashQuery blendIndices;
+    HashQuery blendIndices {};
     // Analyze the vertex data and find the min and max bone indices used in this mesh.
     // The min index is used to detect a case when vertex blend is enabled but there is just one bone used in the mesh,
     // so we can drop the skinning pass. That is processed in DrawCallState::finalizeSkinningData.
@@ -1207,12 +1202,6 @@ namespace dxvk {
       blendIndices.size = blendIndices.stride * vertexCount;
       blendIndices.ref = buffer.buffer().ptr();
 
-      // Acquire prevents the staging allocator from re-using this memory
-      blendIndices.ref->acquire(DxvkAccess::Read);
-      // Make sure we hold on to this reference while the hashing is in flight
-      blendIndices.ref->incRef();
-    } else {
-      blendIndices.ref = nullptr;
     }
 
     // Copy bones up to the max bone we have registered so far.
@@ -1222,12 +1211,14 @@ namespace dxvk {
     const uint32_t nMat = maxBone + 1;
     SkinningMatrixPool::Staged bones = m_stagedBones.stageBones(d3d9State().transforms.data() + startBoneTransform, nMat);
 
-    return m_pGeometryWorkers->ScheduleOrRun([bones = std::move(bones), nMat, blendIndices, numBonesPerVertex, vertexCount]()->SkinningData {
+    return m_pGeometryWorkers->ScheduleOrRun([bones = std::move(bones), nMat, blendIndices, numBonesPerVertex, vertexCount,
+                                          read = D3D9WorkerRead(blendIndices.ref)]() mutable -> SkinningData {
       ScopedCpuProfileZone();
       uint32_t numBones = numBonesPerVertex;
 
       int minBoneIndex = 0;
       if (blendIndices.ref) {
+        auto ownedRead = std::move(read);
         const uint8_t* pBlendIndices = blendIndices.pBase;
         // Find out how many bone indices are specified for each vertex.
         // This is needed to find out the min bone index and ignore the padding zeroes.
@@ -1237,10 +1228,6 @@ namespace dxvk {
           maxBoneIndex = 0;
         }
         numBones = maxBoneIndex + 1;
-
-        // Release this memory back to the staging allocator
-        blendIndices.ref->release(DxvkAccess::Read);
-        blendIndices.ref->decRef();
       }
 
       // Pass bone data to RT back-end

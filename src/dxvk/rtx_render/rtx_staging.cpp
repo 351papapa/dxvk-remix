@@ -28,31 +28,51 @@ namespace dxvk {
   }
 
   DxvkBufferSlice RtxStagingDataAlloc::alloc(VkDeviceSize align, VkDeviceSize size) {
+    return allocImpl(align, size, MaxBufferSize, false);
+  }
+
+  DxvkBufferSlice RtxStagingDataAlloc::allocForDraw(VkDeviceSize align, VkDeviceSize size) {
+    // A retained draw can keep a few indices alive for many frames. Limit the
+    // rest of the RAM pinned by that slice. Larger draws get their own buffer.
+    constexpr VkDeviceSize kDrawPageSize = 1 << 20;
+    return allocImpl(align, size, kDrawPageSize, true);
+  }
+
+  DxvkBufferSlice RtxStagingDataAlloc::allocImpl(VkDeviceSize align, VkDeviceSize size, VkDeviceSize pageSize, bool requireUnique) {
     ScopedCpuProfileZone();
 
-    if (size > MaxBufferSize)
+    const auto canReuse = [&](const Rc<DxvkBuffer>& page) {
+      return (!requireUnique || page->hasUniqueRef()) && !page->isInUse() &&
+             !(m_usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+    };
+
+    if (size > pageSize) {
       return DxvkBufferSlice(createBuffer(size));
+    }
     
-    if (m_buffer == nullptr)
-      m_buffer = createBuffer(MaxBufferSize);
+    if (m_buffer == nullptr) {
+      m_buffer = createBuffer(pageSize);
+    }
     
     // Acceleration structure API accepts a VA, which DXVK doesnt recognize as "in use"
-    if (!m_buffer->isInUse() && (m_usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR) == 0)
+    if (canReuse(m_buffer)) {
       m_offset = 0;
+    }
     
     m_offset = dxvk::align(m_offset, align);
 
-    if (m_offset + size > MaxBufferSize) {
+    if (m_offset + size > pageSize) {
       m_offset = 0;
 
-      if (m_buffers.size() < MaxBufferCount)
+      if (m_buffers.size() < MaxBufferCount) {
         m_buffers.push(std::move(m_buffer));
+      }
 
-      if (!m_buffers.front()->isInUse() && (m_usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR) == 0) {
+      if (canReuse(m_buffers.front())) {
         m_buffer = std::move(m_buffers.front());
         m_buffers.pop();
       } else {
-        m_buffer = createBuffer(MaxBufferSize);
+        m_buffer = createBuffer(pageSize);
       }
     }
 
