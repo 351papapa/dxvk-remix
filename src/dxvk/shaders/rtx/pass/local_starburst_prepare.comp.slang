@@ -9,6 +9,62 @@ layout(push_constant) ConstantBuffer<LocalStarburstArgs> args;
 layout(binding = STARBURST_INPUT) StructuredBuffer<LocalStarburstInput> sources;
 layout(binding = STARBURST_SPRITES) RWStructuredBuffer<LocalStarburstSprite> sprites;
 
+// Volumetric street/headlight sources may lie inside their replacement bulb. Use its
+// visible surface as the endpoint only when the geometry on both sides of the
+// source belongs to the same emitting shell. Keep regular visibility up to that face.
+bool nearestFixtureFace(Ray ray, float tMin, float tMax, uint8_t mask,
+                        out RayHitInfo hit, out uint instanceIndex) {
+  RayDesc segment = rayToRayDesc(ray);
+  segment.TMin = tMin;
+  segment.TMax = tMax;
+  RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+  query.TraceRayInline(topLevelAS, RAY_FLAG_NONE, mask, segment);
+  while (query.Proceed()) {}
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+    hit = (RayHitInfo)0;
+    instanceIndex = 0;
+    return false;
+  }
+  RAY_HIT_INFO_CREATE_RAY_QUERY_COMMITTED(face, query)
+  hit = face;
+  instanceIndex = query.CommittedInstanceIndex();
+  return true;
+}
+
+float fixtureVisibilityEnd(Ray ray, float distance, uint8_t mask) {
+  const float radius = min(0.3f * cb.metersToWorldUnitScale, distance * 0.25f);
+  if (radius <= distance - ray.tMax) {
+    return ray.tMax;
+  }
+  RayHitInfo nearFace, farFace;
+  uint nearInstance, farInstance;
+  if (!nearestFixtureFace(ray, distance - radius, ray.tMax, mask, nearFace, nearInstance) ||
+      calculateMaterialType(nearFace) != surfaceMaterialTypeOpaque) {
+    return ray.tMax;
+  }
+  const RayInteraction intersection = rayInteractionCreate(ray, nearFace);
+  const OpaqueSurfaceMaterial material = opaqueSurfaceMaterialCreate(surfaceMaterials[intersection.surfaceIndex]);
+  if (!(material.emissiveIntensity > 0) ||
+      !nearestFixtureFace(ray, distance, distance + radius, mask, farFace, farInstance) ||
+      nearInstance != farInstance || nearFace.geometryIndex != farFace.geometryIndex ||
+      nearFace.frontHit == farFace.frontHit) {
+    return ray.tMax;
+  }
+  const Surface surface = surfaces[intersection.surfaceIndex];
+  SurfaceInteraction interaction = surfaceInteractionCreate<SurfaceGenerateTangents>(surface, intersection, ray, false);
+  if (isSurfaceClipped(surface, interaction)) {
+    return ray.tMax;
+  }
+  const OpaqueSurfaceMaterialInteraction shaded = opaqueSurfaceMaterialInteractionCreate(
+    material, surface, interaction, intersection, intersection.primitiveIndex);
+  if (!(shaded.opacity >= cb.resolveOpaquenessThreshold) || !any(shaded.emissiveRadiance > 0)) {
+    return ray.tMax;
+  }
+  // Identical ray origin and direction for both queries. Exclude only the hit
+  // itself, with a single representable float of clearance.
+  return asfloat(asuint(nearFace.hitDistance) - 1u);
+}
+
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void main(uint i : SV_DispatchThreadID) {
@@ -40,6 +96,9 @@ void main(uint i : SV_DispatchThreadID) {
   ray.coneRadius = 0;
   ray.spreadAngle = 0;
   const uint8_t mask = uint8_t(OBJECT_MASK_OPAQUE | OBJECT_MASK_ALPHA_BLEND | OBJECT_MASK_TRANSLUCENT);
+  if (source.kind == 1u || source.kind == 2u) {
+    ray.tMax = fixtureVisibilityEnd(ray, distance, mask);
+  }
   const VisibilityResult visibility = traceVisibilityRay<visibilityModeDisableCulling
     | visibilityModeEnableTranslucentMaterials>(ray, mask, invalidRayPortalIndex, PORTAL_SPACE_NONE);
   const float3 tint = saturate(visibility.attenuation) * source.colorOpacity.xyz * source.colorOpacity.w;
