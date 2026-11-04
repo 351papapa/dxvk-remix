@@ -239,6 +239,7 @@ void RetainedCompat::clear(uint64_t epoch) {
   m_worldVisibilityDirty.clear();
   m_worldDirty = true;
   m_sourceChecks = m_pairChecks = 0;
+  m_orderedStats = {};
   m_batchRejectSamples = 0;
   m_sourceRejects = {};
   m_pairRejects = {};
@@ -255,7 +256,7 @@ bool RetainedCompat::hasLegacy(const ExternalDrawState& state) const {
 }
 
 bool RetainedCompat::prepare(const Rc<DxvkContext>& ctx, const ExternalDrawState& source,
-                             std::vector<ExternalDrawState>& states) {
+                             std::vector<ExternalDrawState>* pStates) {
   RTX_OPTION_INVALIDATION_SCOPE(RtxOptionFlags::InvalidatesDrawcallTranslation);
   auto& assets = *m_scene.getAssetReplacer();
   const auto surfaces = assets.accessExternalMesh(source.mesh);
@@ -268,16 +269,27 @@ bool RetainedCompat::prepare(const Rc<DxvkContext>& ctx, const ExternalDrawState
   frontend::SceneInterface scene(*static_cast<RtxContext*>(ctx.ptr()));
   for (const auto& geometry : *surfaces) {
     const MaterialData* material = assets.accessExternalMaterial(geometry.externalMaterial);
-    if (geometry.externalMaterial && !material) {
+    const auto check = retained_compat::checkSurface(geometry.externalMaterial != nullptr, material != nullptr,
+      geometry.legacyDrawHash != 0, geometry.legacyRuleFingerprint, rule, material && material->getType() == MaterialDataType::Opaque);
+    if (check == retained_compat::SurfaceCheck::MissingMaterial) {
       Logger::err(str::format("[RetainedCompat] material unavailable: ", geometry.externalMaterial, ", mesh ", source.mesh));
       return false;
     }
-    ExternalDrawState state = source;
-    if (geometry.legacyDrawHash) {
-      if (geometry.legacyRuleFingerprint != rule || !material || material->getType() != MaterialDataType::Opaque) {
-        Logger::err(str::format("[RetainedCompat] incompatible legacy surface: mesh ", source.mesh, ", captured rule ", geometry.legacyRuleFingerprint, ", current rule ", rule, ", material present ", material != nullptr));
-        return false;
+    if (check == retained_compat::SurfaceCheck::IncompatibleLegacy) {
+      Logger::err(str::format("[RetainedCompat] incompatible legacy surface: mesh ", source.mesh, ", captured rule ", geometry.legacyRuleFingerprint, ", current rule ", rule, ", material present ", material != nullptr));
+      return false;
+    }
+    if (!geometry.legacyDrawHash) {
+      // A normal API mesh stays a single description, including its GPU transform buffer.
+      if (pStates) {
+        pStates->push_back(source);
+        pStates = nullptr;
       }
+      continue;
+    }
+    // Ordered replay validates live dependencies every call. Only a build needs material translation.
+    if (pStates) {
+      ExternalDrawState state = source;
       RasterGeometry original = geometry;
       original.cullMode = state.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
       state.inlineSubmeshes = std::make_shared<const std::vector<RasterGeometry>>(1, original);
@@ -349,11 +361,7 @@ bool RetainedCompat::prepare(const Rc<DxvkContext>& ctx, const ExternalDrawState
       state.assetKeys = frontend::AssetKeys {};
       state.assetKeys->mesh = geometry.legacyDrawHash;
       state.drawCall.wetnessMeshHash = geometry.legacyDrawHash;
-      states.push_back(std::move(state));
-    } else {
-      // A normal API mesh stays a single description, including its GPU transform buffer.
-      states.push_back(source);
-      return true;
+      pStates->push_back(std::move(state));
     }
   }
   return true;
@@ -485,7 +493,7 @@ bool RetainedCompat::build(const Rc<DxvkContext>& ctx, Entry& entry, bool refres
   const auto& record = refreshPublished ? entry.published.record : entry.record;
   const bool effectiveVisible = entry.visible;
   std::vector<ExternalDrawState> states;
-  if (!prepare(ctx, *source, states)) {
+  if (!prepare(ctx, *source, &states)) {
     eraseChildren(entry);
     fail();
     return false;
@@ -648,6 +656,11 @@ void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
   ++m_status.commitCount;
   m_status.submittedCount += m_visibleUnorderedCount;
   m_status.lastCommitFrame = frame;
+  if (frame % 240 == 0 && m_orderedStats.calls) {
+    Logger::info(str::format("[RetainedOrdered] calls=", m_orderedStats.calls, " ids=", m_orderedStats.ids,
+      " cleanReuses=", m_orderedStats.cleanReuses, " rebuilds=", m_orderedStats.rebuilds,
+      " failures=", m_orderedStats.failures));
+  }
   if (frame % 240 == 0 && !m_batchCandidates.empty()) {
     uint64_t sources = 0, children = 0;
     for (uint64_t id : m_batchCandidates) {
@@ -681,26 +694,33 @@ void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
 }
 
 void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, const std::vector<uint64_t>& ids) {
+  ++m_orderedStats.calls;
+  m_orderedStats.ids += ids.size();
   if (!checkEpoch(epoch) || m_status.lastError) {
+    ++m_orderedStats.failures;
     return;
   }
   invalidate();
-  // Reject the whole group before touching order or visibility.
-  for (uint64_t id : ids) {
+  const uint32_t frame = m_scene.device()->getCurrentFrameId();
+  const auto validate = [&](uint64_t id) {
     auto found = m_entries.find(id);
-    std::vector<ExternalDrawState> checked;
     if (found == m_entries.end() || !(found->second.record.flags & REMIXAPI_RETAINED_ORDERED) ||
-        !prepare(ctx, *found->second.state, checked)) {
+        !prepare(ctx, *found->second.state, nullptr)) {
       Logger::err(str::format("[RetainedCompat] ordered group rejected: record ", id, ", present ", found != m_entries.end(), ", epoch ", epoch));
       fail();
-      return;
+      return false;
     }
-  }
-  const uint32_t frame = m_scene.device()->getCurrentFrameId();
-  for (uint64_t id : ids) {
+    return true;
+  };
+  const auto draw = [&](uint64_t id) {
     Entry& entry = m_entries.at(id);
-    if (entry.dirty && !build(ctx, entry)) {
-      return;
+    if (entry.dirty) {
+      ++m_orderedStats.rebuilds;
+      if (!build(ctx, entry)) {
+        return false;
+      }
+    } else {
+      ++m_orderedStats.cleanReuses;
     }
     visible(entry, true);
     for (uint64_t handle : entry.children) {
@@ -712,12 +732,16 @@ void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, con
     }
     entry.orderedFrame = frame;
     ++m_status.submittedCount;
+    return true;
+  };
+  if (!retained_compat::drawValidatedGroup(ids, validate, draw)) {
+    ++m_orderedStats.failures;
   }
 }
 
 void RetainedCompat::drawImmediate(const Rc<DxvkContext>& ctx, std::unique_ptr<ExternalDrawState> state) {
   std::vector<ExternalDrawState> states;
-  if (!prepare(ctx, *state, states)) {
+  if (!prepare(ctx, *state, &states)) {
     return;
   }
   const uint32_t frame = m_scene.device()->getCurrentFrameId();

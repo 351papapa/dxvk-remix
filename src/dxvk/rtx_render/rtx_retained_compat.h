@@ -94,6 +94,9 @@ private:
   uint64_t m_fusedBuilds = 0;
   uint64_t m_sourceChecks = 0;
   uint64_t m_pairChecks = 0;
+  struct OrderedStats {
+    uint64_t calls = 0, ids = 0, cleanReuses = 0, rebuilds = 0, failures = 0;
+  } m_orderedStats;
   uint32_t m_batchRejectSamples = 0;
   RetainedBatchRejectCounts m_sourceRejects {};
   RetainedBatchRejectCounts m_pairRejects {};
@@ -111,7 +114,7 @@ private:
   void fail();
   void eraseChildren(Entry& entry);
   bool prepare(const Rc<DxvkContext>& ctx, const ExternalDrawState& source,
-               std::vector<ExternalDrawState>& states);
+               std::vector<ExternalDrawState>* pStates);
   bool build(const Rc<DxvkContext>& ctx, Entry& entry, bool refreshPublished = false);
   void fuseOriginals(const Rc<DxvkContext>& ctx, uint64_t id, uint32_t flags, std::vector<ExternalDrawState>& states);
   void rejectBatchSample(uint64_t parent, const ExternalDrawState& state, const char* phase, RetainedBatchReason reason);

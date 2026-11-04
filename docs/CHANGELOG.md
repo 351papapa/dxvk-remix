@@ -1,5 +1,11 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Ordered retained replay
+
+Ordered replay checks that every mesh and material in the group is still valid
+before publishing any draws. Clean records reuse their translated surfaces.
+The runtime reports group calls, IDs, clean reuses, rebuilds and failures.
+
 ## 2026-11-04 — Ground puddle contours and rain impacts
 
 The second ground-noise octave now has the reference weight. Sloping ground can

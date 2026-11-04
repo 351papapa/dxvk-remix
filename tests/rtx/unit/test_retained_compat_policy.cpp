@@ -220,8 +220,46 @@ void testRelativeTransform() {
   const Matrix4 original = retained_compat::childTransform<Matrix4>(parent, nullptr);
   require(std::memcmp(&original, &parent, sizeof(parent)) == 0, "original surface stays at parent transform");
 }
+
+void testOrderedValidation() {
+  using namespace dxvk::retained_compat;
+  constexpr uint64_t rule = 65;
+  require(checkSurface(false, false, false, 0, rule, false) == SurfaceCheck::Valid,
+          "ordinary mesh allows its default material");
+  require(checkSurface(true, false, false, 0, rule, false) == SurfaceCheck::MissingMaterial,
+          "a destroyed external material is an error on ordinary meshes");
+  require(checkSurface(false, false, true, rule, rule, false) == SurfaceCheck::IncompatibleLegacy,
+          "legacy mesh requires a valid opaque external material");
+  require(checkSurface(true, true, true, rule, rule + 1, true) == SurfaceCheck::IncompatibleLegacy,
+          "legacy mesh checks the current hash-generation rule");
+  require(checkSurface(true, true, true, rule, rule, false) == SurfaceCheck::IncompatibleLegacy,
+          "legacy mesh rejects a material recreated as translucent");
+
+  std::vector<unsigned> ids {2, 1, 2};
+  std::vector<unsigned> validated, drawn;
+  bool middleMaterialLive = true;
+  const auto validate = [&](unsigned id) {
+    validated.push_back(id);
+    return id < 3 && checkSurface(true, id != 1 || middleMaterialLive, true, rule, rule, true) == SurfaceCheck::Valid;
+  };
+  const auto draw = [&](unsigned id) { drawn.push_back(id); return true; };
+  require(drawValidatedGroup(ids, validate, draw) && validated == ids && drawn == ids,
+          "valid ordered group preserves duplicate ids and draw order");
+  validated.clear(); drawn.clear();
+  middleMaterialLive = false;
+  require(!drawValidatedGroup(ids, validate, draw) && validated == std::vector<unsigned>({2, 1}) && drawn.empty(),
+          "a material destroyed after successful replay prevents the next whole group from drawing");
+  middleMaterialLive = true;
+  require(drawValidatedGroup(ids, validate, draw) && drawn == ids,
+          "recheck accepts the recreated valid material");
+  validated.clear(); drawn.clear();
+  ids[1] = 7;
+  require(!drawValidatedGroup(ids, validate, draw) && drawn.empty(),
+          "invalid middle record leaves even the valid prefix undrawn");
+}
 }
 int main() {
+  testOrderedValidation();
   testProtocol(); testClassification(); testLifetime(); testWorldUpdateLifetime(); testAdmissionAndPublishedSources(); testRelativeTransform();
   std::printf("Retained Compat v2/v3: %u CPU policy checks passed\n", checks);
   return 0;

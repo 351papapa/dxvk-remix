@@ -10,6 +10,35 @@
 
 namespace dxvk::retained_compat {
 
+enum class SurfaceCheck { Valid, MissingMaterial, IncompatibleLegacy };
+
+inline SurfaceCheck checkSurface(bool hasMaterialHandle, bool hasMaterial, bool hasLegacyHash,
+                                 uint64_t capturedRule, uint64_t activeRule, bool opaque) {
+  if (hasMaterialHandle && !hasMaterial) {
+    return SurfaceCheck::MissingMaterial;
+  }
+  if (hasLegacyHash && (capturedRule != activeRule || !hasMaterial || !opaque)) {
+    return SurfaceCheck::IncompatibleLegacy;
+  }
+  return SurfaceCheck::Valid;
+}
+
+// No id may change visibility or consume a sort ordinal until the whole group was validated.
+template<typename Ids, typename Validate, typename Draw>
+bool drawValidatedGroup(const Ids& ids, Validate&& validate, Draw&& draw) {
+  for (auto id : ids) {
+    if (!validate(id)) {
+      return false;
+    }
+  }
+  for (auto id : ids) {
+    if (!draw(id)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Admission changes optional aggregation, never canonical rendering visibility.
 class WorldBatchAdmissionState {
 public:
