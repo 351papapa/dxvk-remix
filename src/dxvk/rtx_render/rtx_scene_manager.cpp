@@ -3062,6 +3062,11 @@ namespace dxvk {
 
   void SceneManager::prepareSceneData(Rc<RtxContext> ctx, DxvkBarrierSet& execBarriers) {
     ScopedGpuProfileZone(ctx, "Build Scene");
+    // Retained batches must publish original surfaces before this frame is captured.
+    auto capturer = m_device->getCommon()->capturer();
+    if (m_device->getCurrentFrameId() == m_beginUsdExportFrameNum) {
+      capturer->triggerNewCapture();
+    }
     // [Perf] CPU breakdown of this function (see takeScenePrepPhases).
     auto prepPhaseStart = std::chrono::steady_clock::now();
     const auto prepPhase = [&](uint32_t phase) {
@@ -3647,10 +3652,6 @@ namespace dxvk {
     m_device->statCounters().setCtr(DxvkStatCounter::RtxLightCount, m_lightManager.getActiveCount());
     m_device->statCounters().setCtr(DxvkStatCounter::RtxSamplers, m_samplerCache.getActiveCount());
 
-    auto capturer = m_device->getCommon()->capturer();
-    if (m_device->getCurrentFrameId() == m_beginUsdExportFrameNum) {
-      capturer->triggerNewCapture();
-    }
     capturer->step(ctx, ctx->getCommonObjects()->getLastKnownWindowHandle());
 
     // Clear the ray portal data before the next frame

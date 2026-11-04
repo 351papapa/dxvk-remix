@@ -1,5 +1,11 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Scheduled captures retain original mesh identities
+
+Frame-triggered USD capture requests original surface identities before the
+retained scene publishes geometry for that frame. Capture export still runs
+after the scene is prepared.
+
 ## 2026-11-04 — Ordered retained replay
 
 Ordered replay checks that every mesh and material in the group is still valid
