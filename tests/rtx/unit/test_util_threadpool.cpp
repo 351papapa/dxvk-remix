@@ -22,6 +22,7 @@
 #include <cstring>
 #include <random>
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -93,6 +94,11 @@ namespace {
 class ThreadPoolTestApp {
 public:
   static void run() {
+    cout << "Begin idle worker wake and shutdown tests" << endl;
+    test_idleWake(true);
+    test_idleWake(false);
+    test_idleWake<false>(true);
+    test_blockingPoolLifetime();
     cout << "Begin smoke test" << endl;
     test_smoke<0>();
     cout << "Begin task cancellation test" << endl;
@@ -115,6 +121,79 @@ public:
   }
 
 private:
+  template<bool WorkStealing = true>
+  static void test_idleWake(bool blockWhenIdle) {
+    constexpr uint32_t rounds = 24, batch = 4;
+    std::array<std::atomic<uint32_t>, rounds * batch> runs{};
+    std::atomic<uint32_t> completed = 0;
+    WorkerThreadPool<8, WorkStealing, false> pool(2, "geometry-processing", blockWhenIdle);
+    check(pool.waitsForWork() == blockWhenIdle, "the pool uses the requested idle policy");
+
+    // A single enqueue must suffice to wake a sleeping worker. Alternate singles with bursts
+    // and reuse the same ring slots across idle periods.
+    uint32_t scheduled = 0;
+    for (uint32_t round = 0; round < rounds; ++round) {
+      std::this_thread::sleep_for(milliseconds(2));
+      const uint32_t count = round % 2 ? batch : 1;
+      std::array<Future<TaggedResult>, batch> results;
+      for (uint32_t i = 0; i < count; ++i) {
+        results[i] = pool.Schedule([&, tag = scheduled + i] {
+          ++runs[tag];
+          ++completed;
+          return makeResult(tag);
+        });
+        check(results[i].valid(), "a worker accepts work after an idle interval");
+      }
+      const auto deadline = steady_clock::now() + seconds(3);
+      while (completed < scheduled + count && steady_clock::now() < deadline)
+        std::this_thread::sleep_for(milliseconds(1));
+      check(completed == scheduled + count, "workers wake without a second enqueue");
+      for (uint32_t i = 0; i < count; ++i)
+        check(matches(results[i].get(), scheduled + i), "each woken task returns its tagged result");
+      scheduled += count;
+    }
+    for (uint32_t tag = 0; tag < scheduled; ++tag)
+      check(runs[tag] == 1, "each scheduled task executes once");
+    std::this_thread::sleep_for(milliseconds(2));
+    // Destruction must also wake workers when there is no pending task.
+  }
+
+  static void test_blockingPoolLifetime() {
+    auto token = std::make_shared<int>(42);
+    std::atomic<uint32_t> cancelledRuns = 0, droppedRuns = 0;
+    std::promise<void> started;
+    auto ready = started.get_future();
+    {
+      WorkerThreadPool<16, true, false> pool(1, "geometry-processing", true);
+      std::promise<void> release;
+      auto gate = release.get_future().share();
+      auto active = pool.Schedule([&started, gate] {
+        started.set_value();
+        gate.wait();
+      });
+      check(active.valid(), "the blocking pool accepts its first task");
+      check(ready.wait_for(seconds(3)) == std::future_status::ready, "the worker starts its first task");
+
+      auto cancelled = pool.Schedule([&, token] { ++cancelledRuns; });
+      auto dropped = pool.Schedule([&, token] { ++droppedRuns; });
+      auto tail = pool.Schedule([token] { return *token; });
+      check(cancelled.valid() && dropped.valid() && tail.valid(), "the busy worker accepts queued tasks");
+      cancelled.cancel();
+      dropped.reset();
+      release.set_value();
+      check(tail.get() == 42 && droppedRuns == 1 && cancelledRuns == 0,
+            "dropping a queued future preserves execution and cancelling it skips execution");
+      active.get();
+
+      // Outstanding captures must be released whether they finish before shutdown or are drained.
+      for (uint32_t i = 0; i < 8; ++i) {
+        auto pending = pool.Schedule([token] { return token; });
+        check(pending.valid(), "the pool accepts unread results before shutdown");
+      }
+    }
+    check(token.use_count() == 1, "pool shutdown releases all captures and unread results");
+  }
+
   template<uint32_t cancelPeriod>
   static void test_smoke() {
     ZoneScoped;
@@ -124,6 +203,7 @@ private:
     const uint32_t numTasks = 2000;
 
     WorkerThreadPool<numTasks> threadPool(numThreads);
+    check(!threadPool.waitsForWork(), "the default low-latency workers keep yielding");
     cout << "Created thread pool with " << numThreads << " threads" << endl;
 
     // Create params for lambda ahead of schedule

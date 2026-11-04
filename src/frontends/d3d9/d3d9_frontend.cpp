@@ -155,6 +155,7 @@ namespace dxvk {
 
         void drawPanel() {
           RemixGui::Checkbox("D3D9: Input Log", &D3D9V2Options::logObject());
+          RemixGui::Checkbox("Let Idle D3D9 Geometry Workers Sleep (after restart)", &D3D9Rtx::d3d9GeometryWorkersWaitForWorkObject());
           RemixGui::DragInt("D3D9: Early Change Test Self-Check Every N Frames (0 = off)",
                             &D3D9V2Options::earlyChangeTestSelfCheckFramesObject(), 1.f, 0, 100000);
           RemixGui::DragInt("D3D9: Per-Draw Marker Render State (0 = off)", &D3D9V2Options::perDrawRenderStateObject(), 1.f, 0, 255);

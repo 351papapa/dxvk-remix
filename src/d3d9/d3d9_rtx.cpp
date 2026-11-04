@@ -80,7 +80,12 @@ namespace dxvk {
     : m_rtStagingData(d3d9Device->GetDXVKDevice(), "RtxStagingDataAlloc: D3D9", (VkMemoryPropertyFlagBits) (VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
     , m_parent(d3d9Device)
     , m_enableDrawCallConversion(REMIX_D3D9_FRONTEND && enableDrawCallConversion)
-    , m_pGeometryWorkers(REMIX_D3D9_FRONTEND && enableDrawCallConversion ? std::make_unique<GeometryProcessor>(numGeometryProcessingThreads(), "geometry-processing") : nullptr) {
+    , m_pGeometryWorkers(REMIX_D3D9_FRONTEND && enableDrawCallConversion
+        ? std::make_unique<GeometryProcessor>(numGeometryProcessingThreads(), "geometry-processing", d3d9GeometryWorkersWaitForWork())
+        : nullptr) {
+    if (m_pGeometryWorkers) {
+      Logger::info(str::format("[D3D9GeometryWorkers] waitForWork=", m_pGeometryWorkers->waitsForWork()));
+    }
   }
 
   void D3D9Rtx::SkinningMatrixPool::clear() {

@@ -69,6 +69,9 @@ namespace dxvk {
                "memoSelfCheckMismatch in [PerfD3D9]. The fresh hash is used on those frames. 0 = off.");
     RTX_OPTION("rtx", uint32_t, numGeometryProcessingThreads, 2, "The desired number of CPU threads to dedicate to geometry processing  Will be limited by the number of CPU cores.  There may be some advantage to lowering this number in games which are fairly simple and use a low number of draw calls per frame.  The default was determined by looking at a game with around 2000 draw calls per frame, and with a reasonably high average triangle count per draw.");
 
+    RTX_OPTION("rtx", bool, d3d9GeometryWorkersWaitForWork, false,
+      "Let native D3D9 geometry workers sleep when their task queues are empty. Useful for hosts that submit most geometry through the retained API. Restart the game to apply.");
+
     // Copy of the parameters issued to D3D9 on DrawXXX
     struct DrawContext {
       D3DPRIMITIVETYPE PrimitiveType;
@@ -259,7 +262,7 @@ namespace dxvk {
     } m_stagedBones;
 
     inline static const uint32_t kMaxConcurrentDraws = 6 * 1024; // some games issuing >3000 draw calls per frame...  account for some consumer thread lag with x2
-    using GeometryProcessor = WorkerThreadPool<kMaxConcurrentDraws>;
+    using GeometryProcessor = WorkerThreadPool<kMaxConcurrentDraws, true, false>;
     const std::unique_ptr<GeometryProcessor> m_pGeometryWorkers;
     AtomicQueue<DrawCallState, kMaxConcurrentDraws> m_drawCallStateQueue;
 #if REMIX_D3D9_FRONTEND

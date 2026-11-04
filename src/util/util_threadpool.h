@@ -322,6 +322,8 @@ namespace dxvk {
     *  LowLatency: Enables the low-latency mode where workers will spin instead of
     *              waiting for tasks on a conditional variable
     *  (ctor)workerName: Name given to threads with the pattern: workerName(N)
+    *  (ctor)waitWhenIdle: A pool built with LowLatency=false can also select
+    *                     yielding workers at construction. LowLatency=true always spins.
     *
     *  Example usage:
     *   // Creates 1 thread, and uses it to return PI via a future
@@ -341,8 +343,10 @@ namespace dxvk {
     using TaskMutex = std::conditional_t<LowLatency, Nop, dxvk::mutex>;
 
   public:
-    WorkerThreadPool(uint8_t numThreads, const char* workerName = "Nameless Worker Thread")
-    : m_numThread(std::clamp(numThreads, (uint8_t)1u, (uint8_t)dxvk::thread::hardware_concurrency())) {
+    WorkerThreadPool(uint8_t numThreads, const char* workerName = "Nameless Worker Thread", bool waitWhenIdle = !LowLatency)
+    : m_numThread(std::clamp(numThreads, (uint8_t)1u, (uint8_t)dxvk::thread::hardware_concurrency())),
+      m_waitWhenIdle(!LowLatency && waitWhenIdle) {
+      assert(!LowLatency || !waitWhenIdle);
       // Note: round up to a closest power-of-two so we can use mask as modulo
       m_taskCount = 1 << (32 - bit::lzcnt(static_cast<uint32_t>(NumTasksPerThread * m_numThread) - 1));
       m_minTaskCount = std::min(m_taskCount, static_cast<uint32_t>(1u << (32 - bit::lzcnt(static_cast<uint32_t>(m_numThread) - 1))));
@@ -432,6 +436,8 @@ namespace dxvk {
       return m_tasksRunByCaller;
     }
 
+    bool waitsForWork() const { return !LowLatency && m_waitWhenIdle; }
+
   private:
     // Picks the worker and returns the next task slot, or nullptr when either is not available.
     template <uint8_t Affinity>
@@ -463,21 +469,21 @@ namespace dxvk {
       // Capture task lambda
       task.capture<F, R>(std::forward<F>(f));
 
-      // Place task into queue
+      // A worker may pop and decrement the count as soon as push publishes the task.
+      ++m_numTasks;
       m_workerTasks[thread]->push(std::move(taskId));
 
       if constexpr (!LowLatency) {
-        std::unique_lock<TaskMutex> lock(m_taskMutex);
-        if constexpr (WorkStealing) {
-          // Notify only one worker when workers can steal from the others
-          m_condOnAdd.notify_one();
-        } else {
-          // Notify all workers when they cannot steal
-          m_condOnAdd.notify_all();
+        if (m_waitWhenIdle) {
+          // Synchronize with the worker's predicate check before notifying. A lone
+          // submission must wake a sleeper even when no further task is submitted.
+          std::unique_lock<TaskMutex> lock(m_taskMutex);
+          if constexpr (WorkStealing)
+            m_condOnAdd.notify_one();
+          else
+            m_condOnAdd.notify_all();
         }
       }
-
-      ++m_numTasks;
 
       return Future<R>(task);
     }
@@ -495,10 +501,12 @@ namespace dxvk {
       while (true) {
         // Using a conditional wait in high-latency mode
         if constexpr (!LowLatency) {
-          std::unique_lock<TaskMutex> lock(m_taskMutex);
-          m_condOnAdd.wait(lock, [this] {
-            return m_numTasks > 0 || m_stopWork.load();
-          });
+          if (m_waitWhenIdle) {
+            std::unique_lock<TaskMutex> lock(m_taskMutex);
+            m_condOnAdd.wait(lock, [this] {
+              return m_numTasks > 0 || m_stopWork.load();
+            });
+          }
         }
 
         // Master halt
@@ -523,7 +531,7 @@ namespace dxvk {
           }
 
           // If nothing to steal, yield this thread
-          if (!workStolen && LowLatency) {
+          if (!workStolen && !waitsForWork()) {
             std::this_thread::yield();
           }
         }
@@ -562,6 +570,7 @@ namespace dxvk {
     size_t m_schedulerIndex = 0;
 
     uint8_t m_numThread;
+    const bool m_waitWhenIdle;
 
     uint64_t m_tasksRunByCaller = 0;
 
@@ -582,6 +591,6 @@ namespace dxvk {
     //  1. Non-circular queue incurs allocation overhead thats unacceptable
     //  2. Use of mutex, and CVs, incur overhead thats unacceptable
     std::vector<QueuePtr> m_workerTasks;
-    std::atomic_uint32_t m_numTasks;
+    std::atomic_uint32_t m_numTasks { 0 };
   };
 } //dxvk

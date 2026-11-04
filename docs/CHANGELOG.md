@@ -1,5 +1,11 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Idle D3D9 geometry workers
+
+Set `rtx.d3d9GeometryWorkersWaitForWork` to `True` and restart the game to let
+geometry workers sleep between native D3D9 jobs. The option defaults to `False`.
+Retained API hosts with few native draws can enable it in their game profile.
+
 ## 2026-11-04 — Compact retained visibility commands
 
 The bridged and native V3 interfaces can negotiate an optional visibility
