@@ -51,6 +51,7 @@ namespace dxvk {
   // CS thread only, except the command queue's producers.
   class TransientLane;
   class RetainedCompat;
+  namespace retained_compat { enum class OrderedMoveGate : uint8_t; }
 
   class RetainedScene {
     friend class TransientLane;  // The transient lane builds from the same geometry table.
@@ -75,7 +76,7 @@ namespace dxvk {
     void describe(uint64_t handle, ExternalDrawState&& state);
     // lightsFollow false leaves the lights of an expanded mesh replacement where they are.
     void setTransform(uint64_t handle, const Matrix4& absolute, bool lightsFollow = true);
-    bool tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute);
+    bool tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate);
     void setVisible(uint64_t handle, bool visible);
     // The decal draw order of the entry's decal instances (ExternalDrawState::sortOrder); kept for rebuilds.
     void setSortOrder(uint64_t handle, uint8_t order);

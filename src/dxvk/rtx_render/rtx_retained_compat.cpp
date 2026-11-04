@@ -19,8 +19,16 @@
 #include "rtx_game_capturer.h"
 #include "rtx_debug_view.h"
 #include "rtx_texture_manager.h"
+#include "../../util/util_env.h"
 
 namespace dxvk {
+
+namespace {
+bool traceOrderedMoves() {
+  static const bool enabled = env::getEnvVar("RTX_RETAINED_ORDERED_GATE_TRACE") == "1";
+  return enabled;
+}
+}
 
 RetainedCompat::~RetainedCompat() = default;
 
@@ -710,6 +718,18 @@ void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
       " cleanReuses=", m_orderedStats.cleanReuses, " rebuilds=", m_orderedStats.rebuilds,
       " failures=", m_orderedStats.failures, " transformCandidates=", m_orderedStats.transformCandidates,
       " transformReuses=", m_orderedStats.transformReuses));
+    if (traceOrderedMoves()) {
+      constexpr const char* names[] = { "accepted", "dirty", "hidden", "priorFrame", "inspect", "childCount", "noChild",
+        "notDirect", "queued", "expansionEmpty", "expansionOriginal", "expansionSingle", "expansionMultiple",
+        "expansionServices", "replacement", "merged", "service", "notPlain", "instance", "instanceFrame", "blasFrame", "geometry",
+        "bufferLimit", "materialReplacement", "newMeshReplacement", "geometryChanged" };
+      static_assert(std::size(names) == size_t(retained_compat::OrderedMoveGate::Count));
+      std::string gates;
+      for (size_t i = 0; i < std::size(names); ++i) {
+        if (m_orderedStats.moveGates[i]) gates += str::format(" ", names[i], "=", m_orderedStats.moveGates[i]);
+      }
+      Logger::info(str::format("[RetainedOrderedGates] frame=", frame, gates));
+    }
   }
   if (frame % 240 == 0 && !m_batchCandidates.empty()) {
     uint64_t sources = 0, children = 0;
@@ -774,9 +794,13 @@ void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, con
       const bool inspect = common.capturer()->requiresOriginalSurfaceIdentities() ||
         debug.ObjectPicking.containsRequests() || debug.Highlighting.active(frame) ||
         common.getResources().getRaytracingOutput().m_primaryObjectPicking.isValid();
-      if (retained_compat::tryApplyOrderedMove(entry, frame, inspect, [&](uint64_t handle) {
-        return m_scene.retainedScene().tryMoveOrderedChild(handle, entry.state->drawCall.getTransformData().objectToWorld);
-      })) {
+      auto gate = retained_compat::OrderedMoveGate::Accepted;
+      auto* trace = traceOrderedMoves() ? &gate : nullptr;
+      bool reused = retained_compat::tryApplyOrderedMove(entry, frame, inspect, [&](uint64_t handle) {
+        return m_scene.retainedScene().tryMoveOrderedChild(handle, entry.state->drawCall.getTransformData().objectToWorld, trace);
+      }, trace);
+      if (trace) ++m_orderedStats.moveGates[size_t(gate)];
+      if (reused) {
         entry.published.publish(entry.state, entry.record);
         ++m_orderedStats.transformReuses;
       } else {

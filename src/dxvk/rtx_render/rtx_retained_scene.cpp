@@ -272,31 +272,52 @@ namespace dxvk {
     }
   }
 
-  bool RetainedScene::tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute) {
+  bool RetainedScene::tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute, retained_compat::OrderedMoveGate* gate) {
+    using Gate = retained_compat::OrderedMoveGate;
+    auto reject = [&](Gate reason) { if (gate) *gate = reason; return false; };
     const auto found = m_entries.find(handle);
-    if (found == m_entries.end()) return false;
+    if (found == m_entries.end()) return reject(Gate::NoChild);
     Entry& entry = found->second;
-    if (!entry.plainOrderedMove || !entry.hasDesc || !entry.built || entry.lane != Lane::Direct ||
-        !entry.visible || entry.hiddenApplied || entry.queued || entry.stamped || entry.expansion || entry.replacement ||
-        entry.bucket || entry.mergedPass || entry.desc.inlineSubmeshParts || entry.subs.size() != 1) {
-      return false;
+    if (!entry.hasDesc || !entry.built || entry.lane != Lane::Direct) return reject(Gate::NotDirect);
+    if (!entry.visible || entry.hiddenApplied) return reject(Gate::Hidden);
+    if (entry.queued) return reject(Gate::Queued);
+    if (entry.expansion || entry.desc.inlineSubmeshParts) {
+      if (!gate) return false;
+      if (entry.expansion && (!entry.expansion->graphTemplates.empty() || !entry.expansion->lightTemplates.empty())) return reject(Gate::ExpansionServices);
+      if (entry.subs.empty()) return reject(Gate::ExpansionEmpty);
+      if (entry.subs.size() > 1) return reject(Gate::ExpansionMultiple);
+      const auto* part = submeshPart(entry.desc, 0);
+      return reject(part && !part->meshReplacement ? Gate::ExpansionOriginal : Gate::ExpansionSingle);
     }
+    if (entry.replacement || entry.bucket) return reject(Gate::Replacement);
+    if (entry.mergedPass) return reject(Gate::Merged);
+    if (!entry.plainOrderedMove || entry.stamped) {
+      if (!gate) return false;
+      if (entry.stamped || entry.desc.optionalParticleDesc || entry.desc.drawCall.getCategoryFlags().test(InstanceCategories::ParticleEmitter) ||
+          (entry.desc.resolvedMaterial && entry.desc.resolvedMaterial->getParticleSystemDesc()) ||
+          RtxOptions::shouldConvertToLight(entry.desc.drawCall.getMaterialData().getHash())) return reject(Gate::Service);
+      return reject(Gate::NotPlain);
+    }
+    if (entry.subs.size() != 1) return reject(Gate::ChildCount);
     Submesh& sub = entry.subs.front();
     RtInstance* instance = sub.instance;
     const uint32_t frame = m_scene.device()->getCurrentFrameId();
-    if (!sub.geometry || sub.geometry->retired || sub.geometry->key.owner || !instance || instance->isMarkedForGC() ||
-        instance->isCreatedThisFrame(frame) || instance->getFrameLastUpdated() == frame || sub.geometry->blas.frameLastUpdated == frame ||
-        instance->getSceneOwnedHandle() != handle || instance->getBlas() != &sub.geometry->blas) return false;
+    if (!sub.geometry || sub.geometry->retired || sub.geometry->key.owner) return reject(Gate::Geometry);
+    if (!instance || instance->isMarkedForGC() || instance->getSceneOwnedHandle() != handle ||
+        instance->getBlas() != &sub.geometry->blas) return reject(Gate::Instance);
+    if (instance->isCreatedThisFrame(frame) || instance->getFrameLastUpdated() == frame) return reject(Gate::InstanceFrame);
+    if (sub.geometry->blas.frameLastUpdated == frame) return reject(Gate::BlasFrame);
     const auto& buffers = m_scene.m_bufferCache;
-    if (buffers.getTotalCount() >= kBufferCacheLimit && buffers.getActiveCount() >= kBufferCacheLimit) return false;
+    if (buffers.getTotalCount() >= kBufferCacheLimit && buffers.getActiveCount() >= kBufferCacheLimit) return reject(Gate::BufferLimit);
     const auto textureHash = entry.desc.drawCall.getMaterialData().getColorTexture().getImageHash();
     uint32_t matched = 0;
-    if (m_scene.m_pReplacer->getReplacementMaterial(textureHash) || m_scene.findMeshReplacements(*entry.desc.assetKeys, &matched)) return false;
+    if (m_scene.m_pReplacer->getReplacementMaterial(textureHash)) return reject(Gate::MaterialReplacement);
+    if (m_scene.findMeshReplacements(*entry.desc.assetKeys, &matched)) return reject(Gate::NewMeshReplacement);
 
     auto& blas = sub.geometry->blas;
     const RasterGeometry& original = entry.desc.inlineSubmeshes->front();
     if (original.getHashForRule<rules::FullGeometryHash>() != blas.input.getGeometryData().getHashForRule<rules::FullGeometryHash>() ||
-        entry.desc.drawCall.getSkinningState().boneHash != blas.input.getSkinningState().boneHash) return false;
+        entry.desc.drawCall.getSkinningState().boneHash != blas.input.getSkinningState().boneHash) return reject(Gate::GeometryChanged);
     // Reuse the translated rigid geometry and material. Run the real first update
     // with today's camera: it updates temporal matrices and fires material, capture
     // and opacity-micromap listeners at the original draw position.

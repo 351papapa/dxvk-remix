@@ -104,6 +104,7 @@ private:
   struct OrderedStats {
     uint64_t calls = 0, ids = 0, cleanReuses = 0, rebuilds = 0, failures = 0;
     uint64_t transformCandidates = 0, transformReuses = 0;
+    std::array<uint64_t, size_t(retained_compat::OrderedMoveGate::Count)> moveGates {};
   } m_orderedStats;
   uint32_t m_batchRejectSamples = 0;
   RetainedBatchRejectCounts m_sourceRejects {};

@@ -317,6 +317,12 @@ void testOrderedMoves() {
   entry.dirty = false;
   require(!tryApplyOrderedMove(entry, 11, false, [](uint64_t){return false;}), "unsupported child requests a full build now");
   require(tryApplyOrderedMove(entry, 11, false, move) && attempted == 1, "only one native-order move is applied");
+  OrderedMoveGate gate = OrderedMoveGate::Accepted;
+  require(!tryApplyOrderedMove(entry, 11, true, move, &gate) && gate == OrderedMoveGate::Inspect, "trace distinguishes inspection");
+  require(!tryApplyOrderedMove(entry, 12, true, move, &gate) && gate == OrderedMoveGate::PriorFrame, "only the first rejecting gate counts");
+  auto rejectedChild = [&](uint64_t) { gate = OrderedMoveGate::MaterialReplacement; return false; };
+  require(!tryApplyOrderedMove(entry, 11, false, rejectedChild, &gate) && gate == OrderedMoveGate::MaterialReplacement,
+          "child rejection reaches the counter unchanged");
 }
 
 void testOrderedValidation() {

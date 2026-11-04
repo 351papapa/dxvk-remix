@@ -11,6 +11,13 @@
 
 namespace dxvk::retained_compat {
 
+enum class OrderedMoveGate : uint8_t {
+  Accepted, Dirty, Hidden, PriorFrame, Inspect, ChildCount, NoChild, NotDirect, Queued,
+  ExpansionEmpty, ExpansionOriginal, ExpansionSingle, ExpansionMultiple, ExpansionServices,
+  Replacement, Merged, Service, NotPlain, Instance, InstanceFrame, BlasFrame, Geometry, BufferLimit,
+  MaterialReplacement, NewMeshReplacement, GeometryChanged, Count
+};
+
 template<typename Entry, typename Queue, typename Apply>
 void setVisibilityIntent(Entry& entry, bool desired, uint32_t& count, Queue&& queue, Apply&& apply) {
   if (entry.desiredVisible == desired) {
@@ -40,9 +47,15 @@ bool canStageOrderedMove(const Entry& entry, const remixapi_RetainedInstance& re
 }
 
 template<typename Entry, typename Move>
-bool tryApplyOrderedMove(const Entry& entry, uint32_t frame, bool inspecting, Move&& move) {
-  return !entry.dirty && entry.visible && entry.orderedFrame != ~0u && entry.orderedFrame + 1 == frame &&
-    !inspecting && entry.children.size() == 1 && move(entry.children.front());
+bool tryApplyOrderedMove(const Entry& entry, uint32_t frame, bool inspecting, Move&& move, OrderedMoveGate* gate = nullptr) {
+  using Gate = OrderedMoveGate;
+  auto reject = [&](Gate reason) { if (gate) *gate = reason; return false; };
+  if (entry.dirty) return reject(Gate::Dirty);
+  if (!entry.visible) return reject(Gate::Hidden);
+  if (entry.orderedFrame == ~0u || entry.orderedFrame + 1 != frame) return reject(Gate::PriorFrame);
+  if (inspecting) return reject(Gate::Inspect);
+  if (entry.children.size() != 1) return reject(Gate::ChildCount);
+  return move(entry.children.front());
 }
 
 enum class SurfaceCheck { Valid, MissingMaterial, IncompatibleLegacy };
