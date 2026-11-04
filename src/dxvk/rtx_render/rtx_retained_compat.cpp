@@ -379,7 +379,7 @@ void RetainedCompat::rejectBatchSample(uint64_t parent, const ExternalDrawState&
 }
 
 void RetainedCompat::fuseOriginals(const Rc<DxvkContext>& ctx, uint64_t id, uint32_t flags, std::vector<ExternalDrawState>& states) {
-  if (states.size() < 2 || (flags & REMIXAPI_RETAINED_ORDERED)) {
+  if (!m_geometryAggregation || states.size() < 2 || (flags & REMIXAPI_RETAINED_ORDERED)) {
     m_batchCandidates.erase(id);
     return;
   }
@@ -478,6 +478,13 @@ void RetainedCompat::refreshBatches(const Rc<DxvkContext>& ctx, bool wetnessRule
     m_batchCache.clear();
     invalidateWorld(WorldReason::Wetness);
   }
+  const bool aggregate = aggregateLegacyRetainedGeometry();
+  if (aggregate != m_geometryAggregation) {
+    m_geometryAggregation = aggregate;
+    m_batchCache.clear();
+    invalidateWorld(WorldReason::Options);
+    Logger::info(str::format("[RetainedCompat] geometry aggregation=", aggregate));
+  }
   if (inactive != m_identityToolsInactive) {
     invalidateWorld(WorldReason::Identity);
   }
@@ -512,9 +519,11 @@ bool RetainedCompat::build(const Rc<DxvkContext>& ctx, Entry& entry, bool refres
   const bool wasWorldCandidate = entry.worldCandidate;
   entry.worldCandidate = false;
   entry.worldParts.clear();
-  entry.worldParts.resize(states.size());
+  if (m_geometryAggregation) {
+    entry.worldParts.resize(states.size());
+  }
   for (size_t i = 0; i < states.size(); ++i) {
-    if (!entry.everMoved && !(record.flags & REMIXAPI_RETAINED_ORDERED)) {
+    if (m_geometryAggregation && !entry.everMoved && !(record.flags & REMIXAPI_RETAINED_ORDERED)) {
       // This optional view retains no authority over the canonical replacement description.
       try { retained.resolveStaticParts(states[i], entry.worldParts[i]); }
       catch (const std::exception&) { entry.worldParts[i].clear(); }
@@ -965,7 +974,7 @@ void RetainedCompat::reconcileWorldBatches(const Rc<DxvkContext>& ctx) {
     m_worldDirty = false;
     return;
   }
-  if (!m_identityToolsInactive) {
+  if (!m_geometryAggregation || !m_identityToolsInactive) {
     if (!m_worldViews.empty()) {
       restoreWorldChildren(false);
     }

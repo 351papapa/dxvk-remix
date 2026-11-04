@@ -55,6 +55,7 @@
 #include "rtx_render/rtx_pathtracer_gbuffer.h"
 #include "rtx_render/rtx_hash_collision_detection.h"
 #include "rtx_render/rtx_options.h"
+#include "rtx_render/rtx_retained_compat.h"
 #include "../shaders/rtx/pass/wetness_args.h"
 #include "../shaders/rtx/pass/window_light_args.h"
 #include "rtx_render/rtx_pipeline_stats.h"
@@ -5070,6 +5071,7 @@ namespace dxvk {
         RemixGui::DragInt("Frames to Keep Instances", &RtxOptions::numFramesToKeepInstancesObject(), 1.f, 1, 10000);
         RemixGui::DragInt("Frames to Keep BLAS / Geometry", &RtxOptions::numFramesToKeepBLASObject(), 1.f, 1, 10000);
         RemixGui::DragInt("Frames to Keep Pooled BLAS (0 = as above)", &RtxOptions::numFramesToKeepMergedBlasObject(), 1.f, 0, 10000);
+        RemixGui::Checkbox("API Retained: Combine Compatible Legacy Surfaces", &RetainedCompat::aggregateLegacyRetainedGeometryObject());
         RemixGui::Combo("API Retained: Hidden Instances", &RtxOptions::retainedHiddenPolicyObject(),
           "Release (age out)\0Keep ray traced\0Keep resident, not ray traced\0");
         ImGui::Unindent();

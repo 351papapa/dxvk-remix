@@ -26,6 +26,14 @@ A bridge v3 request requires `GetGameValue("vc.client.retainedVisibilityVersion"
 
 ## Original-surface fusion
 
+`rtx.scene.aggregateLegacyRetainedGeometry` defaults to `True`. The developer
+menu exposes it as **API Retained: Combine Compatible Legacy Surfaces**.
+Turning it off disables both within-parent fusion and cross-parent world batches.
+The next retained scene refresh rebuilds the published geometry from its source
+descriptions and restores each child's visibility. Ordered groups still replay
+at their explicit draw positions. Scheduled USD captures request original mesh
+identities before the retained scene is refreshed.
+
 For one unordered parent, dirty preparation may physically concatenate compatible original API surfaces into one vertex/index buffer and one render child. Original per-surface identities and asset dependencies remain in the API mesh; a matched enhanced mesh replacement always resolves separately. Eligibility requires identical opaque material/alpha/layout/cull state, one parent transform/visibility lifetime, no skinning or special surface service, and equal current hash-specific wetness rules. Device-local or unsupported layouts retain their original surfaces.
 
 The fused rendering view is reused until a description, asset, translation option or applicable rule changes. A capture trigger (including pending triggers), picking/highlighting requests or an active picking image restores original surfaces before this frame's upload. Wetness rule changes reclassify candidates in the same frame. Ordered draws remain at their existing call positions.

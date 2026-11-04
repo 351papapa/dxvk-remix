@@ -7,6 +7,7 @@
 #include <vector>
 #include <remix/remix_retained.h>
 #include "rtx_frontend_interface.h"
+#include "rtx_option.h"
 #include "rtx_retained_static_batch.h"
 #include "rtx_retained_world_batch.h"
 #include "rtx_retained_compat_policy.h"
@@ -17,6 +18,9 @@ namespace dxvk {
 // The versioned fixed-width host catalog. Rendering belongs to RetainedScene.
 class RetainedCompat {
 public:
+  RTX_OPTION("rtx.scene", bool, aggregateLegacyRetainedGeometry, true,
+    "Combine compatible legacy retained surfaces within and across unordered instances. Disable to render each surface independently. Both modes preserve replacements and visibility.");
+
   explicit RetainedCompat(SceneManager& scene) : m_scene(scene) { }
   ~RetainedCompat();
   void upsert(uint64_t epoch, std::vector<remixapi_RetainedInstance>&& records,
@@ -91,6 +95,7 @@ private:
   WorldCpuStats m_worldFullCpu, m_worldFastCpu;
   uint32_t m_worldFullLogFrame = 0, m_worldFastLogFrame = 0;
   bool m_identityToolsInactive = false;
+  bool m_geometryAggregation = true;
   uint64_t m_fusedBuilds = 0;
   uint64_t m_sourceChecks = 0;
   uint64_t m_pairChecks = 0;
