@@ -1147,6 +1147,8 @@ namespace dxvk {
             if (previous != objects.end()) {
               // An update: same object, and its age carries over. The scene carries the replacement's lights over.
               object.frameCreated = previous->second.frameCreated;
+              // Rebuilding a retained entry preserves its visibility until this frame's seen list shows it again.
+              object.hiddenUnseen = previous->second.hiddenUnseen;
               // An update that moves the object counts as a move, so it is not anti-culled mid-motion.
               object.frameMoved = sameMatrix(previous->second.objectToWorld, object.objectToWorld)
                 ? previous->second.frameMoved
