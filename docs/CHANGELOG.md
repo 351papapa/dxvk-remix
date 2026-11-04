@@ -12,13 +12,7 @@ world units and preserve the underwater camera volume. Set `objectFadeWidth`
 to zero to disable the view-direction probe. Debug view 892 shows resolved
 water in red where fully faded and green where unchanged.
 
-## 2026-11-04 — Live plugin INI settings and DLSS-NR diagnostics
-
-Game integrations may supply `rtx-remix/host-settings.txt` beside the game to expose
-hot-reloaded plugin INI values through Host Settings and Game Settings. Each row
-contains a game-local INI filename, section, key, type (`bool` or `float`), default,
-minimum, maximum, quoted group and quoted display label. The menu edits the
-existing INI key and refreshes while open. Only declare values the plugin reloads.
+## 2026-11-04 — DLSS-NR evaluation diagnostics
 
 The DLSS-NR log now records the first successfully evaluated frame after each model
 initialization, including the requested network preset and number of passes.
