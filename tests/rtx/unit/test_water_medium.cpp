@@ -5,6 +5,7 @@
 #include "glm/gtc/packing.hpp"
 
 #include "../../../src/dxvk/rtx_render/rtx_water_medium.h"
+#include "../../../src/dxvk/rtx_render/rtx_water_visibility.h"
 
 int main() {
   using namespace dxvk;
@@ -171,6 +172,43 @@ int main() {
   check(makeWaterMediumState(true, waterHash, waterHash, optics, 0.5f, 0.4f, inactiveEdit).changed,
     "re-entering water invalidates history after inactive edits");
 
+  const auto vcOptics = waterOpticalProperties(Vector3(0.281853f, 0.81041f, 1.0f), 17.9f, 0.01f);
+  const auto submerged = makeWaterMediumState(true, waterHash, waterHash, vcOptics, 0.9f, 0.4f, clear);
+  const auto tracked = makeWaterMediumState(true, waterHash, waterHash, vcOptics, 0.9f, 0.4f, submerged);
+  const auto rain = WaterWeatherState::forName("Rainstorm");
+  const auto storm = WaterWeatherState::forName("Thunderstorm");
+  const auto inRain = applyWaterWeatherParticles(tracked, rain, 0.055f, 0.10f, 1.0f, 0.9f);
+  const auto inStorm = applyWaterWeatherParticles(tracked, storm, 0.055f, 0.10f, 1.0f, 0.9f);
+  check(!tracked.changed && !inRain.changed && submerged.changed,
+    "only the camera entry invalidates history; volume weather does not change the tracked state");
+  for (uint32_t channel = 0; channel < 3; ++channel) {
+    check(closeTo(inRain.extinction[channel] - tracked.extinction[channel], 0.055f)
+      && closeTo(inStorm.extinction[channel] - tracked.extinction[channel], 0.10f)
+      && closeTo(inRain.scattering[channel] - tracked.scattering[channel], 0.9f * 0.055f),
+      "additional particles follow per-meter rain and storm endpoints on every color channel");
+  }
+  for (int i = 0; i <= 64; ++i) {
+    const float t = i / 64.0f;
+    const auto mix = applyWaterWeatherParticles(tracked, WaterWeatherState::blend(rain, storm, t),
+      0.055f, 0.10f, 100.0f, 0.9f);
+    check(!mix.changed && closeTo((mix.extinction.x - tracked.extinction.x) * 100.0f, 0.055f + t * 0.045f),
+      "weather transition at a second scene scale leaves history valid and interpolates neutral extinction");
+  }
+  const auto noWater = applyWaterWeatherParticles(exited, storm, 0.055f, 0.10f, 1.0f, 0.9f);
+  const auto bounded = applyWaterWeatherParticles(tracked, {2.0f, 2.0f}, 2.0f, nan, 1.0f, 3.0f);
+  check(noWater.changed && !noWater.active && noWater.extinction == exited.extinction && noWater.scattering == exited.scattering,
+    "exiting water preserves the reset edge and leaves atmospheric coefficients untouched");
+  check(applyWaterWeatherParticles(tracked, {}, 0.055f, 0.10f, 1.0f, 0.9f).extinction == tracked.extinction
+    && applyWaterWeatherParticles(tracked, storm, 0.0f, 0.0f, 1.0f, 0.9f).extinction == tracked.extinction
+    && applyWaterWeatherParticles(tracked, rain, 0.055f, 0.10f, nan, 0.9f).extinction == tracked.extinction
+    && closeTo(bounded.extinction.y - tracked.extinction.y, 0.5f)
+    && closeTo(bounded.scattering.y - tracked.scattering.y, 0.5f),
+    "dry and zero options preserve authored water; invalid coefficients and scene scales remain finite");
+  for (const auto& sample : {tracked, inRain, inStorm}) {
+    std::printf("Underwater at 10 m: T=(%.6f, %.6f, %.6f), scattering=%.6f, historyReset=%d\n",
+      std::exp(-10.0f * sample.extinction.x), std::exp(-10.0f * sample.extinction.y),
+      std::exp(-10.0f * sample.extinction.z), sample.scattering.x, sample.changed);
+  }
   std::printf("Water optical properties and medium transitions: %d failures\n", failures);
   return failures ? -1 : 0;
 }

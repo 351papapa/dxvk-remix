@@ -25,6 +25,11 @@
 #include "rtx_render/rtx_shader_manager.h"
 #include "rtx_composite.h"
 #include "rtx_water.h"
+#include "rtx_water_visibility.h"
+#include "rtx_numos_weather.h"
+#include "../../util/util_env.h"
+
+#include <atomic>
 
 #include "rtx/pass/common_binding_indices.h"
 #include "rtx/pass/volumetrics/volume_integrate_binding_indices.h"
@@ -639,7 +644,7 @@ namespace dxvk {
 
   VolumeArgs RtxGlobalVolumetrics::getVolumeArgs(CameraManager const& cameraManager, FogState const& fogState, bool enablePortalVolumes, const VolumetricWeatherState& weather) const {
     const WaterSystem& waterSystem = m_device->getCommon()->metaWater();
-    const WaterMediumState& water = waterSystem.cameraMedium();
+    const WaterMediumState water = getWeatherCameraWaterMedium(waterSystem.cameraMedium(), m_device->getCommon()->metaNumosWeather());
 
     // Calculate the volumetric parameters from options and the fixed function fog state.
 
@@ -867,6 +872,23 @@ namespace dxvk {
       volumeArgs.enableVolumeTemporalResampling = false;
     }
 
+    static const bool logWaterOptics = env::getEnvVar("RTX_WATER_OPTICS_DIAGNOSTICS") == "1";
+    if (logWaterOptics && water.active) {
+      const auto weights = m_device->getCommon()->metaNumosWeather().waterState();
+      const uint32_t endpoint = (weights.rain == 0.0f && weights.storm == 0.0f) ? 1u
+        : (weights.rain == 1.0f && weights.storm == 0.0f) ? 2u
+        : (weights.rain == 0.0f && weights.storm == 1.0f) ? 4u : 0u;
+      static std::atomic<uint32_t> loggedEndpoints{0u};
+      if (endpoint && !(loggedEndpoints.load(std::memory_order_relaxed) & endpoint)
+          && !(loggedEndpoints.fetch_or(endpoint, std::memory_order_relaxed) & endpoint)) {
+        const auto& extinction = volumeArgs.attenuationCoefficient;
+        const auto& scattering = volumeArgs.scatteringCoefficient;
+        Logger::info(str::format("[Water optics] rain=", weights.rain, " storm=", weights.storm,
+          " extinction=", extinction.x, ",", extinction.y, ",", extinction.z,
+          " scattering=", scattering.x, ",", scattering.y, ",", scattering.z,
+          " worldUnitsPerMeter=", RtxOptions::getMeterToWorldUnitScale()));
+      }
+    }
     return volumeArgs;
   }
 

@@ -228,6 +228,7 @@ dxvk_src = files([
   'rtx_render/rtx_water_surface.cpp',
   'rtx_render/rtx_water_surface.h',
   'rtx_render/rtx_volumetric_weather.h',
+  'rtx_render/rtx_water_visibility.h',
   'rtx_render/rtx_water_weather.h',
   'rtx_render/rtx_window_light.h',
   'rtx_render/rtx_window_topology.h',

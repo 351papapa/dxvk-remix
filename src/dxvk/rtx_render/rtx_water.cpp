@@ -1,4 +1,6 @@
 #include "rtx_water.h"
+#include "rtx_water_visibility.h"
+#include "rtx_numos_weather.h"
 #include "rtx_camera.h"
 #include "rtx_imgui.h"
 #include "rtx_context.h"
@@ -18,6 +20,28 @@
 #include <system_error>
 
 namespace dxvk {
+namespace {
+struct CameraWaterParticleOptions {
+  RTX_OPTION("rtx.water", float, underwaterRainParticleExtinctionPerMeter, 0.0f,
+    "Additional neutral extinction per meter for a submerged camera in rain, from 0 to 1. Zero keeps the dry water clarity. The particle scattering fraction controls how much light is scattered.");
+  RTX_OPTION("rtx.water", float, underwaterStormParticleExtinctionPerMeter, 0.0f,
+    "Additional neutral extinction per meter for a submerged camera in a storm, from 0 to 1. The value blends with rain or clear weather. Zero keeps the dry water clarity.");
+};
+}
+
+WaterMediumState getWeatherCameraWaterMedium(const WaterMediumState& medium, const NumosWeather& weather) {
+  if (!medium.active) {
+    return medium;
+  }
+  const float rain = CameraWaterParticleOptions::underwaterRainParticleExtinctionPerMeter();
+  const float storm = CameraWaterParticleOptions::underwaterStormParticleExtinctionPerMeter();
+  if (rain == 0.0f && storm == 0.0f) {
+    return medium;
+  }
+  return applyWaterWeatherParticles(medium, weather.waterState(), rain, storm,
+    RtxOptions::getMeterToWorldUnitScale(), WaterSystem::underwaterScattering());
+}
+
 WaterOpticalProperties WaterSystem::opticalProperties() {
   const float requestedParticles = particleExtinctionPerMeter();
   const float particlesPerMeter = std::isfinite(requestedParticles) ? std::clamp(requestedParticles, 0.0f, 1.0f) : 0.0f;
@@ -484,6 +508,8 @@ void WaterSystem::showImguiSettings() {
     RemixGui::Checkbox("Underwater volumetric lighting", &underwaterEnabledObject());
     RemixGui::SliderFloat("Underwater caustic shaft contrast", &volumetricCausticsStrengthObject(), 0.0f, 1.0f, "%.2f", flags);
     RemixGui::SliderFloat("Particle scattering fraction", &underwaterScatteringObject(), 0.0f, 1.0f, "%.2f", flags);
+    RemixGui::SliderFloat("Additional rain extinction / m", &CameraWaterParticleOptions::underwaterRainParticleExtinctionPerMeterObject(), 0.0f, 1.0f, "%.3f", flags);
+    RemixGui::SliderFloat("Additional storm extinction / m", &CameraWaterParticleOptions::underwaterStormParticleExtinctionPerMeterObject(), 0.0f, 1.0f, "%.3f", flags);
     RemixGui::SliderFloat("Water forward scattering", &underwaterAnisotropyObject(), 0.0f, 0.8f, "%.2f", flags);
     RemixGui::Checkbox("Reflected caustics above water", &reflectedCausticsEnabledObject());
     RemixGui::SliderFloat("Reflected caustic strength", &reflectedCausticsStrengthObject(), 0.0f, 8.0f, "%.2f", flags);

@@ -1,5 +1,13 @@
 # Remix Plus changelog
 
+## 2026-11-04 — Rain and storm visibility below water
+
+Water settings now include separate rain and storm particle extinction values.
+Both default to zero. Underwater visibility follows the weather blend using
+the existing water volume, while the surface retains its authored optics.
+Set `RTX_WATER_OPTICS_DIAGNOSTICS=1` before launch to log the final volume
+coefficients once for each clear, rain and storm endpoint reached underwater.
+
 ## 2026-11-04 — Idle D3D9 geometry workers
 
 Set `rtx.d3d9GeometryWorkersWaitForWork` to `True` and restart the game to let
