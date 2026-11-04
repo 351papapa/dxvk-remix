@@ -272,6 +272,51 @@ namespace dxvk {
     }
   }
 
+  bool RetainedScene::tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute) {
+    const auto found = m_entries.find(handle);
+    if (found == m_entries.end()) return false;
+    Entry& entry = found->second;
+    if (!entry.plainOrderedMove || !entry.hasDesc || !entry.built || entry.lane != Lane::Direct ||
+        !entry.visible || entry.hiddenApplied || entry.queued || entry.stamped || entry.expansion || entry.replacement ||
+        entry.bucket || entry.mergedPass || entry.desc.inlineSubmeshParts || entry.subs.size() != 1) {
+      return false;
+    }
+    Submesh& sub = entry.subs.front();
+    RtInstance* instance = sub.instance;
+    const uint32_t frame = m_scene.device()->getCurrentFrameId();
+    if (!sub.geometry || sub.geometry->retired || sub.geometry->key.owner || !instance || instance->isMarkedForGC() ||
+        instance->isCreatedThisFrame(frame) || instance->getFrameLastUpdated() == frame || sub.geometry->blas.frameLastUpdated == frame ||
+        instance->getSceneOwnedHandle() != handle || instance->getBlas() != &sub.geometry->blas) return false;
+    const auto& buffers = m_scene.m_bufferCache;
+    if (buffers.getTotalCount() >= kBufferCacheLimit && buffers.getActiveCount() >= kBufferCacheLimit) return false;
+    const auto textureHash = entry.desc.drawCall.getMaterialData().getColorTexture().getImageHash();
+    uint32_t matched = 0;
+    if (m_scene.m_pReplacer->getReplacementMaterial(textureHash) || m_scene.findMeshReplacements(*entry.desc.assetKeys, &matched)) return false;
+
+    auto& blas = sub.geometry->blas;
+    const RasterGeometry& original = entry.desc.inlineSubmeshes->front();
+    if (original.getHashForRule<rules::FullGeometryHash>() != blas.input.getGeometryData().getHashForRule<rules::FullGeometryHash>() ||
+        entry.desc.drawCall.getSkinningState().boneHash != blas.input.getSkinningState().boneHash) return false;
+    // Reuse the translated rigid geometry and material. Run the real first update
+    // with today's camera: it updates temporal matrices and fires material, capture
+    // and opacity-micromap listeners at the original draw position.
+    RTX_OPTION_INVALIDATION_SCOPE(RtxOptionFlags::InvalidatesDrawcallTranslation);
+    ExternalDrawState state = entry.desc;
+    state.drawCall.modifyTransformData().objectToWorld = rebase(absolute);
+    m_scene.prepareExternalDrawCall(state);
+    std::shared_ptr<MaterialData> keepAlive;
+    const MaterialData& material = m_scene.prepareExternalSubmeshDrawCall(state, state.inlineSubmeshes, 0, keepAlive);
+    m_scene.m_instanceManager.processSceneObject(m_scene.m_cameraManager, m_scene.m_rayPortalManager,
+      blas, state.drawCall, material, instance, state.alphaState ? &*state.alphaState : nullptr,
+      state.legacySurface ? &*state.legacySurface : nullptr);
+    auto& transforms = entry.desc.drawCall.modifyTransformData();
+    transforms.objectToWorld = absolute;
+    transforms.objectToView = transforms.worldToView * absolute;
+    m_settle.push_back(instance);
+    applyVisibility(entry);
+    return true;
+  }
+
   void RetainedScene::setSortOrder(uint64_t handle, uint8_t order) {
     const auto found = m_entries.find(handle);
     if (found == m_entries.end()) {
@@ -1086,6 +1131,7 @@ namespace dxvk {
 
     const float uiOffset = RtxOptions::worldSpaceUiBackgroundOffset();
     entry.stamped = false;
+    entry.plainOrderedMove = false;
     const uint32_t frame = m_scene.device()->getCurrentFrameId();
     InstanceManager& instances = m_scene.m_instanceManager;
     const size_t count = submeshesRef->size();
@@ -1250,6 +1296,13 @@ namespace dxvk {
       }
       if (service.flags != 0) {
         m_services.push_back(service);
+      }
+      if (count == 1 && service.flags == 0 && state.frontendResolved && state.resolvedMaterial && state.inlineSubmeshes &&
+          !hasParts && !state.deforming && !drawCall.getTransformData().instancesToObject && !drawCall.getSkinningState().numBones &&
+          !instance->usesUnorderedApproximations() && !instance->getBillboardCount() &&
+          !instance->surface.alphaState.isDecal && !instance->surface.eyeParams &&
+          instance->getMaterialType() == MaterialDataType::Opaque && state.assetKeys && !entry.mergedPass) {
+        entry.plainOrderedMove = true;
       }
       if (instance->surface.alphaState.isDecal) {
         // The host's order (ExternalDrawState::sortOrder), else a stable order per decal assigned at creation

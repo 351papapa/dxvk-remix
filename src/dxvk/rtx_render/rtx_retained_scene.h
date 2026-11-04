@@ -75,6 +75,7 @@ namespace dxvk {
     void describe(uint64_t handle, ExternalDrawState&& state);
     // lightsFollow false leaves the lights of an expanded mesh replacement where they are.
     void setTransform(uint64_t handle, const Matrix4& absolute, bool lightsFollow = true);
+    bool tryMoveOrderedChild(uint64_t handle, const Matrix4& absolute);
     void setVisible(uint64_t handle, bool visible);
     // The decal draw order of the entry's decal instances (ExternalDrawState::sortOrder); kept for rebuilds.
     void setSortOrder(uint64_t handle, uint8_t order);
@@ -228,6 +229,7 @@ namespace dxvk {
       std::vector<Submesh> subs;
       const char* legacyReason = nullptr;  // why it is on the legacy lane ([SceneRetained] breakdown)
       bool stamped = false;                // stamped per frame; moves rebuild
+      bool plainOrderedMove = false;       // single original surface with no per-draw services
       // A USD mesh replacement drawn as the entry's own (untracked) replacement instance,
       // the bucket it was drawn from and the draw state it is preserved with each frame.
       std::unique_ptr<ReplacementInstance> replacement;

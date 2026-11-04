@@ -137,6 +137,13 @@ void RetainedCompat::upsert(uint64_t epoch, std::vector<remixapi_RetainedInstanc
       entry.worldParts.clear();
       entry.worldCandidate = false;
     }
+    if (!inserted && retained_compat::canStageOrderedMove(entry, record)) {
+      entry.orderedTransformPending = true;
+      entry.record = record;
+      entry.state = std::move(states[i].m_state);
+      continue;
+    }
+    entry.orderedTransformPending = false;
     if (!inserted && !(record.flags & REMIXAPI_RETAINED_ORDERED) &&
         remixapi_retained::sameDescription(entry.record, record)) {
       const bool moved = !remixapi_retained::sameTransform(entry.record, record);
@@ -701,7 +708,8 @@ void RetainedCompat::commit(const Rc<DxvkContext>& ctx, uint64_t epoch) {
   if (frame % 240 == 0 && m_orderedStats.calls) {
     Logger::info(str::format("[RetainedOrdered] calls=", m_orderedStats.calls, " ids=", m_orderedStats.ids,
       " cleanReuses=", m_orderedStats.cleanReuses, " rebuilds=", m_orderedStats.rebuilds,
-      " failures=", m_orderedStats.failures));
+      " failures=", m_orderedStats.failures, " transformCandidates=", m_orderedStats.transformCandidates,
+      " transformReuses=", m_orderedStats.transformReuses));
   }
   if (frame % 240 == 0 && !m_batchCandidates.empty()) {
     uint64_t sources = 0, children = 0;
@@ -756,6 +764,25 @@ void RetainedCompat::drawOrdered(const Rc<DxvkContext>& ctx, uint64_t epoch, con
   };
   const auto draw = [&](uint64_t id) {
     Entry& entry = m_entries.at(id);
+    if (entry.orderedTransformPending) {
+      entry.orderedTransformPending = false;
+      ++m_orderedStats.transformCandidates;
+      // Keep first submissions, repeated moves in one frame, captures, picking and
+      // invalidations on the full path. The whole group has already passed validation.
+      auto& common = *m_scene.device()->getCommon();
+      auto& debug = common.metaDebugView();
+      const bool inspect = common.capturer()->requiresOriginalSurfaceIdentities() ||
+        debug.ObjectPicking.containsRequests() || debug.Highlighting.active(frame) ||
+        common.getResources().getRaytracingOutput().m_primaryObjectPicking.isValid();
+      if (retained_compat::tryApplyOrderedMove(entry, frame, inspect, [&](uint64_t handle) {
+        return m_scene.retainedScene().tryMoveOrderedChild(handle, entry.state->drawCall.getTransformData().objectToWorld);
+      })) {
+        entry.published.publish(entry.state, entry.record);
+        ++m_orderedStats.transformReuses;
+      } else {
+        entry.dirty = true;
+      }
+    }
     if (entry.dirty) {
       ++m_orderedStats.rebuilds;
       if (!build(ctx, entry)) {

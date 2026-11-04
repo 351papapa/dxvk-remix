@@ -262,6 +262,63 @@ void testVisibilityDelta() {
   }
 }
 
+void testOrderedMoves() {
+  using namespace dxvk::retained_compat;
+  struct Entry {
+    remixapi_RetainedInstance record = instance();
+    bool dirty = false, visible = true, orderedTransformPending = false;
+    PublishedSourceState<int, remixapi_RetainedInstance> published;
+    unsigned sourceCount = 1, orderedFrame = 10;
+    std::vector<uint64_t> children = {87};
+  } entry;
+  entry.record.flags = REMIXAPI_RETAINED_ORDERED;
+  auto moved = entry.record;
+  moved.transform.matrix[1][0] = std::numeric_limits<float>::denorm_min();
+  require(!canStageOrderedMove(entry, moved), "first ordered draw has no published source");
+  entry.published.publish(std::make_shared<int>(1), entry.record);
+  require(canStageOrderedMove(entry, moved), "bit-exact change to matrix basis is a move");
+  require(!canStageOrderedMove(entry, entry.record), "identical matrix cannot imply a move");
+  for (unsigned i = 0; i < 10; ++i) {
+    auto changed = moved;
+    switch (i) {
+      case 0: ++changed.mesh; break;
+      case 1: ++changed.id; break;
+      case 2: ++changed.wetTag; break;
+      case 3: ++changed.categoryFlags; break;
+      case 4: ++changed.objectPickingValue; break;
+      case 5: ++changed.doubleSided; break;
+      case 6: ++changed.useBlend; break;
+      case 7: ++changed.blend.tFactor; break;
+      case 8: changed.flags = 0; break;
+      case 9: changed.flags |= REMIXAPI_RETAINED_HIDDEN; break;
+    }
+    require(!canStageOrderedMove(entry, changed), "every full description change rebuilds");
+  }
+  entry.orderedTransformPending = true;
+  require(!canStageOrderedMove(entry, moved), "second upsert before draw does not skip a full update");
+  entry.orderedTransformPending = false; entry.dirty = true;
+  require(!canStageOrderedMove(entry, moved), "existing asset/scene invalidation wins");
+  entry.dirty = false; entry.published.stage();
+  require(!canStageOrderedMove(entry, moved), "stale published description rebuilds");
+  entry.published.publish(std::make_shared<int>(1), entry.record); entry.sourceCount = 3;
+  require(!canStageOrderedMove(entry, moved), "fused or multisurface source rebuilds");
+  entry.sourceCount = 1; entry.children.push_back(99);
+  require(!canStageOrderedMove(entry, moved), "additional children rebuild as a unit");
+  entry.children.resize(1);
+  unsigned attempted = 0;
+  auto move = [&](uint64_t id) { require(id == 87, "retain child identity"); ++attempted; return true; };
+  require(!tryApplyOrderedMove(entry, 10, false, move), "same-frame repeat must redraw");
+  require(!tryApplyOrderedMove(entry, 12, false, move), "frame gap redraws");
+  require(!tryApplyOrderedMove(entry, 11, true, move), "capture/picking preserve original build");
+  entry.visible = false;
+  require(!tryApplyOrderedMove(entry, 11, false, move), "unseen-to-visible redraws");
+  entry.visible = true; entry.dirty = true;
+  require(!tryApplyOrderedMove(entry, 11, false, move) && !attempted, "invalidation between upsert and draw wins");
+  entry.dirty = false;
+  require(!tryApplyOrderedMove(entry, 11, false, [](uint64_t){return false;}), "unsupported child requests a full build now");
+  require(tryApplyOrderedMove(entry, 11, false, move) && attempted == 1, "only one native-order move is applied");
+}
+
 void testOrderedValidation() {
   using namespace dxvk::retained_compat;
   constexpr uint64_t rule = 65;
@@ -301,6 +358,7 @@ void testOrderedValidation() {
 }
 int main() {
   testVisibilityDelta();
+  testOrderedMoves();
   testOrderedValidation();
   testProtocol(); testClassification(); testLifetime(); testWorldUpdateLifetime(); testAdmissionAndPublishedSources(); testRelativeTransform();
   std::printf("Retained Compat v2/v3: %u CPU policy checks passed\n", checks);

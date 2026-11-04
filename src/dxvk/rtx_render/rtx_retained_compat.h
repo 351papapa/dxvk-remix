@@ -56,6 +56,7 @@ private:
     bool desiredVisible = true;
     bool visible = false;
     uint32_t orderedFrame = ~0u;
+    bool orderedTransformPending = false;
   };
   SceneManager& m_scene;
   std::unordered_map<uint64_t, Entry> m_entries;
@@ -102,6 +103,7 @@ private:
   uint64_t m_pairChecks = 0;
   struct OrderedStats {
     uint64_t calls = 0, ids = 0, cleanReuses = 0, rebuilds = 0, failures = 0;
+    uint64_t transformCandidates = 0, transformReuses = 0;
   } m_orderedStats;
   uint32_t m_batchRejectSamples = 0;
   RetainedBatchRejectCounts m_sourceRejects {};

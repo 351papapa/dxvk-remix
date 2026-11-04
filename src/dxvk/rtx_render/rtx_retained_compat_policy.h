@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <chrono>
 #include <memory>
-#include <remix/remix_retained.h>
+#include <remix/remix_retained_validation.h>
 
 namespace dxvk::retained_compat {
 
@@ -26,6 +26,23 @@ void setVisibilityIntent(Entry& entry, bool desired, uint32_t& count, Queue&& qu
     --count;
   }
   apply();
+}
+
+// A clean ordered record can stage one move until the next native DrawOrdered.
+// A later upsert or invalidation must retain the ordinary description rebuild.
+template<typename Entry>
+bool canStageOrderedMove(const Entry& entry, const remixapi_RetainedInstance& record) {
+  return (record.flags & REMIXAPI_RETAINED_ORDERED) && !entry.dirty &&
+    !entry.orderedTransformPending && !entry.published.pending && entry.published.source &&
+    entry.sourceCount == 1 && entry.children.size() == 1 && entry.record.flags == record.flags &&
+    remixapi_retained::sameDescription(entry.record, record) &&
+    !remixapi_retained::sameTransform(entry.record, record);
+}
+
+template<typename Entry, typename Move>
+bool tryApplyOrderedMove(const Entry& entry, uint32_t frame, bool inspecting, Move&& move) {
+  return !entry.dirty && entry.visible && entry.orderedFrame != ~0u && entry.orderedFrame + 1 == frame &&
+    !inspecting && entry.children.size() == 1 && move(entry.children.front());
 }
 
 enum class SurfaceCheck { Valid, MissingMaterial, IncompatibleLegacy };
