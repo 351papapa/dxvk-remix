@@ -1,0 +1,351 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Software opacity micromap lookup (rtx.alphaBake.softwareOmm).
+//
+// cb.surfaceSoftOmmTable (0xFFFFFFFF = none) holds a uint2 per surface slot:
+//   x: bits 0-15 the store's bindless raw-buffer index + 1 (0 = no data), bits 16-19 subdivision level, bit 20 2-state,
+//      bit 21 non-opaque surface (SOFT_OMM_ENTRY_NON_OPAQUE), bit 22 FORCE_NO_OPAQUE instance (SOFT_OMM_ENTRY_FORCE_NO_OPAQUE).
+//      Bits 21-22 are written for every surface, with or without data.
+//   y: first data word of the store, which equals the micromap's triangle count.
+// A store (rtx_opacity_micromap_manager.cpp, omm_sw_pack.comp.slang) holds one word per triangle, which is a
+// VkOpacityMicromapSpecialIndexEXT for a uniform triangle and its mixed slot otherwise. Then each mixed slot holds its
+// micro-triangle states as the bake wrote them, LSB first, 2 bits each for 4-state and 1 bit for 2-state.
+
+#include "rtx/pass/opacity_micromap/software_omm_shared.h"
+#include "rtx/algorithm/software_omm_index.slangh"
+
+#ifndef SOFT_OMM_COUNTER_PASS
+#define SOFT_OMM_COUNTER_PASS SOFT_OMM_COUNTER_PASS_OTHER
+#endif
+
+// Returns the state of the micro-triangle at the barycentrics of a triangle of a surface.
+// Returns SOFT_OMM_STATE_NONE when the surface has no data.
+uint softOmmState(uint surfaceIndex, uint primitiveIndex, float2 barycentrics)
+{
+  const uint entryX = BUFFER_ARRAY(indices32, cb.surfaceSoftOmmTable, surfaceIndex * 2u);
+  const uint storePlusOne = entryX & 0xFFFFu;
+  if (storePlusOne == 0u)
+  {
+    return SOFT_OMM_STATE_NONE;
+  }
+  const uint store = storePlusOne - 1u;
+
+  const uint index = BUFFER_ARRAY(indices32, store, primitiveIndex);
+  if (index >= 0xFFFFFFFCu)
+  {
+    // For special indices -1..-4 the state is ~index.
+    return (~index) & 3u;
+  }
+
+  const uint dataBase = BUFFER_ARRAY(indices32, cb.surfaceSoftOmmTable, surfaceIndex * 2u + 1u);
+  const uint level = (entryX >> 16u) & 0xFu;
+  const bool twoState = ((entryX >> 20u) & 1u) != 0u;
+  const uint microTriangle = softOmmBarycentricsToIndex(barycentrics, level);
+
+  if (twoState)
+  {
+    // 1 bit per micro-triangle and 32 per word, so 4^level / 32 words per triangle (level >= 3).
+    const uint wordsPerTriangle = (1u << (2u * level)) >> 5u;
+    const uint word = BUFFER_ARRAY(indices32, store, dataBase + index * wordsPerTriangle + (microTriangle >> 5u));
+    return (word >> (microTriangle & 31u)) & 1u;
+  }
+
+  // 2 bits per micro-triangle and 16 per word, so 4^level / 16 words per triangle (level >= 2).
+  const uint wordsPerTriangle = (1u << (2u * level)) >> 4u;
+  const uint word = BUFFER_ARRAY(indices32, store, dataBase + index * wordsPerTriangle + (microTriangle >> 4u));
+  return (word >> ((microTriangle & 15u) * 2u)) & 3u;
+}
+
+// The state of a ray query candidate (raw float barycentrics). Candidates from the previous frame's TLAS are mapped to
+// this frame's surfaces through surfaceMapping. One with no current surface, or on a view model, has no data.
+uint softOmmCandidateState(RayHitInfo rayHitInfo, float2 barycentrics, bool usePreviousTLAS)
+{
+  uint surfaceIndex = calculateSurfaceIndex(rayHitInfo);
+  if (usePreviousTLAS)
+  {
+    if ((rayHitInfo.customIndex & CUSTOM_INDEX_IS_VIEW_MODEL) != 0u)
+    {
+      return SOFT_OMM_STATE_NONE;
+    }
+    surfaceIndex = surfaceMapping[surfaceIndex];
+    if (surfaceIndex == SURFACE_INDEX_INVALID)
+    {
+      return SOFT_OMM_STATE_NONE;
+    }
+  }
+  return softOmmState(surfaceIndex, rayHitInfo.primitiveIndex, barycentrics);
+}
+
+// Counts one candidate by state for this shader's pass in rtx.alphaBake.softwareOmmCounters, aggregated per wave.
+void softOmmCountCandidate(uint state)
+{
+  if ((cb.softOmmFlags & SOFT_OMM_FLAG_COUNTERS) == 0u)
+  {
+    return;
+  }
+  const uint base = SOFT_OMM_COUNTER_BASE + SOFT_OMM_COUNTER_PASS * SOFT_OMM_COUNTER_STATES;
+  [unroll]
+  for (uint s = 0u; s < SOFT_OMM_COUNTER_STATES; ++s)
+  {
+    const uint count = WaveActiveCountBits(state == s);
+    if (count != 0u && WaveIsFirstLane())
+    {
+      InterlockedAdd(LightSamplingStats[base + s], count);
+    }
+  }
+}
+
+// rtx.alphaBake.softwareOmmResolveSkip. The resolve loops (resolve_expanded.slangh) trace FORCE_OPAQUE and re-trace
+// past a committed hit that hardware micromaps would not have produced. The re-trace starts from the same origin with
+// tMin just past the hit, so hit distances stay those of the original ray, and it neither calls the hit function nor
+// counts an interaction. The skipped hits are:
+//   SOFT_OMM_SKIP_TRANSPARENT (a FORCE_OPAQUE iteration): a transparent micro-triangle.
+//   SOFT_OMM_SKIP_CULL_NON_OPAQUE (an iteration that asked for CULL_NON_OPAQUE, such as the final one with
+//   rtx.resolveFinalInteractionSkipsNonOpaque): every hit on a non-opaque surface except an opaque micro-triangle of an
+//   instance without FORCE_NO_OPAQUE, which is what hardware micromaps keep there.
+// After SOFT_OMM_RESOLVE_MAX_SKIPS re-traces, a transparent micro-triangle goes to the hit function and the cull
+// emulation falls back to a real CULL_NON_OPAQUE trace.
+
+// Returns whether the resolve skip acts in a resolve pass, which needs the option on and a table this frame.
+// The indirect pass also needs rtx.alphaBake.softwareOmmResolveSkipIndirect (SOFT_OMM_FLAG_RESOLVE_SKIP_INDIRECT).
+// pass (SOFT_OMM_RESOLVE_PASS_*) is a compile-time constant at every call site, so the pass test folds away.
+bool softOmmResolveSkipActive(uint pass)
+{
+  if (cb.surfaceSoftOmmTable == 0xFFFFFFFFu || (cb.softOmmFlags & SOFT_OMM_FLAG_RESOLVE_SKIP) == 0u)
+  {
+    return false;
+  }
+  return pass != SOFT_OMM_RESOLVE_PASS_INDIRECT || (cb.softOmmFlags & SOFT_OMM_FLAG_RESOLVE_SKIP_INDIRECT) != 0u;
+}
+
+// Returns the flags to trace a resolve iteration of a resolve pass with, and the skip mode for its hits.
+// Returns the flags unchanged with SOFT_OMM_SKIP_NONE while the skip is not active in that pass.
+uint softOmmResolveFlags(uint pass, uint flags, out uint skipMode)
+{
+  skipMode = SOFT_OMM_SKIP_NONE;
+  if (!softOmmResolveSkipActive(pass))
+  {
+    return flags;
+  }
+  if ((flags & RAY_FLAG_CULL_NON_OPAQUE) != 0u)
+  {
+    skipMode = SOFT_OMM_SKIP_CULL_NON_OPAQUE;
+    return (flags & ~uint(RAY_FLAG_CULL_NON_OPAQUE)) | RAY_FLAG_FORCE_OPAQUE;
+  }
+  if ((flags & RAY_FLAG_FORCE_OPAQUE) != 0u)
+  {
+    skipMode = SOFT_OMM_SKIP_TRANSPARENT;
+  }
+  return flags;
+}
+
+// Returns 0 when a committed resolve hit is kept.
+// Returns the skip's counter kind (SOFT_OMM_RESOLVE_COUNTER_*) + 1 when it is skipped.
+uint softOmmResolveSkipKind(uint skipMode, uint customIndex, uint geometryIndex, uint primitiveIndex, float2 barycentrics)
+{
+  const uint surfaceIndex = (customIndex & CUSTOM_INDEX_SURFACE_MASK) + geometryIndex;
+  const uint state = softOmmState(surfaceIndex, primitiveIndex, barycentrics);
+  if (state == SOFT_OMM_STATE_TRANSPARENT)
+  {
+    return SOFT_OMM_RESOLVE_COUNTER_TRANSPARENT + 1u;
+  }
+  if (skipMode == SOFT_OMM_SKIP_CULL_NON_OPAQUE)
+  {
+    const uint entryX = BUFFER_ARRAY(indices32, cb.surfaceSoftOmmTable, surfaceIndex * 2u);
+    const bool nonOpaque = (entryX & SOFT_OMM_ENTRY_NON_OPAQUE) != 0u;
+    const bool forceNoOpaque = (entryX & SOFT_OMM_ENTRY_FORCE_NO_OPAQUE) != 0u;
+    if (nonOpaque && !(state == SOFT_OMM_STATE_OPAQUE && !forceNoOpaque))
+    {
+      return SOFT_OMM_RESOLVE_COUNTER_NON_OPAQUE + 1u;
+    }
+  }
+  return 0u;
+}
+
+// The smallest float above a non-negative ray distance.
+float softOmmNextRayT(float t)
+{
+  return asfloat(asuint(max(t, 0.0f)) + 1u);
+}
+
+// Counts one resolve skip event of a kind (SOFT_OMM_RESOLVE_COUNTER_*) for a pass, aggregated per wave.
+void softOmmCountResolve(uint pass, uint kind)
+{
+  if ((cb.softOmmFlags & SOFT_OMM_FLAG_COUNTERS) == 0u)
+  {
+    return;
+  }
+  const uint count = WaveActiveCountBits(true);
+  if (WaveIsFirstLane())
+  {
+    InterlockedAdd(LightSamplingStats[SOFT_OMM_RESOLVE_COUNTER_BASE + pass * SOFT_OMM_RESOLVE_COUNTER_KINDS + kind], count);
+  }
+}
+
+// rtx.alphaBake.softwareOmmTraversal. A ray query resolve iteration of a traversal pass whose bit is set traces without
+// FORCE_OPAQUE (or without CULL_NON_OPAQUE). Non-opaque geometry (alpha tested, blended, translucent, FORCE_NO_OPAQUE
+// instances) then comes back as candidates, while opaque geometry stays a hardware commit. The candidate loop
+// (resolve_expanded.slangh) acts on each candidate as hardware micromaps would (softOmmTraversalCommit):
+//   SOFT_OMM_TRAVERSAL_FORCE_OPAQUE: a transparent micro-triangle is skipped and every other candidate is committed.
+//   The committed hit is the FORCE_OPAQUE closest hit minus the transparent micro-triangles, and the hit function
+//   then runs as usual, including the alpha test of unknown micro-triangles.
+//   SOFT_OMM_TRAVERSAL_CULL_NON_OPAQUE: only an opaque micro-triangle of an instance without FORCE_NO_OPAQUE is committed,
+//   which is what hardware micromaps keep under CULL_NON_OPAQUE. Every other non-opaque candidate is skipped.
+// Transparent hits are never committed, so such a pass does not need the resolve-skip re-trace loop.
+
+// Returns whether the candidate loop acts in a traversal pass.
+// pass (SOFT_OMM_TRAVERSAL_PASS_*) is a compile-time constant, so the test folds away.
+bool softOmmTraversalActive(uint pass)
+{
+  const uint passFlag = pass == SOFT_OMM_TRAVERSAL_PASS_GBUFFER ? SOFT_OMM_FLAG_TRAVERSAL_GBUFFER
+                      : pass == SOFT_OMM_TRAVERSAL_PASS_SHARC_UPDATE ? SOFT_OMM_FLAG_TRAVERSAL_SHARC_UPDATE
+                      : pass == SOFT_OMM_TRAVERSAL_PASS_INDIRECT ? SOFT_OMM_FLAG_TRAVERSAL_INDIRECT
+                      : 0u;
+  return passFlag != 0u && cb.surfaceSoftOmmTable != 0xFFFFFFFFu && (cb.softOmmFlags & passFlag) != 0u;
+}
+
+// Returns the flags to trace a resolve iteration of a traversal pass with, and the candidate loop mode (SOFT_OMM_TRAVERSAL_*).
+// Returns the flags unchanged with SOFT_OMM_TRAVERSAL_NONE while the loop is not active in that pass.
+uint softOmmTraversalFlags(uint pass, uint flags, out uint mode)
+{
+  mode = SOFT_OMM_TRAVERSAL_NONE;
+  if (!softOmmTraversalActive(pass))
+  {
+    return flags;
+  }
+  const uint twoState = (flags & SOFT_OMM_RAY_FLAG_FORCE_2_STATE) != 0u ? SOFT_OMM_TRAVERSAL_TWO_STATE : 0u;
+  if ((flags & RAY_FLAG_CULL_NON_OPAQUE) != 0u)
+  {
+    mode = SOFT_OMM_TRAVERSAL_CULL_NON_OPAQUE | twoState;
+    return flags & ~uint(RAY_FLAG_CULL_NON_OPAQUE);
+  }
+  if ((flags & RAY_FLAG_FORCE_OPAQUE) != 0u)
+  {
+    mode = SOFT_OMM_TRAVERSAL_FORCE_OPAQUE | twoState;
+    return flags & ~uint(RAY_FLAG_FORCE_OPAQUE);
+  }
+  return flags;
+}
+
+// Counts one candidate of a kind (SOFT_OMM_TRAVERSAL_COUNTER_*) for a traversal pass, aggregated per wave and kind.
+void softOmmCountTraversal(uint pass, uint kind)
+{
+  if ((cb.softOmmFlags & SOFT_OMM_FLAG_COUNTERS) == 0u)
+  {
+    return;
+  }
+  const uint base = SOFT_OMM_TRAVERSAL_COUNTER_BASE + pass * SOFT_OMM_TRAVERSAL_COUNTER_KINDS;
+  [unroll]
+  for (uint k = 0u; k < SOFT_OMM_TRAVERSAL_COUNTER_KINDS; ++k)
+  {
+    const uint count = WaveActiveCountBits(kind == k);
+    if (count != 0u && WaveIsFirstLane())
+    {
+      InterlockedAdd(LightSamplingStats[base + k], count);
+    }
+  }
+}
+
+// Returns whether a non-opaque triangle candidate of a traversal pass is committed (mode from softOmmTraversalFlags).
+bool softOmmTraversalCommit(uint pass, uint mode, uint customIndex, uint geometryIndex, uint primitiveIndex, float2 barycentrics)
+{
+  const uint surfaceIndex = (customIndex & CUSTOM_INDEX_SURFACE_MASK) + geometryIndex;
+  uint state = softOmmState(surfaceIndex, primitiveIndex, barycentrics);
+  if ((mode & SOFT_OMM_TRAVERSAL_TWO_STATE) != 0u)
+  {
+    state = state == SOFT_OMM_STATE_UNKNOWN_TRANSPARENT ? SOFT_OMM_STATE_TRANSPARENT
+          : state == SOFT_OMM_STATE_UNKNOWN_OPAQUE ? SOFT_OMM_STATE_OPAQUE
+          : state;
+  }
+
+  bool commit;
+  uint kind;
+  if ((mode & SOFT_OMM_TRAVERSAL_CULL_NON_OPAQUE) != 0u)
+  {
+    const uint entryX = BUFFER_ARRAY(indices32, cb.surfaceSoftOmmTable, surfaceIndex * 2u);
+    commit = state == SOFT_OMM_STATE_OPAQUE && (entryX & SOFT_OMM_ENTRY_FORCE_NO_OPAQUE) == 0u;
+    kind = commit ? SOFT_OMM_TRAVERSAL_COUNTER_OPAQUE : SOFT_OMM_TRAVERSAL_COUNTER_CULLED;
+  }
+  else
+  {
+    commit = state != SOFT_OMM_STATE_TRANSPARENT;
+    kind = state == SOFT_OMM_STATE_TRANSPARENT ? SOFT_OMM_TRAVERSAL_COUNTER_TRANSPARENT
+         : state == SOFT_OMM_STATE_OPAQUE ? SOFT_OMM_TRAVERSAL_COUNTER_OPAQUE
+         : state == SOFT_OMM_STATE_NONE ? SOFT_OMM_TRAVERSAL_COUNTER_NO_DATA
+         : SOFT_OMM_TRAVERSAL_COUNTER_UNKNOWN;
+  }
+  softOmmCountTraversal(pass, kind);
+  return commit;
+}
+
+// On the TraceRay path the raygen loop puts the skip mode into the payload's segmentHitDistance before the trace.
+// The field is otherwise an output, which the hit functions overwrite. A closest-hit shader that skips the hit returns
+// without calling the hit function and reports -hitT there with continueResolving set. A miss reports kMissHitDistance
+// with continueResolving cleared, and a kept hit reports a non-negative distance.
+float softOmmPayloadSkipModeEncode(uint skipMode)
+{
+  return skipMode == SOFT_OMM_SKIP_CULL_NON_OPAQUE ? SOFT_OMM_PAYLOAD_SKIP_CULL_NON_OPAQUE
+       : skipMode == SOFT_OMM_SKIP_TRANSPARENT ? SOFT_OMM_PAYLOAD_SKIP_TRANSPARENT
+       : 0.0f;
+}
+
+void softOmmPayloadSetSkipMode<T : IBasePayloadState>(inout T payload, uint skipMode)
+{
+  payload.segmentHitDistance = softOmmPayloadSkipModeEncode(skipMode);
+}
+
+bool softOmmPayloadSkipped<T : IBasePayloadState>(T payload)
+{
+  return payload.continueResolving && (asuint(payload.segmentHitDistance) & 0x80000000u) != 0u;
+}
+
+// The hit distance of the skipped hit (valid when softOmmPayloadSkipped).
+float softOmmPayloadSkippedT<T : IBasePayloadState>(T payload)
+{
+  return -payload.segmentHitDistance;
+}
+
+#ifdef RAY_PIPELINE
+// Called first by a resolve closest-hit shader of a resolve pass (SOFT_OMM_RESOLVE_PASS_*).
+// Returns true when the hit is skipped, and the shader then returns without the hit function.
+bool softOmmClosestHitSkip<T : IBasePayloadState>(uint pass, inout T payload, float2 barycentrics)
+{
+  if (!softOmmResolveSkipActive(pass))
+  {
+    return false;
+  }
+  const float encodedMode = payload.segmentHitDistance;
+  const uint skipMode = encodedMode == SOFT_OMM_PAYLOAD_SKIP_CULL_NON_OPAQUE ? SOFT_OMM_SKIP_CULL_NON_OPAQUE
+                      : encodedMode == SOFT_OMM_PAYLOAD_SKIP_TRANSPARENT ? SOFT_OMM_SKIP_TRANSPARENT
+                      : SOFT_OMM_SKIP_NONE;
+  if (skipMode == SOFT_OMM_SKIP_NONE ||
+      softOmmResolveSkipKind(skipMode, InstanceID(), GeometryIndex(), PrimitiveIndex(), barycentrics) == 0u)
+  {
+    return false;
+  }
+  payload.segmentHitDistance = -RayTCurrent();
+  payload.continueResolving = true;
+  return true;
+}
+#endif

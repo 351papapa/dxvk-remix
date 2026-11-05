@@ -1,0 +1,83 @@
+#pragma once
+
+// The sky provider is the set of attachment points through which the ray tracing passes read the sky that
+// replaces the game's rasterized skybox while rtx.skyMode is 1. Callers only go through these functions.
+// The provider is NUMOS (submodules/numos), reached through its host shader API with the outputs bound by
+// the common ray tracing bindings (skyArgs and the Atmosphere*/NightSky* globals).
+//
+// NUMOS's radiance carries its pre-exposure (FrameOutputs::radianceScale). Everything returned here has it
+// divided out (cb.skyRadianceUnscale), so the path tracer sees physical radiance.
+
+#include "numos/host/numos_host.slangh"
+
+// True while the sky provider replaces the rasterized sky.
+bool skyProviderActive()
+{
+  return cb.skyMode == 1;
+}
+
+// Returns the radiance of the sky along a ray that left the scene. Camera rays (isPrimaryRay) get the sky
+// without clouds, which the composite lays over it later. Every other ray gets the sky with its clouds.
+// applySkyIndirectScale is set when the ray was a diffuse sky gather.
+// skyDisks (NUMOS_SKY_DISKS_*) says whether the ray carries the sun and moon disks. The sun and moons are
+// also lights, sampled by next-event estimation at every opaque surface, and the shadow rays of that
+// sampling pass through translucent surfaces and alpha cutouts. So a ray carries the disks only when
+// no light-sampled surface lies on its path from the camera:
+//   - Camera rays pass NONE. The composite adds the disks (numosSkyDisks) under the transmittance of
+//     whatever the geometry resolver passed through and under the screen clouds.
+//   - PSR continuations (mirrors, glass, water) pass ALL, because their whole path is delta.
+//   - Integrator (indirect) rays pass NONE. Every such path starts at a light-sampled surface, and a delta
+//     interaction after it (glass, a cutout) still lies within that surface's light samples' reach.
+vec3 skyProviderRadiance(vec3 directionWorld, uvec2 pixelCoordinate, bool isPrimaryRay, bool applySkyIndirectScale,
+                         uint skyDisks)
+{
+  if (cb.skyArgsProbe != 0u)
+  {
+    // rtx.skyProvider.argsProbe: green when skyArgs is this frame's AtmosphereArgs, red otherwise.
+    return (skyArgs.cloudRenderFrameIdx | 0x80000000u) == cb.skyArgsProbe ? vec3(0.0f, 4.0f, 0.0f) : vec3(4.0f, 0.0f, 0.0f);
+  }
+  return evalSkyRadiance(directionWorld, skyArgs, pixelCoordinate, cb.frameIdx, cb.isZUp != 0, isPrimaryRay,
+                         applySkyIndirectScale, skyDisks)
+       * cb.skyRadianceUnscale;
+}
+
+// Returns the transmittance of the clouds between a surface and a light the sky provider marked
+// cloud-shadowed (DecodedPolymorphicLight::atmosphereCloudShadowed). It multiplies the light's radiance.
+float skyProviderCloudShadow(vec3 worldPosition, vec3 directionToLight)
+{
+  return sampleCloudGroundShadow_OptionB(worldPosition, directionToLight, skyArgs, cb.isZUp != 0);
+}
+
+// Returns the sky light, clouds included, arriving from a direction, for particles and volumes.
+vec3 skyProviderAmbient(vec3 directionWorld)
+{
+  const vec3 directionYUp = normalize(worldToAtmosphereYUp(directionWorld, cb.isZUp != 0, skyArgs.flipUpAxis != 0u));
+  return sampleSkyAmbientForVolume(directionYUp, skyArgs, AtmosphereSkyViewLut, AtmosphereCloudSkyTransmittanceLut,
+                                   AtmosphereSkyViewSampler) * cb.skyRadianceUnscale;
+}
+
+// Converts a world-unit distance to NUMOS km, for the foreground split's AtmosphereForeground.w, which the
+// composite's cloud pass reads back with numosKmToWorld. This is NUMOS's one host-boundary conversion
+// (rtx.atmosphere.unitsPerMeter x rtx.atmosphere.worldScale).
+float skyProviderWorldToKm(float distanceWorld)
+{
+  return numosWorldToKm(distanceWorld, skyArgs);
+}
+
+// Physical direct solar irradiance and its world-space direction. Consumers that
+// write pre-exposed render targets multiply irradiance by cb.preExposure once.
+vec3 skyProviderSunDirection()
+{
+  return normalize(atmosphereYUpToWorld(skyArgs.sunDirection, cb.isZUp != 0, skyArgs.flipUpAxis != 0u));
+}
+
+float skyProviderSunElevation()
+{
+  return dot(skyProviderSunDirection(), cb.isZUp != 0 ? vec3(0, 0, 1) : vec3(0, 1, 0));
+}
+
+vec3 skyProviderSunIrradiance(vec3 worldPosition)
+{
+  return skyArgs.sunIlluminance
+       * getTransmittanceToSun(worldPosition, skyArgs, cb.isZUp != 0) * cb.skyRadianceUnscale;
+}

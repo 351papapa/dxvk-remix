@@ -1,0 +1,85 @@
+#pragma once
+
+#include "rtx/algorithm/volume_lighting.slangh"
+
+// Intersects a world-space ray segment with the water half-space below the base surface plane.
+// Directions are unit length. Invalid input leaves the native segment available to the caller.
+bool waterRaySegmentLength(
+  bool infiniteDistance, float distance, vec3 origin, vec3 direction, float surfaceHeight,
+  out bool infiniteWaterDistance, out float waterDistance)
+{
+  infiniteWaterDistance = infiniteDistance;
+  waterDistance = distance;
+
+  if (!isfinite(surfaceHeight) || !all(isfinite(origin)) || !all(isfinite(direction)) ||
+      !any(direction != vec3(0.0f)) || (!infiniteDistance && (!isfinite(distance) || distance < 0.0f)))
+  {
+    return false;
+  }
+
+  const float depth = surfaceHeight - origin.z;
+  if (!isfinite(depth))
+  {
+    return false;
+  }
+
+  if (direction.z > 0.0f)
+  {
+    if (depth <= 0.0f)
+    {
+      infiniteWaterDistance = false;
+      waterDistance = 0.0f;
+    }
+    else
+    {
+      const float exitDistance = depth / direction.z;
+      if (!infiniteDistance)
+      {
+        waterDistance = min(distance, exitDistance);
+      }
+      else if (isfinite(exitDistance))
+      {
+        infiniteWaterDistance = false;
+        waterDistance = exitDistance;
+      }
+      // An overflowing positive exit distance retains the native capped deep-water tail.
+    }
+  }
+  else if (direction.z < 0.0f)
+  {
+    if (depth < 0.0f && !infiniteDistance)
+    {
+      const float entryDistance = depth / direction.z;
+      waterDistance = max(distance - entryDistance, 0.0f);
+    }
+  }
+  else if (depth <= 0.0f)
+  {
+    infiniteWaterDistance = false;
+    waterDistance = 0.0f;
+  }
+
+  return true;
+}
+
+// Resolver segments can leave or re-enter water after a PSR reflection or refraction.
+// Apply the native attenuation cap to the water length, excluding any intervening air.
+vec3 evalResolvedVolumeAttenuation(bool infiniteDistance, float distance, vec3 origin, vec3 direction)
+{
+  if (cb.cameraWaterVolumeActive && cb.cameraWaterSurfaceValid && cb.isZUp && !cb.volumeArgs.enableAtmosphere)
+  {
+    bool infiniteWaterDistance;
+    float waterDistance;
+    if (waterRaySegmentLength(infiniteDistance, distance, origin, direction, cb.cameraWaterSurfaceHeight,
+                              infiniteWaterDistance, waterDistance))
+    {
+      if (!infiniteWaterDistance && waterDistance == 0.0f)
+      {
+        return vec3(1.0f);
+      }
+      return calcVolumetricAttenuation(cb.volumeArgs, none, infiniteWaterDistance, waterDistance, origin, direction);
+    }
+  }
+
+  return calcVolumetricAttenuation(cb.volumeArgs, none, infiniteDistance, distance, origin, direction);
+}

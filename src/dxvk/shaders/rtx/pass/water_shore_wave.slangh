@@ -1,0 +1,138 @@
+#pragma once
+
+struct ShoreWaveSample { float height; float foam; float mask; };
+
+float shoreHash(int2 cell) {
+  uint h = (uint(cell.x) * 0x5f356491u) ^ (uint(cell.y) * 0xe336beb9u);
+  return float(h * 0x5f356491u) * 2.3283064365386963e-10f;
+}
+
+float shoreNoise(float2 p) {
+  int2 cell = int2(floor(p));
+  float2 f = frac(p);
+  f = f * f * (3.0f - 2.0f * f);
+  return lerp(lerp(shoreHash(cell), shoreHash(cell + int2(1, 0)), f.x),
+    lerp(shoreHash(cell + int2(0, 1)), shoreHash(cell + int2(1, 1)), f.x), f.y);
+}
+
+float shorePhaseNoise(float2 world, float time) {
+  return 4.2f * (shoreNoise(world / 28.0f + time * float2(0.013f, 0.007f)) - 0.5f)
+    + 1.4f * (shoreNoise(world / 11.0f - time * float2(0.011f, 0.017f) + float2(3.7f, 1.9f)) - 0.5f)
+    + 0.55f * (shoreNoise(world / 4.3f + time * float2(0.019f, -0.023f) + float2(7.1f, 5.3f)) - 0.5f);
+}
+
+float shoreProfile(float phase, float warp, float steepness) {
+  float q = phase + warp * sin(phase);
+  float u = q;
+  [unroll] for (uint i = 0; i < 3; ++i) { u = q + steepness * sin(u); }
+  return cos(u) + 0.5f * steepness;
+}
+
+float3 shoreFoamProfile(float phase, float width) {
+  float p = phase - 6.28318530718f * floor(phase * 0.15915494309f + 0.5f);
+  float crest = exp(-p * p / (0.55f * 0.55f));
+  float tail = p > 0.0f ? 0.8f * exp(-p / 1.6f) * saturate((3.14159265359f - p) / 0.9f) : 0.0f;
+  return float3(crest, tail, exp(-p * p / (width * width)));
+}
+
+// ps_main 3619-3668, 4757-4760: the retreating water level survives
+// the shallow-wave amplitude fade. It is a vertical offset, not a phase shift.
+float shoreRecession(float phaseShape, float spacing, float timePhase) {
+  float U = 12.56637061436f / max(spacing, 0.5f);
+  float V = 4.444445f * phaseShape;
+  float B = 0.1f * phaseShape + 0.04f;
+  float D = 1.0f - max(B, 0.0f);
+  float start = 2.0f / (V + U);
+  float crossing = 2.0f * D / (U + sqrt(max((V*V-U*U)*D+U*U, 1e-6f)));
+  float phase = frac((spacing + timePhase) * 0.15915494309f);
+  if (phase < crossing) { phase += 1.0f; }
+  float duration = 2.0f * phaseShape / max(V, 1e-6f);
+  float end = start + duration;
+  float recovery = max(crossing + 0.98f - end, 0.05f);
+  float v = phase < end ? 0.0f : max((phase-end)/recovery, 0.001f);
+  float weight = phase < start ? 1.0f : (v > 0.0f
+    ? smoothstep(0.3f, 1.0f, v)
+    : 1.0f - smoothstep(0.0f, 1.0f, (phase-start)/max(duration,0.001f)));
+  return -B * weight;
+}
+
+ShoreWaveSample sampleShoreWave(float effectiveDepth, float rawDepth, float shoreSlope,
+    float2 world, float time, float height, float spacing, float period, float depthLimit, float beachMask, float gridSpacing = 0.0f) {
+  ShoreWaveSample result;
+  result.height = 0.0f; result.foam = 0.0f; result.mask = 0.0f;
+  float distance = effectiveDepth / max(shoreSlope, 0.001f);
+  float h = lerp(effectiveDepth, 100.0f, smoothstep(40.0f, 47.0f, distance));
+  float farLimit = min(2.2f * depthLimit, 16.0f);
+  if (beachMask <= 0.0f || height <= 0.0f) { return result; }
+  float wetDepth = min(rawDepth, h);
+  float noise = saturate(0.5f
+    + 0.9f * (shoreNoise(world / 6.5f + time * float2(0.021f, -0.013f)) - 0.5f)
+    + 0.35f * (shoreNoise(world / 2.3f - time * float2(0.035f, 0.027f)) - 0.5f));
+  // The reference uses a mip-5 texture sample here; use a broad noise proxy only for this envelope.
+  float broadNoise = saturate(1.6f * shoreNoise(world / 80.0f + time * float2(0.0011f, 0.0007f)) - 0.3f);
+  float phaseShape = min(0.55f, 0.1f + 0.95f * height * (0.6f + 0.7f * broadNoise));
+  float timePhase = 6.28318530718f * frac(time / max(period, 1.0f));
+  result.height = shoreRecession(phaseShape, spacing, timePhase)
+    * exp(-max(rawDepth, 0.0f)) * beachMask;
+  if (h <= 0.0f || rawDepth <= 0.0f || h >= farLimit) { return result; }
+  float L = max(spacing, 0.5f);
+  float a = 12.56637061436f / L;
+  float b = 4.444445f * phaseShape;
+  float spatial, phaseDerivative;
+  if (h >= 1.0f) {
+    spatial = L * sqrt(h);
+    phaseDerivative = L / (2.0f * sqrt(h));
+  } else {
+    float w = sqrt(max(a * a + (b * b - a * a) * (1.0f - h), 1e-6f));
+    spatial = L - 12.56637061436f * (1.0f - h) / (a + w);
+    phaseDerivative = 6.28318530718f / w;
+  }
+  float phase = spatial + timePhase + shorePhaseNoise(world, time) * smoothstep(0.2f, 4.0f, h);
+  // The 0.55 phase-shape cap is not an amplitude. Height is constrained by both bed depth and slope.
+  float rawAmplitude = height * (0.55f + 0.7f * noise)
+    * pow(max(0.5f * depthLimit / max(h, 0.25f), 0.001f), 0.25f);
+  float slopeLimit = 0.31415926536f / max(max(shoreSlope, 0.001f) * phaseDerivative, 0.001f);
+  float amplitude = min(min(0.03f + 0.39f * wetDepth, rawAmplitude), slopeLimit);
+  float breakingRatio = 2.0f * rawAmplitude / max(h, 0.05f);
+  float breaker = smoothstep(0.4f, 0.8f, breakingRatio);
+  float wetRamp = saturate(wetDepth / 0.12f);
+  float shapeRamp = saturate(wetDepth / 0.6f);
+  float steepness = (0.5f + 0.4f * saturate(1.25f * breakingRatio)) * (0.45f + 0.55f * shapeRamp);
+  float warp = 0.55f * breaker * shapeRamp;
+  // Bound the spatial harmonics by the mesh footprint before sampling the crest.
+  float phaseStep = phaseDerivative * max(shoreSlope,0.001f) * gridSpacing;
+  float resolved = 1.0f-smoothstep(1.57079632679f,3.14159265359f,phaseStep);
+  float shapeLimit = saturate(1.0f-2.0f*phaseStep/3.14159265359f);
+  steepness = min(steepness,shapeLimit);
+  warp *= shapeLimit;
+  amplitude *= resolved;
+  float farFade = smoothstep(0.0f, 1.0f, (farLimit - h) / max(0.6f * farLimit, 0.001f));
+  float profile = shoreProfile(phase, warp, steepness);
+  float3 foam = shoreFoamProfile(phase, 1.0f - 0.45f * shapeRamp);
+  // Match the supplied WaterWaveInterference=1 configuration (piana_p.z), not a global wind direction.
+  float secondWeight = 0.55f * smoothstep(0.6f, 3.0f, h);
+  {
+    float phase2 = dot(world, float2(0.15f, 0.2f))
+      + 0.6f * shorePhaseNoise(world.yx + 37.0f, time)
+      + 0.87f * L * sqrt(h) + timePhase + 0.21f * time;
+    profile += secondWeight * shoreProfile(phase2, warp, steepness);
+    float3 foam2 = shoreFoamProfile(phase2, 1.0f - 0.45f * shapeRamp);
+    float overlap = 0.8f * foam.x * foam2.x;
+    foam += secondWeight * foam2;
+    foam.x += overlap;
+  }
+  result.height += (amplitude * profile * wetRamp * farFade
+    + 0.1f * breaker * foam.z * farFade * wetRamp * saturate(5.0f * amplitude)) * beachMask;
+  float rawFoam = (foam.x + foam.y) * breaker * farFade * saturate(4.0f * h) * (0.6f + 0.7f * noise);
+  result.foam = smoothstep(0.3f, 0.55f, rawFoam * beachMask);
+  result.mask = farFade * beachMask;
+  return result;
+}
+
+float shoreOceanAttenuation(float4 bed, float beachMask) {
+  if (bed.y <= 0.99f) { return 1.0f; }
+  float distance = bed.x / max(bed.w, 0.001f);
+  float depth = lerp(bed.x, min(bed.z, 100.0f), smoothstep(40.0f, 47.0f, distance));
+  // water_out2 assigns ocean_p.y=5.0 directly; there is no WaterOceanDepth option in this build.
+  return lerp(1.0f, saturate((depth - 0.3f) / 5.0f), beachMask);
+}

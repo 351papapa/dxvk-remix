@@ -1,0 +1,24 @@
+# regcheck scope: which SPIR-V files of the build (_Comp64Release/src/dxvk/rtx_shaders/*.spv) are checked.
+# One glob per line, matched against the file name without .spv. Lines starting with '#' are comments.
+#
+# proxy: <tag> <shader.slang under src/dxvk/shaders/rtx> [DEFINE ...]
+#   adds a ray tracing body compiled as compute through probe.py (driver statistics exist for compute only), e.g.
+#   proxy: sharc_update_cs pass/integrate/integrate_indirect.slang <the variant's defines>
+
+gbuffer_rayquery_*
+gbuffer_psr_prepare*
+gbuffer_decal_prepare*
+integrate_direct_*rayquery
+integrate_nee_*
+integrate_indirect_*rayquery*
+sharc_update_flush
+light_bvh_select
+light_bvh_select_slim*
+
+# The SHARC update body (deferred flush, depth 4) as compute, Full and Lean: the update ships only as ray tracing pipelines
+# (TraceRay + SER where it applies, else the inline RayQuery raygen), so these proxies stand in for it.
+proxy: sharc_update4_df_cs pass/integrate/integrate_indirect.slang ENABLE_SHARC=1 SHARC_UPDATE=1 SHARC_DEFERRED_FLUSH=1 SHARC_PROPAGATION_DEPTH=4 NEE_CACHE_ENABLE=1 UNORDERED_RESOLVE_WBOIT
+proxy: sharc_update4_lean_df_cs pass/integrate/integrate_indirect.slang ENABLE_SHARC=1 SHARC_UPDATE=1 SHARC_DEFERRED_FLUSH=1 SHARC_PROPAGATION_DEPTH=4 NEE_CACHE_ENABLE=1 UNORDERED_RESOLVE_WBOIT INDIRECT_SLIM_NO_POM INDIRECT_SLIM_NEE_CACHE_ONLY=1 INDIRECT_SLIM_LEAN_VISIBILITY=1
+
+# The SHARC query hit body (lean level) as compute. The RT hit shader itself reports no statistics.
+proxy: sharc_query_lean_cs pass/integrate/integrate_indirect.slang ENABLE_SHARC=1 SHARC_QUERY=1 NEE_CACHE_ENABLE=1 UNORDERED_RESOLVE_WBOIT INDIRECT_SLIM_NO_POM INDIRECT_SLIM_NEE_CACHE_ONLY=1 INDIRECT_SLIM_LEAN_VISIBILITY=1

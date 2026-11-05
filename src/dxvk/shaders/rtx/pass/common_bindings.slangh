@@ -1,0 +1,241 @@
+/*
+* Copyright (c) 2021-2023, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Note: These common bindings are to only be included in passes, do not include
+// this file in any helpers (glsli files). Additionally only h files for the
+// concepts are included to avoid dependencies on bindings within these includes.
+
+#include "rtx/pass/common_binding_indices.h"
+
+#include "rtx/pass/raytrace_args.h"
+#include "numos/lib/atmosphere_args.h"
+#include "rtx/concept/surface/surface.h"
+#include "rtx/concept/surface_material/surface_material.h"
+#include "rtx/concept/volume/volume.h"
+#include "rtx/concept/volume_material/volume_material.h"
+#include "rtx/concept/light/light.h"
+#include "rtx/concept/billboard.h"
+#include "rtx/utility/gpu_printing.h"
+
+// Note: Texture array may only be up to a size of 2^16
+layout(set = BINDING_SET_BINDLESS_TEXTURE2D, binding = 0)
+Texture2D textures[];
+
+[allow("parameterBindingsOverlap")]
+layout(set = BINDING_SET_BINDLESS_RAW_BUFFER, binding = 0) 
+StructuredBuffer<float> geometries[];
+
+[allow("parameterBindingsOverlap")]
+layout(set = BINDING_SET_BINDLESS_RAW_BUFFER, binding = 0)
+StructuredBuffer<uint16_t> indices[];
+
+[allow("parameterBindingsOverlap")]
+layout(set = BINDING_SET_BINDLESS_RAW_BUFFER, binding = 0)
+StructuredBuffer<uint32_t> indices32[];
+
+layout(set = BINDING_SET_BINDLESS_SAMPLER, binding = 0)
+SamplerState samplers[];
+
+layout(binding = BINDING_ACCELERATION_STRUCTURE)
+RaytracingAccelerationStructure topLevelAS;
+
+layout(binding = BINDING_ACCELERATION_STRUCTURE_PREVIOUS)
+RaytracingAccelerationStructure previousTopLevelAS;
+
+layout(binding = BINDING_ACCELERATION_STRUCTURE_UNORDERED)
+RaytracingAccelerationStructure unorderedTLAS;
+
+layout(binding = BINDING_ACCELERATION_STRUCTURE_SSS)
+RaytracingAccelerationStructure sssTLAS;
+
+layout(binding = BINDING_SURFACE_DATA_BUFFER) 
+StructuredBuffer<Surface> surfaces;
+
+layout(binding = BINDING_SURFACE_MAPPING_BUFFER) 
+StructuredBuffer<int32_t> surfaceMapping;
+
+// Note: Surface Material array indexed by surface index (max SURFACE_INDEX_MAX_VALUE).
+// The SharedSurfaceIndex and SharedMediumMaterialIndex GBuffer textures are R32_UINT.
+layout(binding = BINDING_SURFACE_MATERIAL_DATA_BUFFER)
+StructuredBuffer<MemoryPolymorphicSurfaceMaterial> surfaceMaterials;
+
+// Note: Surface Material Extension array indexed by surface index (max SURFACE_INDEX_MAX_VALUE).
+layout(binding = BINDING_SURFACE_MATERIAL_EXT_DATA_BUFFER)
+StructuredBuffer<MemoryPolymorphicSurfaceMaterial> surfaceMaterialExtensions;
+
+// Todo: Volumes for consistency with surfaces and for multi-volume support in the future
+
+// Note: Volume Material array may only be up to a size of 2^16
+layout(binding = BINDING_VOLUME_MATERIAL_DATA_BUFFER)
+StructuredBuffer<MemoryVolumeMaterial> volumeMaterials;
+
+// Note: Light array may only be up to a size of 2^16
+layout(binding = BINDING_LIGHT_DATA_BUFFER) 
+StructuredBuffer<MemoryPolymorphicLight> lights;
+
+layout(binding = BINDING_PREVIOUS_LIGHT_DATA_BUFFER) 
+StructuredBuffer<MemoryPolymorphicLight> previousLights;
+
+layout(binding = BINDING_LIGHT_MAPPING)
+StructuredBuffer<uint16_t> lightMapping;
+
+layout(binding = BINDING_LIGHT_IDENTITY_BUFFER)
+StructuredBuffer<uint2> lightIdentities;
+
+// Light BVH compact nodes and bit trails, see rtx/algorithm/light_bvh.slangh.
+layout(binding = BINDING_LIGHT_BVH_BUFFER)
+StructuredBuffer<uint4> lightBvhNodes;
+
+// Light sampling statistics counters, see rtx/algorithm/light_sampling_stats.slangh.
+layout(binding = BINDING_LIGHT_SAMPLING_STATS)
+RWStructuredBuffer<uint> LightSamplingStats;
+
+layout(binding = BINDING_BILLBOARDS_BUFFER) 
+StructuredBuffer<MemoryBillboard> billboards;
+
+layout(binding = BINDING_BLUE_NOISE_TEXTURE)
+Texture2DArray BlueNoise;
+
+layout(binding = BINDING_CONSTANTS)
+ConstantBuffer<RaytraceArgs> cb;
+
+layout(binding = BINDING_DEBUG_VIEW_TEXTURE)
+RWTexture2D DebugView;
+
+layout(binding = BINDING_GPU_PRINT_BUFFER) 
+RWStructuredBuffer<GpuPrintBufferElement> GpuPrintBuffer;
+
+layout(binding = BINDING_VALUE_NOISE_SAMPLER)
+Sampler3D<float4> ValueNoiseSampler;
+
+layout(binding = BINDING_SAMPLER_READBACK_BUFFER) 
+RWStructuredBuffer<uint32_t> SamplerFeedbackBuffer;
+
+// Sky provider (NUMOS) outputs, under the names of numos/host/numos_host.slangh's binding contract;
+// read through rtx/algorithm/sky_provider.slangh. skyArgs is NUMOS's own constant buffer.
+layout(binding = BINDING_SKY_ARGS)
+ConstantBuffer<AtmosphereArgs> skyArgs;
+
+layout(binding = BINDING_ATMOSPHERE_TRANSMITTANCE_LUT)
+Texture2D AtmosphereTransmittanceLut;
+
+layout(binding = BINDING_ATMOSPHERE_MULTISCATTERING_LUT)
+Texture2D AtmosphereMultiscatteringLut;
+
+layout(binding = BINDING_ATMOSPHERE_SKY_VIEW_LUT)
+Texture2D AtmosphereSkyViewLut;
+
+layout(binding = BINDING_ATMOSPHERE_SKY_VIEW_SAMPLER)
+SamplerState AtmosphereSkyViewSampler;
+
+layout(binding = BINDING_ATMOSPHERE_CLOUD_SKY_TRANSMITTANCE_LUT)
+Texture2D<float4> AtmosphereCloudSkyTransmittanceLut;
+
+layout(binding = BINDING_ATMOSPHERE_CLOUD_SHADOW_MAP)
+Texture3D<float2> AtmosphereCloudShadowMap;
+
+layout(binding = BINDING_ATMOSPHERE_CLOUD_NOISE_SAMPLER)
+SamplerState AtmosphereCloudNoise3DSampler;
+
+layout(binding = BINDING_ATMOSPHERE_CLOUD_SECONDARY_LUT)
+Texture2D<float4> AtmosphereCloudSecondaryLut;
+
+layout(binding = BINDING_NIGHT_SKY_STAR_CELLS)
+StructuredBuffer<uint> NightSkyStarCells;
+
+layout(binding = BINDING_NIGHT_SKY_STARS)
+StructuredBuffer<float4> NightSkyStars;
+
+layout(binding = BINDING_NIGHT_SKY_MILKY_WAY)
+StructuredBuffer<uint> NightSkyMilkyWay;
+
+layout(binding = BINDING_NIGHT_SKY_STARLIGHT_LOW)
+Texture2D<float4> NightSkyStarlightLow;
+
+layout(binding = BINDING_NIGHT_SKY_MOON)
+Texture2D<float4> NightSkyMoon;
+
+#define ATMOSPHERE_AVAILABLE
+#define NIGHT_SKY_AVAILABLE
+
+layout(binding = BINDING_WINDOW_ISLANDS)
+StructuredBuffer<uint> windowIslandIds;
+
+#include "rtx/algorithm/no_rain_zones.slangh"
+
+layout(binding = BINDING_WETNESS_ZONES)
+StructuredBuffer<WetnessZoneNode> wetnessZones;
+
+#ifdef ENABLE_SURFACE_WETNESS
+layout(binding = BINDING_SHORE_WETNESS_FIELD)
+Texture2D<float4> shoreWetnessField;
+layout(binding = BINDING_SHORE_WETNESS_HEIGHT)
+Texture2D<float4> shoreWetnessHeight;
+layout(binding = BINDING_RAIN_MAP)
+Texture2D<float4> wetnessRainMap;
+layout(binding = BINDING_RAIN_MAP_HEIGHT)
+Texture2D<float4> wetnessRainMapHeight;
+
+float beachWetness(float3 position) {
+  if (cb.wetnessArgs.shoreStrength <= 0.0f) { return 0.0f; }
+  float2 world = cb.isZUp != 0 ? position.xy : position.xz;
+  float2 grid = (world - float2(cb.wetnessArgs.shoreOriginX, cb.wetnessArgs.shoreOriginY)) * cb.wetnessArgs.shoreInvSpacing;
+  // The producer is a fixed 257-square grid. No bindless dimension queries.
+  if (any(grid < 1.0f) || any(grid >= 255.0f)) { return 0.0f; }
+  int2 cell = int2(floor(grid));
+  float2 f = frac(grid);
+  const int2 offsets[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
+  const float weights[4] = { (1.0f-f.x)*(1.0f-f.y), f.x*(1.0f-f.y), (1.0f-f.x)*f.y, f.x*f.y };
+  float height = 0.0f;
+  float wetness = 0.0f;
+  float support = 0.0f;
+  [unroll] for (uint i = 0; i < 4; ++i) {
+    float4 h = shoreWetnessHeight.Load(int3(cell + offsets[i], 0));
+    if (h.w < 0.5f || !isfinite(h.z)) { continue; }
+    height += h.z * weights[i];
+    wetness += shoreWetnessField.Load(int3(cell + offsets[i], 0)).w * weights[i];
+    support += weights[i];
+  }
+  if (support < 0.99f) { return 0.0f; }
+  float surfaceHeight = cb.isZUp != 0 ? position.z : position.y;
+  float matchingBed = 1.0f - smoothstep(0.04f, 0.12f, abs(surfaceHeight - height / support));
+  float edge = min(min(grid.x, grid.y), min(256.0f-grid.x, 256.0f-grid.y));
+  return saturate(wetness / support) * matchingBed * smoothstep(1.0f, 9.0f, edge) * cb.wetnessArgs.shoreStrength;
+}
+
+float wetnessExposure(float3 position) {
+  uint index = 0;
+  while (index < cb.wetnessArgs.noRainNodeCount) {
+    WetnessZoneNode node = wetnessZones[index];
+    if (all(position > node.lower.xyz) && all(position < node.upper.xyz)) {
+      if (node.upper.w > 0.5f) {
+        return 0.0f;
+      }
+      ++index;
+    } else {
+      index = uint(node.lower.w);
+    }
+  }
+  return 1.0f;
+}
+#endif

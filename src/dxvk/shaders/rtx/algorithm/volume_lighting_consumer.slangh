@@ -1,0 +1,79 @@
+#pragma once
+
+// Surface consumers of the froxel radiance cache (particles, decals, PSR, the stochastic alpha blend fallback) read it
+// through evalVolumetricConsumerNEE. It wraps the RTXDI volumetrics' evalVolumetricNEE, which is used unmodified.
+
+#include "rtx/algorithm/volume_lighting.slangh"
+
+#ifndef VOLUME_LIGHTING_NO_NEE
+
+// Returns 0 on a face of the froxel grid, rising smoothly to 1 at 10% of the grid inwards from every face.
+float volumetricCacheEdgeFade(vec3 virtualFroxelUVW)
+{
+  const vec3 distanceToFace = min(virtualFroxelUVW, vec3(1.0f) - virtualFroxelUVW);
+  return smoothstep(0.0f, 0.1f, min(min(distanceToFace.x, distanceToFace.y), distanceToFace.z));
+}
+
+// Finds the virtual froxel UVW that evalVolumetricNEE samples for a position.
+// It tries the volumes in the same order and draws the same jitter, so it finds the same UVW
+// when the jitter RNG is in the state evalVolumetricNEE starts from.
+// Returns false when no active froxel volume holds the position.
+bool findVolumetricCacheFroxelUVW(VolumeArgs volumeArgs, vec3 position, uint froxelVolumeHint, out vec3 virtualFroxelUVW)
+{
+  virtualFroxelUVW = vec3(0.5f);
+
+  if (froxelVolumeHint >= volumeArgs.numActiveFroxelVolumes)
+  {
+    froxelVolumeHint = froxelVolumeMain;
+  }
+
+  for (uint i = 0; i < volumeArgs.numActiveFroxelVolumes; ++i)
+  {
+    const uint froxelVolume = (i + froxelVolumeHint) % volumeArgs.numActiveFroxelVolumes;
+    const VolumeDefinitionCamera camera = cb.volumeArgs.cameras[froxelVolume];
+
+    vec3 candidateUVW = translatedWorldPositionToFroxelUVW(
+      camera.translatedWorldToView, camera.translatedWorldToProjectionJittered, packedFlagGet(camera.flags, rightHandedFlag),
+      volumeArgs.froxelDepthSlices, volumeArgs.froxelDepthSliceDistributionExponent, volumeArgs.froxelMaxDistance, camera.nearPlane,
+      worldToTranslatedWorld(camera, position));
+
+  #ifndef VOLUME_LIGHTING_NO_JITTER
+    candidateUVW = calculateJitteredFroxelUvw(volumeArgs, candidateUVW);
+  #endif
+
+    if (all(candidateUVW > 0.0f) && all(candidateUVW < 1.0f))
+    {
+      virtualFroxelUVW = candidateUVW;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Returns the froxel cache radiance at a surface for a surface consumer.
+// It is evalVolumetricNEE scaled by volumeArgs.volumetricConsumerGain and faded out near the faces of the grid,
+// so surfaces that straddle the grid's edge do not show its outline.
+vec3 evalVolumetricConsumerNEE(
+  Sampler3D<float4> volumeFilteredRadianceY, Sampler3D<float2> volumeFilteredRadianceCoCg, VolumeArgs volumeArgs,
+  MinimalSurfaceInteraction surfaceInteraction, float3 direction,
+  uint froxelVolumeHint = 0, bool phaseFunction = false, float anisotropy = 0.f)
+{
+  // The search draws jitter from the shared RNG, so the RNG is restored before evalVolumetricNEE draws the same jitter.
+#ifndef VOLUME_LIGHTING_NO_JITTER
+  const RNG jitterRngAtCall = volumeSamplingRng;
+#endif
+  vec3 virtualFroxelUVW;
+  findVolumetricCacheFroxelUVW(volumeArgs, surfaceInteraction.position, froxelVolumeHint, virtualFroxelUVW);
+#ifndef VOLUME_LIGHTING_NO_JITTER
+  volumeSamplingRng = jitterRngAtCall;
+#endif
+
+  const float edgeFade = volumetricCacheEdgeFade(virtualFroxelUVW);
+
+  return evalVolumetricNEE(volumeFilteredRadianceY, volumeFilteredRadianceCoCg, volumeArgs, surfaceInteraction, direction,
+                           froxelVolumeHint, phaseFunction, anisotropy)
+       * volumeArgs.volumetricConsumerGain * edgeFade;
+}
+
+#endif

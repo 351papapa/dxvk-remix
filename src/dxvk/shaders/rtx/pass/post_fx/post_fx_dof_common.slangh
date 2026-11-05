@@ -1,0 +1,168 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Circle of confusion, bokeh kernel and dither helpers shared by the three depth-of-field passes.
+// They read the pass's `cb` and, in the guarded blocks, its bindings, so include this after those
+// declarations. A pass opts into a guarded block by defining its macro before the include:
+//
+//   POST_FX_DOF_USE_LINEAR_VIEW_Z  - needs PrimaryLinearViewZ
+//   POST_FX_DOF_USE_FOCUS_STATE    - needs FocusState
+//   POST_FX_DOF_USE_SURFACE_FLAGS  - needs PrimarySurfaceFlags
+
+#include "rtx/pass/post_fx/post_fx.h"
+
+static const float kDofGoldenAngle = 2.3999632f;
+static const float kDofTwoPi = 6.2831853f;
+
+// Number of taps for a gather of the given radius, clamped to maxTaps.
+// A bilinear tap covers about 4 half resolution px^2, so a hole-free disc needs pi*r^2 / 4 ~= 0.8*r^2 taps.
+// Sparser gathers turn an isolated highlight into a speckle of dots.
+uint dofTapCountForRadius(const float radiusHalfPixels, const uint maxTaps)
+{
+  const uint requested = uint(ceil(0.8f * radiusHalfPixels * radiusHalfPixels));
+  return clamp(requested, uint(POST_FX_DOF_MIN_SAMPLES), max(maxTaps, 1u));
+}
+
+// Interleaved gradient noise, from Jimenez, "Next Generation Post Processing
+// in Call of Duty: Advanced Warfare". It is smooth over a few pixels, so the residual error of
+// neighbouring kernels averages out under the upsample instead of reading as salt and pepper.
+float dofInterleavedGradientNoise(const float2 pixelPos, const uint frameIdx)
+{
+  // The per-frame offset decorrelates consecutive frames and repeats every 64 frames.
+  const float2 offsetPos = pixelPos + 5.588238f * float(frameIdx & 63u);
+  return frac(52.9829189f * frac(dot(offsetPos, float2(0.06711056f, 0.00583715f))));
+}
+
+// Radial intensity profile of the blur disc, from the normalised tap radius.
+// rtx.dof.bokehMinIntensity below 1 darkens the disc's centre relative to its rim.
+// The gather normalises by the accumulated weight, so this never changes the disc's energy.
+float dofBokehProfile(const float normalizedRadius)
+{
+  return lerp(saturate(cb.bokehMinIntensity), 1.0f, saturate(normalizedRadius));
+}
+
+// Fraction of this pixel covered by a source disc of radius sourceRadius at the given distance.
+// The one pixel ramp at the edge avoids the hard ring of a binary test.
+float dofDiscCoverage(const float sourceRadius, const float distance)
+{
+  return saturate(sourceRadius - distance);
+}
+
+// Projects a blur disc size in millimetres onto the image, normalised so that 1 is cb.maxGatherRadius pixels.
+float dofLensCoCToNormalized(const float cocMm)
+{
+  const float maxRadiusPixels = max(cb.maxGatherRadius, 1e-4f);
+  return min(cocMm * cb.sensorToPixels, maxRadiusPixels) / maxRadiusPixels;
+}
+
+float dofCalculateCircleOfConfusion(const float viewDepth, const float focusDistance)
+{
+  // Thin-lens blur disc size based on [Lee2008], as popularized by
+  // CinematicDOF (Frans Bouma):
+  //   CoC[mm] = ((f^2 / N) / (Zf - f)) * |Z - Zf| / Z
+  // with focal length f and f-number N. The 1/Z falloff grows continuously from the focus plane,
+  // so there are no focus-band edges.
+  const float focusDistanceMm = max(focusDistance * cb.worldUnitToMm, 1e-3f);
+  const float viewDepthMm = max(viewDepth * cb.worldUnitToMm, 1e-3f);
+  const float cocMm = cb.apertureTerm / max(focusDistanceMm - cb.focalLength, 1.0f)
+    * abs(viewDepthMm - focusDistanceMm) / viewDepthMm;
+  const float normalizedCoC = dofLensCoCToNormalized(cocMm);
+
+  // The signed CoC increases with view depth, so the gather can order taps without fetching depth.
+  return viewDepth < focusDistance ? -normalizedCoC : normalizedCoC;
+}
+
+bool dofIsMissDepth(const float rawViewDepth)
+{
+  return rawViewDepth == cb.missLinearViewZ || abs(rawViewDepth) == cb.missLinearViewZ;
+}
+
+float dofGetCoCFromViewDepth(const float rawViewDepth, const float focusDistance)
+{
+  const float viewDepth = abs(rawViewDepth);
+
+  // Sky sits at infinity, where the CoC tends to apertureTerm / (Zf - f),
+  // so focusing far away leaves the sky nearly sharp.
+  if (dofIsMissDepth(rawViewDepth))
+  {
+    const float focusDistanceMm = max(focusDistance * cb.worldUnitToMm, 1e-3f);
+    return dofLensCoCToNormalized(cb.apertureTerm / max(focusDistanceMm - cb.focalLength, 1.0f));
+  }
+
+  return dofCalculateCircleOfConfusion(viewDepth, focusDistance);
+}
+
+#ifdef POST_FX_DOF_USE_LINEAR_VIEW_Z
+// Point fetch of one render resolution linear view Z texel, clamped to the buffer.
+// Every depth-of-field depth read goes through here. Depth is never filtered, because an interpolated
+// depth across a silhouette belongs to no surface and gives a ring of wrong blur.
+float dofLoadViewDepthTexel(const int2 texel)
+{
+  const int2 maxTexel = int2(cb.linearViewZSize) - 1;
+  return PrimaryLinearViewZ.Load(int3(clamp(texel, int2(0, 0), maxTexel), 0));
+}
+
+// The render resolution texel a full resolution pixel index lands in.
+float dofLoadViewDepth(const uint2 fullResPixel)
+{
+  return dofLoadViewDepthTexel(
+    int2((float2(fullResPixel) + 0.5f) * cb.inputOverOutputViewSize));
+}
+#endif
+
+#ifdef POST_FX_DOF_USE_FOCUS_STATE
+// Auto focus writes FocusState earlier in the same command buffer, so there is no host round trip.
+float dofGetFocusDistance()
+{
+  return max(cb.autoFocusEnabled != 0
+    ? FocusState[0] + cb.autoFocusOffset
+    : cb.focusDistance, 1e-4f);
+}
+#endif
+
+#ifdef POST_FX_DOF_USE_SURFACE_FLAGS
+#include "rtx/pass/post_fx/post_fx_motion_blur_geometry_flags.slangh"
+
+// The view model sits a few centimetres from the lens, where a thin lens would give it the largest
+// CoC in the frame. It is held at zero CoC instead, which keeps it sharp and stops it bleeding outward.
+// The flags are point sampled at render resolution, like the depth.
+bool dofIsExcludedViewModelTexel(const int2 texel)
+{
+  if (cb.excludeViewModel == 0u)
+  {
+    return false;
+  }
+
+  const int2 maxTexel = int2(cb.linearViewZSize) - 1;
+
+  return motionBlurSurfaceFlagsReadFromGBuffer(
+    PrimarySurfaceFlags.Load(int3(clamp(texel, int2(0, 0), maxTexel), 0))).isViewModel;
+}
+
+// Uses the same pixel-to-texel mapping as dofLoadViewDepth().
+bool dofIsExcludedViewModel(const uint2 fullResPixel)
+{
+  return dofIsExcludedViewModelTexel(
+    int2((float2(fullResPixel) + 0.5f) * cb.inputOverOutputViewSize));
+}
+#endif

@@ -1,0 +1,68 @@
+/*
+* Light sampling statistics.
+*
+* Wave-aggregated counters for the primary-surface NEE in the direct integrator, identical for every
+* rtx.lightSampling.mode, so RTXDI and LightBVH frames can be compared on what the shadow rays actually do.
+* rtx.lightSampling.logDirectStats enables them, and lightSamplingStatsAfterDirect (rtx_fork_light_bvh.cpp)
+* reads them back and logs them as [LightSamplingStats]. The slot meanings must match that log line.
+*/
+#pragma once
+
+static const uint kLightSamplingStatPixels = 0;          // primary pixels that ran NEE
+static const uint kLightSamplingStatValid = 1;           // pixels with a valid light sample (shadow ray traced)
+static const uint kLightSamplingStatDistant = 2;         // ... of which the light was distant (sun)
+static const uint kLightSamplingStatOccluded = 3;        // shadow rays with an opaque hit
+static const uint kLightSamplingStatOccludedDistant = 4; // ... of which distant
+static const uint kLightSamplingStatCandidates = 5;      // non-opaque ray-query candidates processed (alpha/translucent any-hit work)
+static const uint kLightSamplingStatWaves = 6;           // waves with at least one valid sample
+static const uint kLightSamplingStatMixedWaves = 7;      // ... mixing distant and local lights
+static const uint kLightSamplingStatUniformWaves = 8;    // ... where every valid lane sampled the same light
+static const uint kLightSamplingStatLongRays = 9;        // shadow rays longer than 1000 world units
+// What the cutout candidates did, over all visibility rays of the direct pass's primary NEE.
+static const uint kLightSamplingStatAlphaCommits = 10;   // candidates that ended the ray as opaque (alpha test passed)
+static const uint kLightSamplingStatPartialHits = 11;    // candidates with 0 < opacity < 1 (ray continues, attenuated)
+static const uint kLightSamplingStatCount = 12;
+
+void lightSamplingStatsAdd(uint slot, uint value)
+{
+  const uint waveTotal = WaveActiveSum(value);
+  if (WaveIsFirstLane() && waveTotal != 0u)
+  {
+    InterlockedAdd(LightSamplingStats[slot], waveTotal);
+  }
+}
+
+void lightSamplingStatsRecordPrimary(bool validSample, uint lightIdx, bool occluded, uint candidates, float rayLength,
+                                     uint alphaCommits, uint partialHits)
+{
+  lightSamplingStatsAdd(kLightSamplingStatAlphaCommits, alphaCommits);
+  lightSamplingStatsAdd(kLightSamplingStatPartialHits, partialHits);
+  const LightRangeInfo distantRange = cb.lightRanges[lightTypeDistant];
+  const bool distant = validSample && lightIdx >= distantRange.offset && lightIdx < distantRange.offset + distantRange.count;
+
+  lightSamplingStatsAdd(kLightSamplingStatPixels, 1u);
+  lightSamplingStatsAdd(kLightSamplingStatValid, validSample ? 1u : 0u);
+  lightSamplingStatsAdd(kLightSamplingStatDistant, distant ? 1u : 0u);
+  lightSamplingStatsAdd(kLightSamplingStatOccluded, (validSample && occluded) ? 1u : 0u);
+  lightSamplingStatsAdd(kLightSamplingStatOccludedDistant, (distant && occluded) ? 1u : 0u);
+  lightSamplingStatsAdd(kLightSamplingStatCandidates, candidates);
+  lightSamplingStatsAdd(kLightSamplingStatLongRays, (validSample && rayLength > 1000.0f) ? 1u : 0u);
+
+  const bool anyValid = WaveActiveAnyTrue(validSample);
+  const bool anyDistant = WaveActiveAnyTrue(distant);
+  const bool anyLocal = WaveActiveAnyTrue(validSample && !distant);
+  // Invalid lanes do not break uniformity.
+  const bool uniform = WaveActiveAllTrue(!validSample || lightIdx == WaveActiveMin(validSample ? lightIdx : 0xffffffffu));
+  if (WaveIsFirstLane() && anyValid)
+  {
+    InterlockedAdd(LightSamplingStats[kLightSamplingStatWaves], 1u);
+    if (anyDistant && anyLocal)
+    {
+      InterlockedAdd(LightSamplingStats[kLightSamplingStatMixedWaves], 1u);
+    }
+    if (uniform)
+    {
+      InterlockedAdd(LightSamplingStats[kLightSamplingStatUniformWaves], 1u);
+    }
+  }
+}

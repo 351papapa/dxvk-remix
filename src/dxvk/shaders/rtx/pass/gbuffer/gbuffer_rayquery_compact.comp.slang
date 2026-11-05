@@ -1,0 +1,117 @@
+//!feature wetness ENABLE_SURFACE_WETNESS
+//!feature particle_sky ENABLE_PARTICLE_SKY_HEMISPHERE
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+
+/* rtx.gbuffer.compactPsr. The Reflection and Transmission PSR kernels of the PSR prepare feature set (no NRC),
+   dispatched indirectly over the pixel lists PSR Prepare appends rather than over the whole screen (main() under
+   GBUFFER_COMPACT_PSR in gbuffer_rayquery.comp.slang). Otherwise the code is that of the full-screen PSR pass variants:
+     gbuffer_rayquery_psr_prepare_psr{,_wboit}_compact                   full (rtx.gbuffer.slimVariants off or Full this frame)
+     gbuffer_rayquery_psr_prepare_psr_wboit_<level>_compact              slim levels, as in gbuffer_rayquery_slim.comp.slang
+     gbuffer_rayquery_psr_prepare_stochastic_alpha_psr{,_wboit}_compact  rtx.enableStochasticAlphaBlend (the default), full
+     gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_<level>_compact
+                                                                         its slim levels, with the same predicates (see the
+                                                                         stochastic alpha note in gbuffer_rayquery_slim.comp.slang) */
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR GBUFFER_COMPACT_PSR
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slim_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_POM GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_lean_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_POM GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS GBUFFER_SLIM_NO_SSS
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_slimpom_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_leanpom_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS GBUFFER_SLIM_NO_SSS
+
+//!variant gbuffer_rayquery_psr_prepare_stochastic_alpha_psr_wboit_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=1
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+
+//!variant gbuffer_rayquery_psr_prepare_psr_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR GBUFFER_COMPACT_PSR
+
+//!variant gbuffer_rayquery_psr_prepare_psr_wboit_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+
+//!variant gbuffer_rayquery_psr_prepare_psr_wboit_slim_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_POM GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS
+
+//!variant gbuffer_rayquery_psr_prepare_psr_wboit_lean_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_POM GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS GBUFFER_SLIM_NO_SSS
+
+//!variant gbuffer_rayquery_psr_prepare_psr_wboit_slimpom_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS
+
+//!variant gbuffer_rayquery_psr_prepare_psr_wboit_leanpom_compact.comp
+//!>       RAY_TRACING_PRIMARY_RAY ATMOSPHERE_AVAILABLE
+//!>       GBUFFER_FEATURE_DLSSRR=1 GBUFFER_FEATURE_OBJECT_PICKING=0 GBUFFER_FEATURE_RAYTRACED_RENDER_TARGET=0 GBUFFER_FEATURE_STOCHASTIC_ALPHA=0
+//!>       GBUFFER_FEATURE_PSR_REPLACEMENT=1 GBUFFER_FEATURE_INLINE_PSR_SAMPLING=0
+//!>       GBUFFER_PSR UNORDERED_RESOLVE_WBOIT GBUFFER_COMPACT_PSR
+//!>       GBUFFER_SLIM_NO_THIN_FILM GBUFFER_SLIM_NO_PORTALS GBUFFER_SLIM_NO_SSS
+
+//!end-variants
+
+#include "rtx/pass/gbuffer/gbuffer_rayquery.comp.slang"

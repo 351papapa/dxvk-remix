@@ -1,0 +1,235 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The per-hit data the SCCR displacement march (pom_sccr.slangh) needs from the triangle, which
+// surfaceInteractionCreate has in hand and throws away: the UV-to-world scale (world-unit depth), and the smooth
+// surface the vertex normals describe (curvature correction). Included by surface_interaction.slangh after
+// SurfaceInteraction (surface.h) and cb (common_bindings.slangh). Everything here does nothing outside SCCR mode, so
+// the other displacement modes see the SurfaceInteraction fields at 0 and never read them.
+//
+// The smooth base surface of a triangle is a Phong tessellation patch (Boubekeur and Alexa 2008) at half strength: its
+// height above the flat triangle along the triangle normal N is
+//   h(b) = -(b0 b1 c01 + b0 b2 c02 + b1 b2 c12),   c_ij = 0.5 (w_ij + w_ji),   w_ij = dot(p_j - p_i, n_i) dot(n_i, N)
+// with b the barycentrics, p the vertex positions and n the vertex normals. It is 0 at the vertices, depends only on
+// an edge's two vertices along that edge (so neighbouring triangles agree on their shared edge), and its slope at a
+// vertex along an edge matches the tilt of that vertex's normal (full-strength Phong tessellation has twice that
+// slope: a circular arc between two vertices has its sagitta, l * angle / 8, at half strength). Positive heights are
+// on N's side (outwards on a convex mesh). h is quadratic in b, and b is affine in UV, so around the hit
+// h(uv0 + d) = h0 + dot(g, d) + 0.5 d^T H d exactly. pomBaseLinear holds (h0, g, bound) and pomBaseQuadric (Huu, Huv, Hvv),
+// with bound = max |c_ij| / 3 >= |h| anywhere on the triangle.
+
+void sccrSurfaceInteractionClear(inout SurfaceInteraction surfaceInteraction)
+{
+  surfaceInteraction.pomUvToWorld = 0.0f;
+  surfaceInteraction.pomBaseLinear = vec4(0.0f);
+  surfaceInteraction.pomBaseQuadric = vec3(0.0f);
+  surfaceInteraction.pomDepthOffset = 0.0f;
+  surfaceInteraction.pomShellDone = false;
+  surfaceInteraction.pomShellMarker = 0.0f;
+}
+
+// (c01, c02, c12, bound) of the half-strength Phong patch above, from world positions and world vertex normals (on
+// the side of triangleNormal). 0 outside SCCR mode or with the curvature correction off.
+vec4 sccrPhongEdgeCurvature(vec3 positions[3], vec3 normals[3], vec3 triangleNormal)
+{
+  if (cb.pomMode != DisplacementMode::SCCR || cb.pomSccrCurvatureScale <= 0.0f)
+  {
+    return vec4(0.0f);
+  }
+  const float tilt0 = dot(normals[0], triangleNormal);
+  const float tilt1 = dot(normals[1], triangleNormal);
+  const float tilt2 = dot(normals[2], triangleNormal);
+  const vec3 edge01 = positions[1] - positions[0];
+  const vec3 edge02 = positions[2] - positions[0];
+  const vec3 edge12 = positions[2] - positions[1];
+  const float c01 = 0.5f * (dot(edge01, normals[0]) * tilt0 - dot(edge01, normals[1]) * tilt1);
+  const float c02 = 0.5f * (dot(edge02, normals[0]) * tilt0 - dot(edge02, normals[2]) * tilt2);
+  const float c12 = 0.5f * (dot(edge12, normals[1]) * tilt1 - dot(edge12, normals[2]) * tilt2);
+  const vec4 result = vec4(c01, c02, c12, max(max(abs(c01), abs(c02)), abs(c12)) / 3.0f);
+  return isValidValue(result) ? result : vec4(0.0f);
+}
+
+// Fills pomUvToWorld and, from edgeCurvature (sccrPhongEdgeCurvature, or 0), the base surface expansion around the
+// hit. texcoords are the final per-vertex texture coordinates (after any texture transform or cascade remap), as the
+// material samples them. It runs in SCCR mode only and leaves the fields at 0 for degenerate UVs.
+void sccrSurfaceBaseCreate(
+  inout SurfaceInteraction surfaceInteraction, vec2 texcoords[3], vec3 positions[3], vec3 bary, vec4 edgeCurvature)
+{
+  if (cb.pomMode != DisplacementMode::SCCR)
+  {
+    return;
+  }
+  const vec2 duv1 = texcoords[1] - texcoords[0];
+  const vec2 duv2 = texcoords[2] - texcoords[0];
+  const float determinant = duv1.x * duv2.y - duv2.x * duv1.y;
+  // The degenerate-UV threshold of genTangSpace, which falls back to an arbitrary frame below it. NaN fails too.
+  if (!(abs(determinant) >= 1e-8f))
+  {
+    return;
+  }
+  const float invDeterminant = 1.0f / determinant;
+  // dP/du and dP/dv over the triangle, which are the unnormalised rawTangent and rawBitangent of genTangSpace.
+  const vec3 dp1 = positions[1] - positions[0];
+  const vec3 dp2 = positions[2] - positions[0];
+  const vec3 dpdu = (duv2.y * dp1 - duv1.y * dp2) * invDeterminant;
+  const vec3 dpdv = (duv1.x * dp2 - duv2.x * dp1) * invDeterminant;
+  // The larger of the two is the scale genTangSpace divides rawTangent and rawBitangent by, and with it the world size
+  // of one unit of SCCR march depth per unit of material depth.
+  const float uvToWorld = sqrt(max(squareLength(dpdu), squareLength(dpdv)));
+  if (!isValidValue(uvToWorld))
+  {
+    return;
+  }
+  surfaceInteraction.pomUvToWorld = uvToWorld;
+
+  if (!(edgeCurvature.w > 0.0f))
+  {
+    return;
+  }
+  // The gradients of the barycentrics over UV, with b1 and b2 from the inverse of [duv1 duv2] and b0 = 1 - b1 - b2.
+  const vec2 m1 = vec2(duv2.y, -duv2.x) * invDeterminant;
+  const vec2 m2 = vec2(-duv1.y, duv1.x) * invDeterminant;
+  const vec2 m0 = -(m1 + m2);
+  const float c01 = edgeCurvature.x;
+  const float c02 = edgeCurvature.y;
+  const float c12 = edgeCurvature.z;
+  const float h0 = -(bary.x * bary.y * c01 + bary.x * bary.z * c02 + bary.y * bary.z * c12);
+  // dh/db_i = -(sum over j != i of b_j c_ij); g = sum_i m_i dh/db_i.
+  const vec2 g = -(m0 * (c01 * bary.y + c02 * bary.z) + m1 * (c01 * bary.x + c12 * bary.z) + m2 * (c02 * bary.x + c12 * bary.y));
+  // d2h/(db_i db_j) = -c_ij (i != j), 0 on the diagonal; H = sum_ij m_i m_j^T d2h/(db_i db_j).
+  const float huu = -2.0f * (c01 * m0.x * m1.x + c02 * m0.x * m2.x + c12 * m1.x * m2.x);
+  const float hvv = -2.0f * (c01 * m0.y * m1.y + c02 * m0.y * m2.y + c12 * m1.y * m2.y);
+  const float huv = -(c01 * (m0.x * m1.y + m1.x * m0.y) + c02 * (m0.x * m2.y + m2.x * m0.y) + c12 * (m1.x * m2.y + m2.x * m1.y));
+  const vec4 baseLinear = vec4(h0, g.x, g.y, edgeCurvature.w);
+  const vec3 baseQuadric = vec3(huu, huv, hvv);
+  if (isValidValue(baseLinear) && isValidValue(baseQuadric))
+  {
+    surfaceInteraction.pomBaseLinear = baseLinear;
+    surfaceInteraction.pomBaseQuadric = baseQuadric;
+  }
+}
+
+// The triangle's geometric normal from its UV derivatives (rawTangent x rawBitangent span the triangle's plane), on the
+// side of the geometry normal, which surfaceInteractionCreate puts on the side the ray came from. For degenerate UVs,
+// where genTangSpace leaves no usable raw tangents, valid is false and the geometry normal is returned.
+vec3 sccrTriangleNormal(SurfaceInteraction surfaceInteraction, out bool valid)
+{
+  const vec3 normal = cross(surfaceInteraction.rawTangent, surfaceInteraction.rawBitangent);
+  const float normalLength = length(normal);
+  // rawTangent / rawBitangent are scaled so the longer one has length 1. NaN fails the test.
+  valid = normalLength > 1e-6f;
+  if (!valid)
+  {
+    return surfaceInteraction.geometryNormal;
+  }
+  const vec3 unitNormal = normal / normalLength;
+  return dot(unitNormal, surfaceInteraction.geometryNormal) < 0.0f ? -unitNormal : unitNormal;
+}
+
+// Packs a unit normal as one float that survives an RGBA32F texture exactly. It is 11 bits per signed-octahedral axis
+// as an integer below 2^24, plus 1 so that 0 stays "none".
+float sccrPackNormal(vec3 normal)
+{
+  const vec2 octahedral = sphereDirectionToSignedOctahedral(normal);
+  const uvec2 quantized = uvec2(round(saturate(octahedral * 0.5f + 0.5f) * 2047.0f));
+  return float(quantized.x * 2048u + quantized.y + 1u);
+}
+
+vec3 sccrUnpackNormal(float packedNormal)
+{
+  const uint bits = uint(packedNormal) - 1u;
+  const vec2 octahedral = vec2(float(bits >> 11u), float(bits & 2047u)) * (2.0f / 2047.0f) - 1.0f;
+  return signedOctahedralToSphereDirection(octahedral);
+}
+
+// SharedTextureCoord.w of a shell pixel (pomShellDone) is a shell marker instead of a packed normal:
+// +-(kSccrShellMarkerBase + t'), with t' the triangle the shell march ended in (absolute within the geometry, like the
+// shell data) and the sign the march's orientation (the side its shell vectors point to, sccrShellMarch).
+// Packed normals are integers from 1 to 2^22, so magnitudes from 2^22 + 2 are markers, and every value up to 2^24 is
+// exact in the RGBA32F texture. That covers triangles up to kSccrShellMarkerMaxTriangle, about 12.5M per geometry.
+// Larger ones get no marker (w = 0), and their self-shadows fall back to the interpolated frame.
+static const float kSccrShellMarkerBase = 4194306.0f; // 2^22 + 2
+static const uint kSccrShellMarkerMaxTriangle = 16777215u - 4194306u; // base + t' <= 2^24 - 1
+
+float sccrShellMarkerEncode(uint triIndex, float orientation)
+{
+  if (triIndex > kSccrShellMarkerMaxTriangle)
+  {
+    return 0.0f;
+  }
+  const float magnitude = kSccrShellMarkerBase + float(triIndex);
+  return orientation < 0.0f ? -magnitude : magnitude;
+}
+
+bool sccrShellMarkerDecode(float marker, out uint triIndex, out float orientation)
+{
+  const float magnitude = abs(marker);
+  orientation = marker < 0.0f ? -1.0f : 1.0f;
+  triIndex = 0u;
+  if (!(magnitude >= kSccrShellMarkerBase) || !(magnitude < 16777216.0f))
+  {
+    return false;
+  }
+  triIndex = uint(magnitude - kSccrShellMarkerBase);
+  return true;
+}
+
+// Whether SharedTextureCoord.w holds a packed triangle normal (sccrPackNormal), not 0 (unknown) or a shell marker.
+bool sccrHasPackedNormal(float w)
+{
+  return w >= 1.0f && w < kSccrShellMarkerBase;
+}
+
+// What the G-buffer stores in SharedTextureCoord (RGBA32F) for a displaced hit. xy holds the displaced texture
+// coordinates, which every mode reads. In SCCR mode z = pomUvToWorld and w = the packed triangle normal (0 when unknown),
+// so the self-shadow march (opaqueSurfaceMaterialInteractionCalcHeightThroughput) gets the depth scale and frame of the
+// primary march. For a shell pixel w is the shell marker (above). Indirect hits pass the same for their own NEE, and are
+// never shell pixels, because the shell march runs in the G-buffer passes only.
+vec4 sccrSharedTextureCoord(SurfaceInteraction surfaceInteraction)
+{
+  if (cb.pomMode != DisplacementMode::SCCR)
+  {
+    return vec4(surfaceInteraction.textureCoordinates, 0.0f, 0.0f);
+  }
+  if (surfaceInteraction.pomShellDone && surfaceInteraction.pomShellMarker != 0.0f)
+  {
+    return vec4(surfaceInteraction.textureCoordinates, surfaceInteraction.pomUvToWorld, surfaceInteraction.pomShellMarker);
+  }
+  bool validNormal;
+  const vec3 triangleNormal = sccrTriangleNormal(surfaceInteraction, validNormal);
+  return vec4(surfaceInteraction.textureCoordinates, surfaceInteraction.pomUvToWorld,
+              validNormal ? sccrPackNormal(triangleNormal) : 0.0f);
+}
+
+// World-unit depth (rtx.displacement.enableWorldUnitDepth): the factor on a material's UV-unit depth that gives it the
+// world depth it has at referenceWorldUnitsPerUv. It is 1 when the density is unknown, and cb.pomSccrMaxDepthScale is 1
+// when the option is off.
+float sccrDepthScale(float uvToWorld)
+{
+  if (cb.pomSccrReferenceUvToWorld <= 0.0f || !(uvToWorld > 0.0f))
+  {
+    return 1.0f;
+  }
+  const float maxScale = max(cb.pomSccrMaxDepthScale, 1.0f);
+  return clamp(cb.pomSccrReferenceUvToWorld / uvToWorld, 1.0f / maxScale, maxScale);
+}

@@ -1,0 +1,158 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, 'release/**' ]
+  pull_request:
+    branches: [ main, 'release/**' ]
+  # Manual build trigger: publishing a GitHub Release (typically from
+  # modern-games-sdk-api) fires the workflow. Also enables
+  # workflow_dispatch so the Actions UI "Run workflow" button works.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      BUILD_SENTRY_ENVIRONMENT: ${{ github.event_name == 'pull_request' && 'github-testing' || 'github-production' }}
+
+    strategy:
+      matrix:
+        include:
+          - build-flavour: debug
+            output-subdir: _Comp64Debug
+          - build-flavour: debugoptimized
+            output-subdir: _Comp64DebugOptimized
+          - build-flavour: release
+            output-subdir: _Comp64Release
+
+    steps:
+    - name: Setup variables
+      uses: actions/github-script@v9
+      with:
+        script: core.exportVariable('GITHUB_SHA_SHORT', context.sha.substring(0, 7))
+
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Setup Meson
+      run: pip install meson==1.1.0
+
+    - name: Fetch pinned DLSS / NGX DLL bundle
+      shell: pwsh
+      run: .\scripts\update-dlss-dlls.ps1
+
+    - name: Build
+      shell: pwsh
+      run: |
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+        . .\build_common.ps1
+        PerformBuild -BuildFlavour ${{matrix.build-flavour}} -BuildSubDir ${{matrix.output-subdir}} -Backend ninja -EnableTracy false copy_output
+
+    - name: Upload build logs
+      if: ${{ always() }}
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-logs-${{github.run_number}}-${{env.GITHUB_SHA_SHORT}}-${{matrix.build-flavour}}
+        path: |
+          ${{matrix.output-subdir}}\meson-logs\meson-log.txt
+          ${{matrix.output-subdir}}\update-deps.log
+          update-deps.log
+        if-no-files-found: ignore
+        retention-days: 30
+
+    - name: Copy readme and license notices
+      shell: pwsh
+      run: |
+        Copy-Item -Path artifacts_readme.txt, LICENSE, LICENSE-MIT, CREDITS.md, ThirdPartyLicenses.txt -Destination _output\ -Force
+
+    - name: Upload x64 binaries
+      uses: actions/upload-artifact@v7
+      with:
+        name: rtx-remix-for-x64-games-${{github.run_number}}-${{env.GITHUB_SHA_SHORT}}-${{matrix.build-flavour}}
+        path: |
+          _output\*.dll
+          _output\*.pdb
+          _output\*.txt
+          _output\LICENSE
+          _output\LICENSE-MIT
+          _output\CREDITS.md
+          _output\usd\*
+
+    - name: Move DXVK
+      shell: pwsh
+      run: |
+        mkdir _output\.trex
+        Move-Item -Path _output\*.dll -Destination _output\.trex\
+        Move-Item -Path _output\*.pdb -Destination _output\.trex\
+        Move-Item -Path _output\usd -Destination _output\.trex\usd
+
+    - name: Build Bridge
+      shell: pwsh
+      run: |
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+        pushd bridge
+        . .\build_bridge_${{matrix.build-flavour}}.bat
+        popd
+
+    - name: Copy Bridge
+      shell: pwsh
+      run: |
+        Copy-Item -Recurse -Path bridge\_output\* -Destination _output\ -Force
+
+    - name: Upload x86 binaries
+      uses: actions/upload-artifact@v7
+      with:
+        name: rtx-remix-for-x86-games-${{github.run_number}}-${{env.GITHUB_SHA_SHORT}}-${{matrix.build-flavour}}
+        include-hidden-files: true
+        path: |
+          _output\*.dll
+          _output\*.exe
+          _output\*.pdb
+          _output\*.txt
+          _output\LICENSE
+          _output\LICENSE-MIT
+          _output\CREDITS.md
+          _output\.trex\*.dll
+          _output\.trex\*.exe
+          _output\.trex\*.pdb
+          _output\.trex\usd\*
+
+  notify-slack-on-failure:
+    runs-on: ubuntu-latest
+    needs: build-windows
+    if: ${{ failure() }}
+
+    steps:
+    - name: Notify Slack
+      uses: slackapi/slack-github-action@v3
+      with:
+        webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+        webhook-type: incoming-webhook
+        payload: |
+          text: "<!here> Build workflow failed for ${{ github.repository }}"
+          blocks:
+            - type: section
+              text:
+                type: mrkdwn
+                text: "<!here> :rotating-light-red: *Build workflow failed* for `${{ github.repository }}`"
+            - type: section
+              fields:
+                - type: mrkdwn
+                  text: "*Ref:*\n`${{ github.ref_name }}`"
+                - type: mrkdwn
+                  text: "*Commit:*\n`${{ github.sha }}`"
+                - type: mrkdwn
+                  text: "*Event:*\n`${{ github.event_name }}`"
+            - type: actions
+              elements:
+                - type: button
+                  text:
+                    type: plain_text
+                    text: View workflow run
+                  url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

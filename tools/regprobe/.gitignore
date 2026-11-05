@@ -1,0 +1,4 @@
+.cache/
+out/
+regprobe.exe
+*.obj

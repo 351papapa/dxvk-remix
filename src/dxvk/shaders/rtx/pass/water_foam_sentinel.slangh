@@ -1,0 +1,60 @@
+#pragma once
+
+// Carrier heights and validity, in their own R32G32B32A32_SFLOAT resource:
+//
+//     .x absolute world height of the water surface in that cell
+//     .y 0 absent, 1 authored water, 2 generated ocean (both positive values valid)
+//     .z absolute world height of eligible static shoreline terrain
+//     .w terrain validity; terrain is used only for wetness and clipping
+//
+// Kept OUT of the density field's channels on purpose. That field is
+// R16G16B16A16_SFLOAT, and two encodings were tried there and both were wrong:
+//
+//   * height == 0 as the absence marker. Zero is a legal surface height and waves cross
+//     it constantly, so that deleted real water and tilted normals.
+//   * height + bias as a positive-only encoding. Half precision near 1024 has a spacing of
+//     1.0 (and 0.5 below that), so the water got quantised to whole or half units - coarser
+//     than the surface offset, which makes the foam step and its normals stair-step. It
+//     also collided with the sentinel at any legal world height equal to minus the bias.
+//
+// With a separate 32-bit float height and its own validity flag, every finite value is a
+// legal height and absence needs no reserved value at all.
+static const float kFoamHasWater = 1.0f;
+static const float kFoamNoWater = 0.0f;
+
+struct FoamCarrier {
+  float height;
+  float density;
+  bool valid;
+  bool water;
+};
+
+// Density xyzw = water foam, flow x/y, beach wetness. Keep empty
+// density corners valid so neighbouring foam can fade across a whole triangle.
+FoamCarrier foamSelectCarrier(float4 heights, float4 state) {
+  const bool waterValid = heights.y >= 0.5f && isfinite(heights.x);
+  const bool terrainValid = heights.w >= 0.5f && isfinite(heights.z);
+  FoamCarrier carrier;
+  carrier.water = waterValid && (!terrainValid || heights.x >= heights.z);
+  carrier.valid = carrier.water;
+  carrier.height = carrier.water ? heights.x : (terrainValid ? heights.z : 0.0f);
+  // A thin water edge fades before the carrier crosses terrain; no dry triangle
+  // or residual channel is ever used as foam geometry.
+  const float coverage = terrainValid ? smoothstep(0.025f, 0.15f, heights.x - heights.z) : 1.0f;
+  const float density = carrier.water ? state.x * coverage : 0.0f;
+  carrier.density = carrier.valid && isfinite(density) ? max(density, 0.0f) : 0.0f;
+  return carrier;
+}
+
+// Allow the continuous water/shore crossing, but never bridge a wall or a
+// separate elevated water body with a sloping foam triangle.
+bool foamCarrierContinuous(float firstHeight, float secondHeight, float horizontalDistance) {
+  return abs(firstHeight - secondHeight) <= 1.5f * horizontalDistance + 0.03f;
+}
+
+// Probe reach relative to the camera. The contact probe fires from cameraUp + 64 downward
+// with its ray clamped to 256, so any surface it can record lies within [-192, +64] of the
+// camera. Used to size the display bounding box. Must correspond to ray.Origin / ray.TMax
+// in water_foam_update.comp.slang.
+static const float kFoamProbeUpReach = 64.0f;
+static const float kFoamProbeDownReach = 192.0f;

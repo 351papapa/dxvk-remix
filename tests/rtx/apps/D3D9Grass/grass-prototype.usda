@@ -1,0 +1,31 @@
+#usda 1.0
+(
+    defaultPrim = "Grass"
+    upAxis = "Z"
+    metersPerUnit = 1
+)
+def Xform "Grass" {
+    def Material "BladeMaterial" {
+        token outputs:surface.connect = </Grass/BladeMaterial/Shader.outputs:surface>
+        def Shader "Shader" {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuse_color_constant = (0.8, 0.03, 0.4)
+            bool inputs:enable_emission = true
+            color3f inputs:emissive_color_constant = (1, 0.01, 0.3)
+            float inputs:emissive_intensity = 1
+            token outputs:surface
+        }
+    }
+    def Mesh "Blade" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    ) {
+        point3f[] points = [(-0.15,0,0),(0.15,0,0),(0,0,1),(0,-0.15,0),(0,0.15,0),(0,0,1)]
+        int[] faceVertexCounts = [3,3]
+        int[] faceVertexIndices = [0,1,2,3,4,5]
+        normal3f[] normals = [(0,-1,0),(0,-1,0),(0,-1,0),(1,0,0),(1,0,0),(1,0,0)] (interpolation = "vertex")
+        texCoord2f[] primvars:st = [(0,0),(1,0),(0.5,1),(0,0),(1,0),(0.5,1)] (interpolation = "vertex")
+        uniform token subdivisionScheme = "none"
+        bool doubleSided = true
+        rel material:binding = </Grass/BladeMaterial>
+    }
+}

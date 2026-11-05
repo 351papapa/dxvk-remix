@@ -1,0 +1,77 @@
+#pragma once
+
+#include "rtx/pass/instance_definitions.h"
+
+bool rainMapStaticGround(Surface surface) {
+  const uint wetClass = surface.wetnessTag >> 24;
+  return surface.isStatic && surface.isFullyOpaque && !surface.isParticle && !surface.isAnimatedWater
+    && !surface.isDecal && !surface.isPlayerModel && wetClass != 1u && wetClass != 3u;
+}
+
+bool rainMapWaterBoundary(Surface surface) {
+  return surface.isAnimatedWater && !surface.isParticle && !surface.isDecal;
+}
+
+// The nearest solid boundary blocks water above another room or a raised pool.
+// Both TLAS inputs and surface metadata must describe the same completed scene.
+bool rainMapWaterAbove(float3 position, float maxDistance, out float waterHeight) {
+  waterHeight = 0.0f;
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  const float epsilon = 0.001f * units;
+  RayDesc ray;
+  ray.Origin = position;
+  ray.Direction = cb.isZUp ? float3(0.0f, 0.0f, 1.0f) : float3(0.0f, 1.0f, 0.0f);
+  ray.TMin = epsilon;
+  ray.TMax = max(maxDistance, 2.0f * epsilon);
+  const uint flags = RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+  RayQuery<0> query;
+  query.TraceRayInline(topLevelAS, flags, OBJECT_MASK_OPAQUE | OBJECT_MASK_TRANSLUCENT | OBJECT_MASK_ALPHA_BLEND, ray);
+  while (query.Proceed()) {
+    if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) {
+      continue;
+    }
+    const uint id = (query.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CandidateGeometryIndex();
+    if (id < cb.surfaceCount) {
+      const Surface surface = surfaces[nonuniformEXT(id)];
+      if (rainMapWaterBoundary(surface) || rainMapStaticGround(surface)) {
+        query.CommitNonOpaqueTriangleHit();
+      }
+    }
+  }
+
+  bool waterFound = false;
+  if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+    const uint id = (query.CommittedInstanceID() & CUSTOM_INDEX_SURFACE_MASK) + query.CommittedGeometryIndex();
+    waterFound = rainMapWaterBoundary(surfaces[nonuniformEXT(id)]);
+    ray.TMax = query.CommittedRayT();
+  }
+
+  // Alpha-blended water can reside in the separate unordered scene.
+  if (cb.enableSeparateUnorderedApproximations && ray.TMax > ray.TMin) {
+    RayQuery<0> unorderedQuery;
+    unorderedQuery.TraceRayInline(unorderedTLAS, flags, OBJECT_MASK_UNORDERED_ALL_GEOMETRY, ray);
+    while (unorderedQuery.Proceed()) {
+      if (unorderedQuery.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) {
+        continue;
+      }
+      const uint id = (unorderedQuery.CandidateInstanceID() & CUSTOM_INDEX_SURFACE_MASK)
+        + unorderedQuery.CandidateGeometryIndex();
+      if (id < cb.surfaceCount) {
+        const Surface surface = surfaces[nonuniformEXT(id)];
+        if (rainMapWaterBoundary(surface) || rainMapStaticGround(surface)) {
+          unorderedQuery.CommitNonOpaqueTriangleHit();
+        }
+      }
+    }
+    if (unorderedQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+      const uint id = (unorderedQuery.CommittedInstanceID() & CUSTOM_INDEX_SURFACE_MASK)
+        + unorderedQuery.CommittedGeometryIndex();
+      waterFound = rainMapWaterBoundary(surfaces[nonuniformEXT(id)]);
+      ray.TMax = unorderedQuery.CommittedRayT();
+    }
+  }
+  if (waterFound) {
+    waterHeight = (cb.isZUp ? position.z : position.y) + ray.TMax;
+  }
+  return waterFound;
+}

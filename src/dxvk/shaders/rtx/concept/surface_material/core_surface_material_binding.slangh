@@ -1,0 +1,58 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The kernel-side access to the per-surface core material records (cb.coreMaterialTable) and the
+// legacy records (cb.legacySurfaceTable) through the bindless raw-buffer table, read as uint4 rows. Included only by the
+// VISIBILITY_CORE_MATERIAL variants (integrate_direct_*lean_core / *lean_legacy), which the host binds only while both
+// tables describe this frame's surfaces.
+
+#include "rtx/concept/surface_material/core_surface_material.slangh"
+
+[allow("parameterBindingsOverlap")]
+layout(set = BINDING_SET_BINDLESS_RAW_BUFFER, binding = 0)
+StructuredBuffer<uint4> coreMaterialRows[];
+
+CoreSurfaceMaterial coreSurfaceMaterialLoad(uint surfaceIndex)
+{
+  CoreSurfaceMaterial core;
+  [unroll]
+  for (uint i = 0; i < 4; ++i)
+  {
+    core.data[i] = coreMaterialRows[cb.coreMaterialTable][surfaceIndex * 4 + i];
+  }
+  return core;
+}
+
+// The full material record's view of a class 1 (translucent) core record. Bytes 0-35 are the TranslucentSurfaceMaterial
+// record verbatim (TranslucentSurfaceMaterial is 36 B), which is all translucentSurfaceMaterialCreate decodes.
+MemoryPolymorphicSurfaceMaterial coreSurfaceMaterialTranslucentMemory(uint surfaceIndex)
+{
+  MemoryPolymorphicSurfaceMaterial memory;
+  [unroll]
+  for (uint i = 0; i < 3; ++i)
+  {
+    memory.data[i] = coreMaterialRows[cb.coreMaterialTable][surfaceIndex * 4 + i];
+  }
+  memory.data[3] = uint4(0u, 0u, 0u, 0u);
+  return memory;
+}

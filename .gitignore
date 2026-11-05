@@ -1,0 +1,78 @@
+#############################################################################
+# Copyright (c) 2021-2022, NVIDIA CORPORATION. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#############################################################################
+
+/_*/
+# /_output can be a symlink, so diff from above
+/_output
+/.vs
+/_vs
+.history
+/.vs/VSWorkspaceState.json
+/.vs/slnx.sqlite
+*.sublime-workspace
+**/__pycache__
+/gametargets.conf
+/dxvk.conf
+.vscode/
+/external
+**/_batch_output/**
+/public/bin/
+*.log
+.build-venv/
+.venv/
+# Local-only design docs (specs / plans / scratch notes) that explicitly
+# stay off the canonical repo per author preference. Not for canonical history.
+docs/superpowers/
+metrics.txt
+nrc_session_log.txt
+python.dxvk-cache
+*.xml.user
+
+# Fork-maintainability audit outputs (ephemeral).
+audit-output/
+
+# ignore build artifacts
+nv-private
+tests
+
+# Keep this focused source test visible despite the broad local test-artifact rule.
+!tests/
+tests/*
+!tests/rtx/
+tests/rtx/*
+!tests/rtx/unit/
+tests/rtx/unit/*
+!tests/rtx/unit/test_external_effect_manifest.cpp
+!tests/rtx/unit/test_retained_compat_policy.cpp
+!tests/rtx/unit/test_retained_static_batch.cpp
+!tests/rtx/unit/test_retained_world_batch.cpp
+!tests/rtx/unit/test_index_only_geometry.cpp
+!tests/rtx/unit/test_water_medium.cpp
+!tests/rtx/unit/test_wetness_retention.cpp
+
+# Per-contributor auto-deploy targets, dot-sourced by scripts/build.ps1
+/scripts/auto-deploy.local.ps1
+
+# Pinned DLSS / NGX DLL override, populated by scripts/update-dlss-dlls.ps1.
+# Pulled from RemixProjGroup/dxvk-remix-dlss-bundle releases per scripts/dlss-pins.json.
+/dlss_override/
+/scripts/build.local.ps1

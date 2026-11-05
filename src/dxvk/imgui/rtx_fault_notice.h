@@ -1,0 +1,57 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+#pragma once
+
+#include <string>
+
+#include "../rtx_render/rtx_option.h"
+
+struct ImFont;
+
+namespace dxvk {
+
+  // The problem notice tells the player that something most likely broke, where the logs and crash dumps are,
+  // and where to get help. Problems come from the game integration (rtx.faultNotice.hostReport) and from the
+  // runtime itself: a crash or a GPU crash in the previous session.
+  class FaultNotice {
+  public:
+    RTX_OPTION("rtx.faultNotice", bool, enable, false,
+      "Shows a notice on top of the game when a problem is detected: a likely conflict with another mod, a broken "
+      "install, or a crash in the previous session. The notice names the log and crash dump folders and where to "
+      "get help, and stays until the user menu is opened.");
+    RTX_OPTION("rtx.faultNotice", std::string, supportUrl, std::string(""),
+      "The https link the problem notice offers for getting help, such as a support forum or chat invite.");
+    RTX_OPTION("rtx.faultNotice", std::string, supportText, std::string(""),
+      "The instructions the problem notice shows above rtx.faultNotice.supportUrl, such as where to upload the logs.");
+    RTX_OPTION_FLAG("rtx.faultNotice", std::string, hostReport, std::string(""), RtxOptionFlags::NoSave,
+      "Set by the game integration (remix API SetConfigVariable): the problems it detected, one per line, each "
+      "written as id|text. The id names the problem for \"Don't Show Again\".");
+
+    // Draws the notice on top of the game.
+    // Opening a menu marks the problems shown so far as seen, which hides the notice until a new one arrives.
+    static void showToast(ImFont* font, bool menuOpen);
+
+    // Draws the problem list, the folders, the help link and the enable checkbox for the user menu.
+    static void showSection();
+  };
+
+}

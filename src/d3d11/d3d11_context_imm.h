@@ -1,0 +1,199 @@
+#pragma once
+
+#include "../util/util_time.h"
+
+#include "../util/sync/sync_signal.h"
+
+#include "d3d11_context.h"
+#include "d3d11_state_object.h"
+#include "d3d11_video.h"
+
+namespace dxvk {
+  
+  class D3D11Buffer;
+  class D3D11CommonTexture;
+  
+  class D3D11ImmediateContext : public D3D11DeviceContext {
+    friend class D3D11SwapChain;
+    friend class D3D11VideoContext;
+    friend class D3D11DeviceContext;
+  public:
+    
+    D3D11ImmediateContext(
+            D3D11Device*    pParent,
+      const Rc<DxvkDevice>& Device);
+    ~D3D11ImmediateContext();
+    
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+            REFIID  riid,
+            void**  ppvObject);
+
+    D3D11_DEVICE_CONTEXT_TYPE STDMETHODCALLTYPE GetType();
+    
+    UINT STDMETHODCALLTYPE GetContextFlags();
+    
+    HRESULT STDMETHODCALLTYPE GetData(
+            ID3D11Asynchronous*         pAsync,
+            void*                       pData,
+            UINT                        DataSize,
+            UINT                        GetDataFlags);
+    
+    void STDMETHODCALLTYPE Begin(
+            ID3D11Asynchronous*         pAsync);
+    
+    void STDMETHODCALLTYPE End(
+            ID3D11Asynchronous*         pAsync);
+    
+    void STDMETHODCALLTYPE Flush();
+    
+    void STDMETHODCALLTYPE Flush1(
+            D3D11_CONTEXT_TYPE          ContextType,
+            HANDLE                      hEvent);
+
+    HRESULT STDMETHODCALLTYPE Signal(
+            ID3D11Fence*                pFence,
+            UINT64                      Value);
+    
+    HRESULT STDMETHODCALLTYPE Wait(
+            ID3D11Fence*                pFence,
+            UINT64                      Value);
+
+    void STDMETHODCALLTYPE ExecuteCommandList(
+            ID3D11CommandList*  pCommandList,
+            BOOL                RestoreContextState);
+    
+    HRESULT STDMETHODCALLTYPE FinishCommandList(
+            BOOL                RestoreDeferredContextState,
+            ID3D11CommandList   **ppCommandList);
+    
+    HRESULT STDMETHODCALLTYPE Map(
+            ID3D11Resource*             pResource,
+            UINT                        Subresource,
+            D3D11_MAP                   MapType,
+            UINT                        MapFlags,
+            D3D11_MAPPED_SUBRESOURCE*   pMappedResource);
+    
+    void STDMETHODCALLTYPE Unmap(
+            ID3D11Resource*             pResource,
+            UINT                        Subresource);
+            
+    void STDMETHODCALLTYPE UpdateSubresource(
+            ID3D11Resource*                   pDstResource,
+            UINT                              DstSubresource,
+      const D3D11_BOX*                        pDstBox,
+      const void*                             pSrcData,
+            UINT                              SrcRowPitch,
+            UINT                              SrcDepthPitch);
+    
+    void STDMETHODCALLTYPE UpdateSubresource1(
+            ID3D11Resource*                   pDstResource,
+            UINT                              DstSubresource,
+      const D3D11_BOX*                        pDstBox,
+      const void*                             pSrcData,
+            UINT                              SrcRowPitch,
+            UINT                              SrcDepthPitch,
+            UINT                              CopyFlags);
+
+    void STDMETHODCALLTYPE OMSetRenderTargets(
+            UINT                              NumViews,
+            ID3D11RenderTargetView* const*    ppRenderTargetViews,
+            ID3D11DepthStencilView*           pDepthStencilView);
+    
+    void STDMETHODCALLTYPE OMSetRenderTargetsAndUnorderedAccessViews(
+            UINT                              NumRTVs,
+            ID3D11RenderTargetView* const*    ppRenderTargetViews,
+            ID3D11DepthStencilView*           pDepthStencilView,
+            UINT                              UAVStartSlot,
+            UINT                              NumUAVs,
+            ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
+      const UINT*                             pUAVInitialCounts);
+    
+    void STDMETHODCALLTYPE SwapDeviceContextState(
+            ID3DDeviceContextState*           pState,
+            ID3DDeviceContextState**          ppPreviousState);
+
+    void SynchronizeCsThread(
+            uint64_t                          SequenceNumber);
+    
+    // NV-DXVK start: Explicit API host frame ownership
+    void RenderRemix(const Rc<DxvkImage>& image, bool render);
+    bool FinishRemixFrame(const Rc<DxvkImage>& image, uint64_t& frameId);
+    void DisableRemixHost() { m_remixTarget = nullptr; }
+    // The Remix frame the game thread is building now. It is also the
+    // Reflex frame id: injectRTX, endFrame and the present of this frame all carry it.
+    uint64_t GetRemixFrameId() const { return m_remixFrameId; }
+    // NV-DXVK end
+
+  private:
+    // NV-DXVK start: Only the submitted output swapchain advances Remix
+    Rc<DxvkImage> m_remixTarget;
+    uint64_t m_remixFrameId = 0;
+    // Used by rtx.reflexD3D11Markers: SIMULATION_END once per Remix frame, at the
+    // first of RenderRemix / FinishRemixFrame (game thread, under the context lock).
+    uint64_t m_reflexSimEndedFrame = ~0ull;
+    void EndReflexSimulation();
+    // NV-DXVK end
+    
+    DxvkCsThread            m_csThread;
+    uint64_t                m_csSeqNum = 0ull;
+    bool                    m_csIsBusy = false;
+
+    Rc<sync::CallbackFence> m_eventSignal;
+    uint64_t                m_eventCount = 0ull;
+    uint32_t                m_mappedImageCount = 0u;
+
+
+    dxvk::high_resolution_clock::time_point m_lastFlush
+      = dxvk::high_resolution_clock::now();
+    
+    D3D11VideoContext            m_videoContext;
+    Com<D3D11DeviceContextState> m_stateObject;
+    
+    HRESULT MapBuffer(
+            D3D11Buffer*                pResource,
+            D3D11_MAP                   MapType,
+            UINT                        MapFlags,
+            D3D11_MAPPED_SUBRESOURCE*   pMappedResource);
+    
+    HRESULT MapImage(
+            D3D11CommonTexture*         pResource,
+            UINT                        Subresource,
+            D3D11_MAP                   MapType,
+            UINT                        MapFlags,
+            D3D11_MAPPED_SUBRESOURCE*   pMappedResource);
+    
+    void UnmapImage(
+            D3D11CommonTexture*         pResource,
+            UINT                        Subresource);
+    
+    void UpdateMappedBuffer(
+            D3D11Buffer*                  pDstBuffer,
+            UINT                          Offset,
+            UINT                          Length,
+      const void*                         pSrcData,
+            UINT                          CopyFlags);
+
+    void SynchronizeDevice();
+    
+    bool WaitForResource(
+      const Rc<DxvkResource>&                 Resource,
+            uint64_t                          SequenceNumber,
+            D3D11_MAP                         MapType,
+            UINT                              MapFlags);
+    
+    void EmitCsChunk(DxvkCsChunkRef&& chunk);
+
+    void TrackTextureSequenceNumber(
+            D3D11CommonTexture*         pResource,
+            UINT                        Subresource);
+
+    void TrackBufferSequenceNumber(
+            D3D11Buffer*                pResource);
+
+    void FlushImplicit(BOOL StrongHint);
+
+    void SignalEvent(HANDLE hEvent);
+    
+  };
+  
+}

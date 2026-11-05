@@ -1,0 +1,1527 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The prism march of a displaced primary hit (G-buffer and PSR G-buffer passes), the hook that applies its result
+// (sccrShellResolve), and the self-shadows of the pixels it marched. Outlines are not carved.
+
+// Included at the end of pom_sccr.slangh, whose field, footprint and visibility helpers it uses.
+//
+// The volume. The game mesh is the outer shell. Each vertex i has a shell vector s_i, its welded direction
+// (sccr_shell_args.h) times the world depth D in object units at that vertex, and the inner shell lies at p_i - s_i.
+// A prism point at barycentrics (b0, b1, b2) and depth fraction h in [0, 1] is X = sum_i b_i (p_i - h s_i).
+// h = 0 is the mesh triangle and h = 1 the inner triangle, joined by bilinear sides that neighbours share exactly.
+// Prism coordinates are x = (b1, b2, h) with b0 = 1 - b1 - b2. Edge slot e is the side opposite vertex e, where b_e = 0.
+//
+// The march runs in object space. The ray direction is not renormalised, so t stays the along-ray world distance from
+// the mesh hit. Each step solves X(x) = P(t) by Newton, reads the height field at the prism's texture coordinates
+// and compares depths (0 at the mesh, 1 at the inner shell, the SCCR convention). Steps end at the prism's exit, so
+// they never read across a UV seam, and a point leaving through a side crosses into the welded neighbour.
+//
+// D is one world depth per material, totalHeight * referenceWorldUnitsPerUv, so neighbours agree on
+// their shared sides. The fold guard caps it per welded vertex where a triangle would start to fold
+// (SCCR_SHELL_VERTEX_*LIMIT*), which makes relief shallower at sharp convex corners and small features.
+// While shell tracing is on, the host sets cb.pomSccrZeroPlane to 1 and forces world-unit depth, so plain SCCR
+// matches the shell at the hand-off.
+
+// Why a march returned (SccrShellResult.reason), also the colours of DEBUG_VIEW_SCCR_SHELL_RESULT.
+// sccrShellMarch returns false for these, and plain SCCR runs instead:
+// - Shell tracing off, not SCCR, or the material does not displace.
+#define SCCR_SHELL_RESULT_OFF 0u
+// - No shell data, or texture coordinates or vertices the march cannot read (generated, sprite sheets, eyes, moving).
+#define SCCR_SHELL_RESULT_NO_DATA 1u
+// - Beyond rtx.displacement.shell.maxDistance, or D is under kSccrShellMinDepthPixels pixel footprints there.
+#define SCCR_SHELL_RESULT_DISTANCE 2u
+// - The entry prism is inverted or degenerate there, or the view ray does not enter the shell.
+#define SCCR_SHELL_RESULT_FAILED 3u
+// sccrShellMarch returns true for these:
+// - The ray met the height field.
+#define SCCR_SHELL_RESULT_HIT 4u
+// - Left through a boundary side (SccrShellResult.boundary says which kind). sccrShellResolve shades plain SCCR.
+#define SCCR_SHELL_RESULT_BOUNDARY 5u
+// - Left through the outer surface, or ran out of steps or prisms while rising above the field.
+//   sccrShellResolve shades plain SCCR.
+#define SCCR_SHELL_RESULT_OUTER 6u
+// sccrShellMarch returns false for these after passing the entry, since the stopping point is arbitrary:
+// - Ran out of steps (rtx.displacement.shell.maxSteps) or prisms (maxPrisms) while level or going down.
+#define SCCR_SHELL_RESULT_LIMIT 7u
+// - A later prism is inverted, or the solve did not converge.
+#define SCCR_SHELL_RESULT_SOLVE 8u
+
+// Prism faces, besides edge slots 0-2.
+static const uint kSccrShellFaceTop = 3u;
+static const uint kSccrShellFaceBottom = 4u;
+static const uint kSccrShellFaceNone = 5u;
+
+// Inside test and crossing threshold, in barycentrics and in h.
+static const float kSccrShellBaryEpsilon = 1e-4f;
+// A relief hit in another triangle keeps the hit's position, so its rays leave along that triangle's frame. Beyond 60
+// degrees from the hit face, enough of them start behind it to escape one-sided meshes (sccrShellReframe).
+static const float kSccrShellReframeMinCos = 0.5f;
+static const float kSccrShellDepthEpsilon = 1e-4f;
+// Cone steps are divided by this (kappa), since the depth and UV rates change within a step.
+static const float kSccrShellConeSafety = 1.25f;
+// Newton runs at most this many iterations.
+// It has converged below the tolerance (in prism coordinates) and is accepted below the accept threshold.
+static const uint kSccrShellNewtonIterations = 3u;
+static const float kSccrShellNewtonTolerance = 1e-5f;
+static const float kSccrShellNewtonAccept = 1e-3f;
+// A prism is degenerate where the shell vector is within this cosine of the triangle's plane at that depth.
+// It is inverted where the shell vector lies on the other side.
+static const float kSccrShellMinCosine = 1e-3f;
+// No step is longer than this fraction of the prism's shortest edge, which bounds the Jacobian's change over a step.
+static const float kSccrShellMaxStepEdges = 0.5f;
+// Linear steps take the depth rate as at least this many units of h per D. The edge cap bounds grazing rays instead.
+static const float kSccrShellMinRate = 0.05f;
+// A step capped at the prism's exit goes this little further, so the next solve lands on or past the face.
+static const float kSccrShellExitOvershoot = 1e-3f;
+static const float kSccrShellExitNudge = 1e-5f;
+// The step budget allows this many steps per prism crossed, on top of one march's worth.
+static const uint kSccrShellStepsPerCrossing = 4u;
+// A crossing straight from a step keeps that step's field sample when both triangles' texture coordinates agree there
+// within this fraction of the new triangle's UV extent. At a UV seam they do not, and the new prism samples again.
+static const float kSccrShellUvContinuity = 2e-3f;
+// The march runs only where D covers at least this many pixel footprints (2 x the ray cone's radius at the hit).
+static const float kSccrShellMinDepthPixels = 1.0f;
+
+// The kinds of boundary exit (SccrShellResult.boundary): the SCCR_SHELL_NEIGHBOUR_* boundary kinds and Blocked.
+// No neighbour across the side: an open edge of the mesh.
+static const uint kSccrShellBoundaryOpen = 0u;
+// A neighbour whose prism does not load, a gap in the data rather than the mesh. It is always a wall.
+static const uint kSccrShellBoundaryBlocked = 1u;
+// An edge shared by more than two triangles. It is a wall.
+static const uint kSccrShellBoundaryNonManifold = 2u;
+// An edge where the winding flips (mirrored or double-sided pieces). It is a wall.
+static const uint kSccrShellBoundaryFlipped = 3u;
+// A degenerate welded direction at an end, as on two-sided sheets. It is a wall.
+static const uint kSccrShellBoundaryDegenerate = 4u;
+
+// The kind of a boundary neighbour word (SCCR_SHELL_NEIGHBOUR_IS_BOUNDARY).
+uint sccrShellBoundaryKind(uint neighbourWord)
+{
+  return neighbourWord == SCCR_SHELL_NEIGHBOUR_NON_MANIFOLD ? kSccrShellBoundaryNonManifold :
+         neighbourWord == SCCR_SHELL_NEIGHBOUR_FLIPPED ? kSccrShellBoundaryFlipped :
+         neighbourWord == SCCR_SHELL_NEIGHBOUR_DEGENERATE ? kSccrShellBoundaryDegenerate :
+                                                            kSccrShellBoundaryOpen;
+}
+
+// A shell pixel's scene shadow ray starts this far (x D) off the mesh where the shell shadow march left it (12.14).
+// It exceeds the kSccrShellDepthEpsilon of depth by which the recorded exit can lie under the surface.
+static const float kSccrShellShadowExitOffset = 1e-3f;
+
+struct SccrShellResult
+{
+  uint reason;      // SCCR_SHELL_RESULT_*
+  uint steps;       // Solves and field samples, including refinement and crossings.
+  uint crossings;   // Prisms crossed into.
+  uint stepBudget;  // The budget steps count against.
+  uint triangle;    // The result's triangle, absolute within the geometry like the shell data.
+  float2 barycentrics; // (b1, b2) in that triangle.
+  float depth;      // h of the result.
+  float2 textureCoordinates;
+  float distance;   // t, the along-ray world distance from the mesh hit.
+  uint boundary;    // kSccrShellBoundary*, the kind of a boundary exit.
+  float orientation; // +1 or -1, the side the shell vectors point to, for the shell marker.
+  float3 entryNormal; // The hit triangle's face normal on the viewer's side, in object space, not normalised.
+};
+
+// One triangle's prism, in object space relative to its first vertex.
+struct SccrShellPrism
+{
+  uint triangle;
+  float3 p0;
+  float3 e1;   // p1 - p0
+  float3 e2;   // p2 - p0
+  float3 s0;   // Shell vector of vertex 0, towards the viewer's side. The inner shell lies at p - s.
+  float3 f1;   // s1 - s0
+  float3 f2;   // s2 - s0
+  float2 uv0;  // Texture coordinates after the texture transform.
+  float2 duv1;
+  float2 duv2;
+  float maxStep; // kSccrShellMaxStepEdges of the shortest edge, in object units.
+  float size;    // The longest edge, in object units.
+
+  // X(x) - p0.
+  float3 position(float3 x)
+  {
+    return x.x * e1 + x.y * e2 - x.z * (s0 + x.x * f1 + x.y * f2);
+  }
+
+  float2 textureCoordinates(float3 x)
+  {
+    return uv0 + x.x * duv1 + x.y * duv2;
+  }
+};
+
+// The inverse Jacobian of a prism's map at a point, by rows: J^-1 v = (dot(row0, v), dot(row1, v), dot(row2, v)).
+struct SccrShellJacobian
+{
+  float3 row0;
+  float3 row1;
+  float3 row2;
+};
+
+float3 sccrShellJacobianMul(SccrShellJacobian inverse, float3 v)
+{
+  return float3(dot(inverse.row0, v), dot(inverse.row1, v), dot(inverse.row2, v));
+}
+
+float sccrShellComponent(float3 v, uint index)
+{
+  return index == 0u ? v.x : (index == 1u ? v.y : v.z);
+}
+
+float3 sccrShellBarycentrics(float3 x)
+{
+  return float3(1.0f - x.x - x.y, x.x, x.y);
+}
+
+// x moved into its prism: barycentrics at least 0 (renormalised), h in [0, 1].
+float3 sccrShellClamp(float3 x)
+{
+  const float3 b = max(sccrShellBarycentrics(x), float3(0.0f, 0.0f, 0.0f));
+  const float sum = b.x + b.y + b.z;
+  const float2 b12 = sum > 0.0f ? b.yz / sum : float2(1.0f / 3.0f, 1.0f / 3.0f);
+  return float3(b12, saturate(x.z));
+}
+
+// A vertex's texture coordinates, as surfaceInteractionCreate computes them from a texcoord buffer.
+float2 sccrShellLoadTexcoord(Surface surface, uint vertexIndex)
+{
+  const uint element = (vertexIndex * uint(surface.texcoordStride) + surface.texcoordOffset) / 4;
+  const vec2 rawTexcoord = vec2(
+    BUFFER_ARRAY(geometries, surface.texcoordBufferIndex, element + 0),
+    BUFFER_ARRAY(geometries, surface.texcoordBufferIndex, element + 1));
+  return mul(surface.textureTransform, float4(rawTexcoord, 1.0f, 1.0f));
+}
+
+// A vertex's world normal, as surfaceInteractionCreate computes it (before the flip to the triangle's side).
+vec3 sccrShellLoadWorldNormal(Surface surface, uint vertexIndex, vec3 fallback)
+{
+  const uint element = (vertexIndex * uint(surface.normalStride) + surface.normalOffset) / 4;
+  vec3 normal;
+  if (surface.normalsEncoded)
+  {
+    const uint encodedNormal = floatBitsToUint(BUFFER_ARRAY(geometries, surface.normalBufferIndex, element));
+    normal = unsignedOctahedralToSphereDirection(vec2(
+      unorm16ToF32(uint16_t(encodedNormal >> 0)),
+      unorm16ToF32(uint16_t(encodedNormal >> 16))));
+  }
+  else
+  {
+    normal = vec3(
+      BUFFER_ARRAY(geometries, surface.normalBufferIndex, element + 0),
+      BUFFER_ARRAY(geometries, surface.normalBufferIndex, element + 1),
+      BUFFER_ARRAY(geometries, surface.normalBufferIndex, element + 2));
+  }
+  normal = sanitize(safeNormalize(normal, fallback), fallback);
+  return safeNormalize(mul(surface.normalObjectToWorld, normal), fallback);
+}
+
+// The fold guard's depth limit of a vertex, in object units along its unit welded direction (sccr_shell_args.h).
+// Orientation +1 reads the half float in the low bits.
+// Orientation -1 reads the shortened outward limit.
+float sccrShellVertexDepthLimit(uint vertexWord1, float orientation)
+{
+  const uint halfBits = orientation > 0.0f ?
+    (vertexWord1 & SCCR_SHELL_VERTEX_LIMIT_MASK) :
+    (((vertexWord1 >> SCCR_SHELL_VERTEX_OUTWARD_LIMIT_SHIFT) & SCCR_SHELL_VERTEX_OUTWARD_LIMIT_MASK) << 3u);
+  return f16tof32(halfBits);
+}
+
+// Loads the prism of triangle triIndex at world depth D, with the shell vectors on the side orientation selects.
+// With the fold guard on, each vertex's object depth is capped at its limit for that orientation.
+// Returns false when the triangle or a vertex lies outside the data, a vertex did not weld, or the prism is degenerate.
+bool sccrShellPrismLoad(
+  Surface surface, SccrShellData data, uint triIndex, float worldDepth, float orientation, out SccrShellPrism prism)
+{
+  bool valid = triIndex < data.triangleCount;
+  const uint safeTriangle = valid ? triIndex : 0u;
+  float3 positions[3];
+  float2 texcoords[3];
+  float3 shell[3];
+  [unroll]
+  for (uint k = 0; k < 3; ++k)
+  {
+    const uint vertexIndex = sccrShellLoadVertexIndex(surface, safeTriangle * 3u + k);
+    const bool vertexValid = vertexIndex < data.vertexCount;
+    const uint safeVertex = vertexValid ? vertexIndex : 0u;
+    positions[k] = sccrShellLoadObjectPosition(surface, safeVertex);
+    texcoords[k] = sccrShellLoadTexcoord(surface, safeVertex);
+    const uint2 words = data.vertexWords(safeVertex);
+    const float3 direction = sccrShellDecodeDirection(words.x) * orientation;
+    // D_obj = D / |M n| keeps the world depth along the shell direction under any instance scale.
+    const float worldLength = length(mul(surface.objectToWorld, float4(direction, 0.0f)));
+    float objectDepth = worldDepth / max(worldLength, 1e-20f);
+    if ((cb.pomSccrShellFlags & SCCR_SHELL_MARCH_FLAG_FOLD_GUARD) != 0u)
+    {
+      objectDepth = min(objectDepth, sccrShellVertexDepthLimit(words.y, orientation));
+    }
+    shell[k] = direction * objectDepth;
+    valid = valid && vertexValid && (words.y & SCCR_SHELL_VERTEX_FLAG_UNWELDED) == 0u && worldLength > 0.0f;
+  }
+  prism.triangle = triIndex;
+  prism.p0 = positions[0];
+  prism.e1 = positions[1] - positions[0];
+  prism.e2 = positions[2] - positions[0];
+  prism.s0 = shell[0];
+  prism.f1 = shell[1] - shell[0];
+  prism.f2 = shell[2] - shell[0];
+  prism.uv0 = texcoords[0];
+  prism.duv1 = texcoords[1] - texcoords[0];
+  prism.duv2 = texcoords[2] - texcoords[0];
+  const float edge01 = length(prism.e1);
+  const float edge02 = length(prism.e2);
+  const float edge12 = length(positions[2] - positions[1]);
+  prism.maxStep = kSccrShellMaxStepEdges * min(min(edge01, edge02), edge12);
+  prism.size = max(max(edge01, edge02), edge12);
+  return valid && prism.maxStep > 0.0f && isValidValue(prism.p0) && isValidValue(prism.s0 + prism.f1 + prism.f2);
+}
+
+// The inverse Jacobian at x. J's columns are e1 - h f1, e2 - h f2 and -(s0 + b1 f1 + b2 f2).
+// detSign is the sign of det(J) in a valid prism. Returns false where the prism is inverted or degenerate at x.
+bool sccrShellJacobianInverse(SccrShellPrism prism, float3 x, float detSign, out SccrShellJacobian inverse)
+{
+  const float3 shell = prism.s0 + x.x * prism.f1 + x.y * prism.f2;
+  const float3 c0 = prism.e1 - x.z * prism.f1;
+  const float3 c1 = prism.e2 - x.z * prism.f2;
+  const float3 c2 = -shell;
+  const float3 r01 = cross(c0, c1);
+  const float det = dot(c2, r01);
+  const bool valid = det * detSign > kSccrShellMinCosine * length(r01) * length(shell);
+  const float invDet = valid ? 1.0f / det : 0.0f;
+  inverse.row0 = cross(c1, c2) * invDet;
+  inverse.row1 = cross(c2, c0) * invDet;
+  inverse.row2 = r01 * invDet;
+  return valid;
+}
+
+// Solves X(x) = target (relative to p0) by Newton, starting at x.
+// On success x is the solution and inverse is the last iteration's inverse Jacobian.
+bool sccrShellSolve(SccrShellPrism prism, float3 target, float detSign, inout float3 x, out SccrShellJacobian inverse)
+{
+  inverse.row0 = float3(0.0f, 0.0f, 0.0f);
+  inverse.row1 = float3(0.0f, 0.0f, 0.0f);
+  inverse.row2 = float3(0.0f, 0.0f, 0.0f);
+  float lastStep = 1.0f;
+  for (uint i = 0; i < kSccrShellNewtonIterations; ++i)
+  {
+    if (!sccrShellJacobianInverse(prism, x, detSign, inverse))
+    {
+      return false;
+    }
+    const float3 dx = sccrShellJacobianMul(inverse, prism.position(x) - target);
+    x -= dx;
+    lastStep = max(max(abs(dx.x), abs(dx.y)), abs(dx.z));
+    if (lastStep < kSccrShellNewtonTolerance)
+    {
+      break;
+    }
+  }
+  return lastStep < kSccrShellNewtonAccept && isValidValue(x);
+}
+
+// Finds the face of its prism that x lies on or beyond: a side (the most negative barycentric) first, then the top.
+// When the last step was capped at exitFace, x within epsilon of it counts, since the linearised exit undershoots on a
+// curved prism. The bottom is never crossed, because depth 1 is at or below the field everywhere.
+bool sccrShellOutside(float3 x, bool exitLimited, uint exitFace, out uint face)
+{
+  const float3 b = sccrShellBarycentrics(x);
+  face = kSccrShellFaceNone;
+  float least = -kSccrShellBaryEpsilon;
+  if (b.x < least)
+  {
+    least = b.x;
+    face = 0u;
+  }
+  if (b.y < least)
+  {
+    least = b.y;
+    face = 1u;
+  }
+  if (b.z < least)
+  {
+    face = 2u;
+  }
+  if (face == kSccrShellFaceNone && x.z < -kSccrShellDepthEpsilon)
+  {
+    face = kSccrShellFaceTop;
+  }
+  if (face == kSccrShellFaceNone && exitLimited)
+  {
+    const bool reached = exitFace == kSccrShellFaceTop ?
+      x.z < kSccrShellDepthEpsilon :
+      sccrShellComponent(b, exitFace) < kSccrShellBaryEpsilon;
+    if (reached)
+    {
+      face = exitFace;
+    }
+  }
+  return face != kSccrShellFaceNone;
+}
+
+// Carries x across side edgeSlot into the neighbour, whose side neighbourSlot is the same edge run the other way.
+// The neighbour's vertex (neighbourSlot + 2) % 3 is our (edgeSlot + 1) % 3, and its (neighbourSlot + 1) % 3 is our
+// (edgeSlot + 2) % 3. The two barycentrics along the edge carry over renormalised, and h is unchanged.
+float3 sccrShellCarry(float3 x, uint edgeSlot, uint neighbourSlot)
+{
+  const float3 b = sccrShellBarycentrics(x);
+  const float from = max(sccrShellComponent(b, (edgeSlot + 1u) % 3u), 0.0f);
+  const float to = max(sccrShellComponent(b, (edgeSlot + 2u) % 3u), 0.0f);
+  const float sum = from + to;
+  const float fromShare = sum > 0.0f ? from / sum : 0.5f;
+  const float toShare = 1.0f - fromShare;
+  const float3 carried =
+    neighbourSlot == 0u ? float3(0.0f, toShare, fromShare) :
+    neighbourSlot == 1u ? float3(fromShare, 0.0f, toShare) :
+                          float3(toShare, fromShare, 0.0f);
+  return float3(carried.y, carried.z, x.z);
+}
+
+// Refines a crossing within one step in one prism, as pomConeStepMarchRefined does: bisections along t, the last one a
+// false-position step, then a final secant. A point whose solve fails keeps the interpolated end points.
+// precisionT (world units along the ray, 0 for none) ends the bisections early, as refinePrecision does there.
+void sccrShellRefine(
+  PomSingleConeField field,
+  SccrShellPrism prism,
+  float3 entryRelative,
+  float3 rayDirection,
+  float detSign,
+  float precisionT,
+  float startAboveT, float3 startAboveX, float startAboveGap,
+  float startBelowT, float3 startBelowX, float startBelowGap,
+  out float hitT,
+  out float3 hitX,
+  inout uint steps)
+{
+  float aboveT = startAboveT;
+  float3 aboveX = startAboveX;
+  float aboveGap = startAboveGap;
+  float belowT = startBelowT;
+  float3 belowX = startBelowX;
+  float belowGap = startBelowGap;
+  uint bisections = cb.pomBinarySteps > 0u ? cb.pomBinarySteps - 1u : 0u;
+  bool falsePosition = cb.pomBinarySteps > 0u;
+  if (precisionT > 0.0f)
+  {
+    const float bracket = belowT - aboveT;
+    const uint needed = bracket > precisionT ? uint(ceil(log2(bracket / precisionT))) : 0u;
+    if (needed <= bisections)
+    {
+      bisections = needed;
+      falsePosition = false;
+    }
+  }
+  const uint refinements = bisections + (falsePosition ? 1u : 0u);
+  for (uint j = 0; j < refinements; ++j)
+  {
+    const float weight = j < bisections ? 0.5f : saturate(aboveGap / max(aboveGap - belowGap, 1e-6f));
+    const float middleT = lerp(aboveT, belowT, weight);
+    float3 middleX = lerp(aboveX, belowX, weight);
+    float3 solved = middleX;
+    SccrShellJacobian unusedInverse;
+    if (sccrShellSolve(prism, entryRelative + middleT * rayDirection, detSign, solved, unusedInverse))
+    {
+      middleX = solved;
+    }
+    middleX.z = min(middleX.z, 1.0f);
+    const float middleGap = field.sampleDepthCone(prism.textureCoordinates(middleX)).x - middleX.z;
+    steps++;
+    if (middleGap > 0.0f)
+    {
+      aboveT = middleT;
+      aboveX = middleX;
+      aboveGap = middleGap;
+    }
+    else
+    {
+      belowT = middleT;
+      belowX = middleX;
+      belowGap = middleGap;
+    }
+  }
+  const float weight = saturate(aboveGap / max(aboveGap - belowGap, 1e-6f));
+  hitT = lerp(aboveT, belowT, weight);
+  hitX = lerp(aboveX, belowX, weight);
+}
+
+void sccrShellResultSet(inout SccrShellResult result, uint reason, SccrShellPrism prism, float3 x, float t)
+{
+  const float3 clamped = sccrShellClamp(x);
+  result.reason = reason;
+  result.triangle = prism.triangle;
+  result.barycentrics = clamped.xy;
+  result.depth = clamped.z;
+  result.textureCoordinates = prism.textureCoordinates(clamped);
+  result.distance = t;
+}
+
+// Ends a march that ran out of steps or prisms (12.14). gap is the last sample's margin and rateDepth is dh/dt at x.
+// Returns true with an OUTER exit when the ray is rising above the field.
+// Returns false with LIMIT otherwise, and plain SCCR runs.
+bool sccrShellLimit(inout SccrShellResult result, SccrShellPrism prism, float3 x, float t, float rateDepth, float gap)
+{
+  if (rateDepth < 0.0f && gap > 0.0f)
+  {
+    sccrShellResultSet(result, SCCR_SHELL_RESULT_OUTER, prism, x, t);
+    return true;
+  }
+  sccrShellResultSet(result, SCCR_SHELL_RESULT_LIMIT, prism, x, t);
+  return false;
+}
+
+// The march. viewDistance is the hit's distance from the camera along the possibly reflected ray.
+// Returns false where plain SCCR must run instead (OFF, NO_DATA, DISTANCE, FAILED, LIMIT or SOLVE, 12.14).
+// Returns true with HIT, or with the exits BOUNDARY and OUTER, each carrying the texture coordinates where it stopped.
+bool sccrShellMarch(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  Surface surface,
+  RayInteraction rayInteraction,
+  SurfaceInteraction surfaceInteraction,
+  float viewDistance,
+  out SccrShellResult result)
+{
+  const uint entryTriangle = rayInteraction.primitiveIndex + surface.firstIndex / 3;
+  const vec3 entryBary = uintToBarycentrics(rayInteraction.barycentricCoordinates);
+  result.reason = SCCR_SHELL_RESULT_OFF;
+  result.steps = 0u;
+  result.crossings = 0u;
+  result.stepBudget = 1u;
+  result.triangle = entryTriangle;
+  result.barycentrics = entryBary.yz;
+  result.depth = 0.0f;
+  result.textureCoordinates = surfaceInteraction.textureCoordinates;
+  result.distance = 0.0f;
+  result.boundary = kSccrShellBoundaryOpen;
+  result.orientation = 1.0f;
+  result.entryNormal = float3(0.0f, 0.0f, 0.0f);
+
+  if (cb.pomMode != DisplacementMode::SCCR || !(cb.pomSccrShellMaxDistance > 0.0f) ||
+      !opaqueSurfaceMaterial.hasValidDisplacement())
+  {
+    return false;
+  }
+
+  result.reason = SCCR_SHELL_RESULT_NO_DATA;
+  SccrShellData data = sccrShellDataCreate(surface, entryTriangle);
+  // The march needs static vertices and buffer texture coordinates as sccrShellLoadTexcoord reads them.
+  if (!data.valid ||
+      surface.previousPositionBufferIndex != BINDING_INDEX_INVALID ||
+      surface.texcoordBufferIndex == BINDING_INDEX_INVALID ||
+      surface.texcoordGenerationMode != uint(TexGenMode::None) ||
+      uint(surface.spriteSheetFPS) != 0u ||
+      (cb.eyeArgs.enableEyes && surface.isEye))
+  {
+    return false;
+  }
+
+  if (viewDistance > cb.pomSccrShellMaxDistance)
+  {
+    result.reason = SCCR_SHELL_RESULT_DISTANCE;
+    // Only the Result debug view reads this, to shade how far beyond the hand-off the hit lies.
+    result.distance = viewDistance;
+    return false;
+  }
+
+  result.reason = SCCR_SHELL_RESULT_FAILED;
+  const float totalHeight = abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut);
+  const float worldDepth = totalHeight * cb.pomSccrReferenceUvToWorld;
+  if (!(worldDepth > 0.0f))
+  {
+    return false;
+  }
+  // The pixel hand-off (12.14). Where D is under a pixel footprint, plain SCCR looks the same and costs less.
+  if (worldDepth < kSccrShellMinDepthPixels * 2.0f * rayInteraction.coneRadius)
+  {
+    result.reason = SCCR_SHELL_RESULT_DISTANCE;
+    result.distance = viewDistance;
+    return false;
+  }
+
+  // The view ray in object space. The transposed normal matrix is the inverse of objectToWorld's 3x3 part.
+  // It is not normalised, so t stays a world distance.
+  const float3 rayDirection = mul(transpose(surface.normalObjectToWorld), -rayInteraction.viewDirection);
+  const float rayLength = length(rayDirection);
+
+  SccrShellPrism prism;
+  if (!sccrShellPrismLoad(surface, data, entryTriangle, worldDepth, 1.0f, prism) || !(rayLength > 0.0f))
+  {
+    return false;
+  }
+  // The inner shell lies on the mesh's far side from the viewer. The welded directions follow the winding, which can
+  // face either way, so the hit triangle picks the side. Primary rays cull back faces, so every hit on a mesh agrees.
+  // With the shell vectors on the viewer's side, det(J) of a valid prism has the sign of -orientation.
+  // The other side loads again for its own fold limits.
+  const float orientation = dot(rayDirection, cross(prism.e1, prism.e2)) < 0.0f ? 1.0f : -1.0f;
+  if (orientation < 0.0f && !sccrShellPrismLoad(surface, data, entryTriangle, worldDepth, orientation, prism))
+  {
+    return false;
+  }
+  const float detSign = -orientation;
+  result.orientation = orientation;
+  result.entryNormal = cross(prism.e1, prism.e2) * orientation;
+
+  // The entry is known exactly: the hit barycentrics at h = 0.
+  float3 x = float3(entryBary.y, entryBary.z, 0.0f);
+  const float3 entryPoint = prism.p0 + prism.position(x);
+  float3 entryRelative = entryPoint - prism.p0;
+  SccrShellJacobian inverse;
+  if (!sccrShellJacobianInverse(prism, x, detSign, inverse))
+  {
+    return false;
+  }
+  // dx/dt along the ray: (db1/dt, db2/dt, dh/dt).
+  float3 rate = sccrShellJacobianMul(inverse, rayDirection);
+  if (!(rate.z > 0.0f))
+  {
+    return false;
+  }
+  PomSingleConeField field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+
+  // Linear steps are 1/N in depth, with N from the view angle as in the other modes.
+  // rate.z * D is the cosine between the ray and the shell direction, exactly so in a flat prism.
+  const float numSamples = pomGetNumSamples(float3(0.0f, 0.0f, saturate(rate.z * worldDepth)));
+  const float minStepDepth = rcp(numSamples);
+  const float rateFloor = kSccrShellMinRate / worldDepth;
+  const float objectMaxStepScale = rcp(rayLength);
+
+  // Step LOD (as sccrStepLod). Every step covers at least lodUv of texture.
+  // A march whose whole travel is below kSccrSkipFootprints footprints takes one sample.
+  const float2 entryUvRate = prism.duv1 * rate.x + prism.duv2 * rate.y;
+  const float footprintUv = cb.pomStepLodScale > 0.0f ? sccrViewFootprint(surfaceInteraction, entryUvRate) : 0.0f;
+  const float lodUv = footprintUv > 0.0f ? footprintUv / cb.pomStepLodScale : 0.0f;
+  if (lodUv > 0.0f && length(entryUvRate) / rate.z * cb.pomStepLodScale < kSccrSkipFootprints * footprintUv)
+  {
+    // The depth at the mesh's texture coordinates places the hit, in the entry triangle's linearisation.
+    const float2 entryUv = prism.textureCoordinates(x);
+    const float depth = field.sampleDepthCone(entryUv).x;
+    const float t = depth / rate.z;
+    result.reason = SCCR_SHELL_RESULT_HIT;
+    result.steps = 1u;
+    result.depth = depth;
+    result.distance = t;
+    result.textureCoordinates = entryUv + entryUvRate * t;
+    result.barycentrics = sccrShellClamp(x + rate * t).xy;
+    return true;
+  }
+
+  const uint maxPrisms = cb.pomSccrShellMaxPrisms;
+  const uint maxSteps = max(min(cb.pomSccrShellMaxSteps,
+                                cb.pomConeSteps + uint(ceil(numSamples)) + 1u + kSccrShellStepsPerCrossing * maxPrisms), 1u);
+  result.stepBudget = maxSteps;
+
+  float t = 0.0f;
+  uint coneStepsLeft = cb.pomConeSteps;
+  // The last sample above the field, in the current prism.
+  bool hasAbove = false;
+  float aboveT = 0.0f;
+  float3 aboveX = x;
+  float aboveGap = 0.0f;
+  // The current sample.
+  float2 depthCone = float2(0.0f, 0.0f);
+  float gap = 0.0f;
+  // x lies on or beyond pendingFace of the current prism.
+  // When a step put it there, the field is sampled once more first, since the field crossing may lie within that step.
+  // When a crossing put it there, it crosses on without sampling.
+  bool pending = false;
+  bool pendingFromStep = false;
+  uint pendingFace = kSccrShellFaceNone;
+  // Where depthCone was sampled, and whether the crossing just made may keep that sample (kSccrShellUvContinuity).
+  float2 sampleUv = float2(0.0f, 0.0f);
+  bool keepSample = false;
+
+  // Every iteration counts a bounded step or crossing, so this bound is never reached first.
+  const uint iterationLimit = maxSteps + maxPrisms + 2u;
+  for (uint iteration = 0; iteration < iterationLimit; ++iteration)
+  {
+    if (!pending || pendingFromStep)
+    {
+      if (!keepSample)
+      {
+        sampleUv = prism.textureCoordinates(x);
+        depthCone = field.sampleDepthCone(sampleUv);
+      }
+      keepSample = false;
+      gap = depthCone.x - x.z;
+      if (gap <= 0.0f)
+      {
+        float hitT = t;
+        float3 hitX = x;
+        if (hasAbove)
+        {
+          const float uvRate = length(prism.duv1 * rate.x + prism.duv2 * rate.y);
+          const float precisionT = lodUv > 0.0f && uvRate > 0.0f ? 0.5f * lodUv / uvRate : 0.0f;
+          sccrShellRefine(field, prism, entryRelative, rayDirection, detSign, precisionT,
+                          aboveT, aboveX, aboveGap, t, x, gap, hitT, hitX, result.steps);
+        }
+        sccrShellResultSet(result, SCCR_SHELL_RESULT_HIT, prism, hitX, hitT);
+        return true;
+      }
+    }
+
+    if (pending)
+    {
+      pending = false;
+      if (pendingFace == kSccrShellFaceTop)
+      {
+        sccrShellResultSet(result, SCCR_SHELL_RESULT_OUTER, prism, x, t);
+        return true;
+      }
+      if (result.crossings >= maxPrisms || result.steps >= maxSteps)
+      {
+        return sccrShellLimit(result, prism, x, t, rate.z, gap);
+      }
+      const bool crossingFromStep = pendingFromStep;
+      const uint neighbourWord = data.neighbour(prism.triangle, pendingFace);
+      const bool boundaryEdge = SCCR_SHELL_NEIGHBOUR_IS_BOUNDARY(neighbourWord);
+      SccrShellPrism next;
+      if (boundaryEdge ||
+          !sccrShellPrismLoad(surface, data, neighbourWord & SCCR_SHELL_NEIGHBOUR_TRIANGLE_MASK, worldDepth, orientation, next))
+      {
+        sccrShellResultSet(result, SCCR_SHELL_RESULT_BOUNDARY, prism, x, t);
+        result.boundary = boundaryEdge ? sccrShellBoundaryKind(neighbourWord) : kSccrShellBoundaryBlocked;
+        return true;
+      }
+      float3 nextX = sccrShellCarry(x, pendingFace, neighbourWord >> SCCR_SHELL_NEIGHBOUR_SLOT_SHIFT);
+      const float3 nextEntryRelative = entryPoint - next.p0;
+      SccrShellJacobian nextInverse;
+      if (!sccrShellSolve(next, nextEntryRelative + t * rayDirection, detSign, nextX, nextInverse))
+      {
+        sccrShellResultSet(result, SCCR_SHELL_RESULT_SOLVE, prism, x, t);
+        return false;
+      }
+      prism = next;
+      x = nextX;
+      x.z = min(x.z, 1.0f);
+      inverse = nextInverse;
+      entryRelative = nextEntryRelative;
+      rate = sccrShellJacobianMul(inverse, rayDirection);
+      result.crossings++;
+      result.steps++;
+      // Cone steps restart in every prism, and no bracket spans a crossing.
+      coneStepsLeft = cb.pomConeSteps;
+      hasAbove = false;
+      pending = sccrShellOutside(x, false, kSccrShellFaceNone, pendingFace);
+      pendingFromStep = false;
+      // With continuous UVs across the side, the previous step's sample stands for this point too.
+      const float uvExtent = max(length(prism.duv1), length(prism.duv2));
+      keepSample = crossingFromStep && !pending &&
+                   length(prism.textureCoordinates(x) - sampleUv) <= kSccrShellUvContinuity * uvExtent;
+      continue;
+    }
+
+    if (result.steps >= maxSteps)
+    {
+      return sccrShellLimit(result, prism, x, t, rate.z, gap);
+    }
+
+    // The step, in world units along the ray. a is dh/dt and uvRate is |duv/dt|.
+    const float a = rate.z;
+    const float uvRate = length(prism.duv1 * rate.x + prism.duv2 * rate.y);
+    float dt = minStepDepth / max(a, rateFloor);
+    bool coneStep = false;
+    if (coneStepsLeft > 0u && depthCone.y > 0.0f)
+    {
+      // The ray stays above the field while t (a + b / c) < gap, with c in UV per unit of depth.
+      // A cone step is never shorter than a linear step, as in pomConeStepMarchRefined.
+      dt = max(dt, gap / (kSccrShellConeSafety * (max(a, 0.0f) + uvRate / depthCone.y)));
+      coneStep = true;
+    }
+    if (lodUv > 0.0f && uvRate > 0.0f)
+    {
+      dt = max(dt, lodUv / uvRate);
+    }
+    dt = min(dt, prism.maxStep * objectMaxStepScale);
+
+    // The linearised distance to the prism's exit through a side, the top or the bottom.
+    const float3 b = sccrShellBarycentrics(x);
+    const float3 db = float3(-(rate.x + rate.y), rate.x, rate.y);
+    float exitT = 1e30f;
+    uint exitFace = kSccrShellFaceNone;
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+      const float rateI = sccrShellComponent(db, i);
+      if (rateI < 0.0f)
+      {
+        const float faceT = max(sccrShellComponent(b, i), 0.0f) / -rateI;
+        if (faceT < exitT)
+        {
+          exitT = faceT;
+          exitFace = i;
+        }
+      }
+    }
+    if (a < 0.0f)
+    {
+      const float faceT = max(x.z, 0.0f) / -a;
+      if (faceT < exitT)
+      {
+        exitT = faceT;
+        exitFace = kSccrShellFaceTop;
+      }
+    }
+    else if (a > 0.0f)
+    {
+      const float faceT = max(1.0f - x.z, 0.0f) / a;
+      if (faceT < exitT)
+      {
+        exitT = faceT;
+        exitFace = kSccrShellFaceBottom;
+      }
+    }
+    bool exitLimited = false;
+    if (exitT <= dt)
+    {
+      dt = exitT * (1.0f + kSccrShellExitOvershoot) + kSccrShellExitNudge * prism.size * objectMaxStepScale;
+      exitLimited = exitFace < 3u || exitFace == kSccrShellFaceTop;
+    }
+
+    hasAbove = true;
+    aboveT = t;
+    aboveX = x;
+    aboveGap = gap;
+    t += dt;
+    // Newton starts from the linear prediction.
+    float3 nextX = x + rate * dt;
+    if (!sccrShellSolve(prism, entryRelative + t * rayDirection, detSign, nextX, inverse))
+    {
+      sccrShellResultSet(result, SCCR_SHELL_RESULT_SOLVE, prism, aboveX, aboveT);
+      return false;
+    }
+    x = nextX;
+    // Depth 1 is at or below the field everywhere, so a point clamped there meets the field at the next sample.
+    x.z = min(x.z, 1.0f);
+    rate = sccrShellJacobianMul(inverse, rayDirection);
+    result.steps++;
+    if (coneStep)
+    {
+      coneStepsLeft--;
+    }
+    pending = sccrShellOutside(x, exitLimited, exitFace, pendingFace);
+    pendingFromStep = true;
+  }
+
+  return sccrShellLimit(result, prism, x, t, rate.z, gap);
+}
+
+// Re-frames a surface interaction to the result, so a normal map sampled at the carved texel is lit in the
+// frame of the face it belongs to. On success it takes the result's texture coordinates.
+// When the result lies in another triangle than the hit, it also takes that triangle's bent vertex normal, tangent
+// frame, UV density, and texture gradients scaled by the change of UV density. The curvature base surface is cleared.
+// The position, motion and shadow terminator offset stay the hit's on the mesh.
+//
+// Returns false, with the interaction untouched, when the result's face (on the side the view ray entered from) faces
+// away from the viewer or lies more than 60 degrees from the hit's flat face (kSccrShellReframeMinCos). The light rays
+// leave the hit position along the stored normal, so such a face would start them behind the hit face: light through
+// the mesh along creases, and sky slivers on thin stitch triangles at hard edges. The caller shades plain SCCR there.
+bool sccrShellReframe(
+  Surface surface,
+  RayInteraction rayInteraction,
+  SccrShellResult result,
+  inout SurfaceInteraction surfaceInteraction)
+{
+  const uint entryTriangle = rayInteraction.primitiveIndex + surface.firstIndex / 3;
+  if (result.triangle == entryTriangle)
+  {
+    surfaceInteraction.textureCoordinates = result.textureCoordinates;
+    return true;
+  }
+
+  uint vertexIndices[3];
+  vec3 objectPositions[3];
+  vec3 worldPositions[3];
+  vec2 texcoords[3];
+  [unroll]
+  for (uint k = 0; k < 3; ++k)
+  {
+    vertexIndices[k] = sccrShellLoadVertexIndex(surface, result.triangle * 3u + k);
+    objectPositions[k] = sccrShellLoadObjectPosition(surface, vertexIndices[k]);
+    worldPositions[k] = mul(surface.objectToWorld, vec4(objectPositions[k], 1.0f));
+    texcoords[k] = sccrShellLoadTexcoord(surface, vertexIndices[k]);
+  }
+  const vec3 bary = vec3(1.0f - result.barycentrics.x - result.barycentrics.y, result.barycentrics.x, result.barycentrics.y);
+  const vec3 viewDirection = rayInteraction.viewDirection;
+
+  // Oriented as the march oriented the entry face (sccrShellMarch), not towards the viewer.
+  const vec3 objectNormal = cross(objectPositions[1] - objectPositions[0], objectPositions[2] - objectPositions[0]) * result.orientation;
+  const vec3 flippedTriangleNormal = safeNormalize(mul(surface.normalObjectToWorld, objectNormal), surfaceInteraction.geometryNormal);
+  // Tested against the hit's flat face, not its interpolated normal: on thin stitch triangles along hard edges the
+  // vertex normals belong to the neighbouring faces and can lie almost in the stitch's plane.
+  const vec3 entryNormal = safeNormalize(mul(surface.normalObjectToWorld, result.entryNormal), surfaceInteraction.geometryNormal);
+  if (!(dot(flippedTriangleNormal, viewDirection) > 0.0f) ||
+      !(dot(flippedTriangleNormal, entryNormal) > kSccrShellReframeMinCos))
+  {
+    return false;
+  }
+  const vec3 triangleNormal = flippedTriangleNormal;
+  surfaceInteraction.textureCoordinates = result.textureCoordinates;
+  vec3 geometryNormal = flippedTriangleNormal;
+  if (surface.normalBufferIndex != BINDING_INDEX_INVALID)
+  {
+    vec3 normals[3];
+    [unroll]
+    for (uint k = 0; k < 3; ++k)
+    {
+      const vec3 normal = sccrShellLoadWorldNormal(surface, vertexIndices[k], triangleNormal);
+      normals[k] = dot(normal, flippedTriangleNormal) >= 0.0f ? normal : -normal;
+    }
+    const vec3 interpolatedNormal = safeNormalize(interpolateHitAttribute(normals, bary), triangleNormal);
+    geometryNormal = getBentNormal(flippedTriangleNormal, interpolatedNormal, -viewDirection);
+  }
+  surfaceInteraction.geometryNormal = geometryNormal;
+  genTangSpace(
+    texcoords, worldPositions, surfaceInteraction.geometryNormal,
+    surfaceInteraction.geometryTangent, surfaceInteraction.geometryBitangent,
+    surfaceInteraction.rawTangent, surfaceInteraction.rawBitangent);
+
+#ifdef GBUFFER_FEATURE_DEBUG_VIEW
+#if GBUFFER_FEATURE_DEBUG_VIEW
+  surfaceInteraction.debugTriangleNormal = flippedTriangleNormal;
+  surfaceInteraction.debugInterpolatedVertexNormal = geometryNormal;
+#endif
+#endif
+
+  const float entryUvToWorld = surfaceInteraction.pomUvToWorld;
+  surfaceInteraction.pomUvToWorld = 0.0f;
+  surfaceInteraction.pomBaseLinear = vec4(0.0f);
+  surfaceInteraction.pomBaseQuadric = vec3(0.0f);
+  sccrSurfaceBaseCreate(surfaceInteraction, texcoords, worldPositions, bary, vec4(0.0f));
+  if (entryUvToWorld > 0.0f && surfaceInteraction.pomUvToWorld > 0.0f)
+  {
+    // Texture gradients are a world footprint in UV, so they scale inversely with the UV density.
+    const float gradientScale = entryUvToWorld / surfaceInteraction.pomUvToWorld;
+    surfaceInteraction.textureGradientX *= gradientScale;
+    surfaceInteraction.textureGradientY *= gradientScale;
+  }
+  return true;
+}
+
+// The G-buffer passes' hook, called in resolveVertex before an opaque material's interaction is created.
+// viewDistance is as in sccrShellMarch.
+//
+// On a HIT it re-frames the surface interaction and sets pomShellDone (so the material skips its own POM march), the
+// shell marker and the depth offset from the march's along-ray distance, and returns true.
+// Otherwise the surface interaction is untouched, plain SCCR runs, and it returns false.
+//
+// Exits have no continuation, since outlines are not carved. The exit point is not a surface the ray sees, and
+// shading it would light it through the mesh. Plain SCCR at the hit shades those pixels instead.
+bool sccrShellResolve(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  Surface surface,
+  RayInteraction rayInteraction,
+  float viewDistance,
+  inout SurfaceInteraction surfaceInteraction)
+{
+  if (cb.pomMode != DisplacementMode::SCCR || !(cb.pomSccrShellMaxDistance > 0.0f))
+  {
+    return false;
+  }
+  SccrShellResult result;
+  if (!sccrShellMarch(opaqueSurfaceMaterial, surface, rayInteraction, surfaceInteraction, viewDistance, result) ||
+      result.reason != SCCR_SHELL_RESULT_HIT)
+  {
+    // An exit gets plain SCCR at the hit, never the exit point.
+    return false;
+  }
+  if (!sccrShellReframe(surface, rayInteraction, result, surfaceInteraction))
+  {
+    return false;
+  }
+  surfaceInteraction.pomShellDone = true;
+  // The marker lets the self-shadows march from the carved point through the same prisms.
+  surfaceInteraction.pomShellMarker = sccrShellMarkerEncode(result.triangle, result.orientation);
+  if (cb.pomSccrDepthOffset != 0u)
+  {
+    surfaceInteraction.pomDepthOffset = isValidValue(result.distance) ? result.distance : 0.0f;
+  }
+  return true;
+}
+
+// The debug views' modes (sccrShellDebugColor).
+static const uint kSccrShellDebugResult = 0u;
+static const uint kSccrShellDebugSteps = 1u;
+static const uint kSccrShellDebugCrossings = 2u;
+
+// Steps shows steps taken over the budget, green (few) to red (all).
+// Crossings shows prisms crossed, dark green for none, then yellow (one) to red (maxPrisms).
+// Result shows green for a hit, red for a boundary exit and yellow for an outer exit.
+// It shows magenta for LIMIT, cyan for SOLVE, black for OFF, grey for NO_DATA, blue for DISTANCE and orange for FAILED.
+// The counting views show reasons before the march (OFF to FAILED) as the result view does.
+vec3 sccrShellDebugColor(uint mode, SccrShellResult result)
+{
+  vec3 resultColor;
+  switch (result.reason)
+  {
+  default:
+  case SCCR_SHELL_RESULT_OFF:      resultColor = vec3(0.0f, 0.0f, 0.0f); break;
+  case SCCR_SHELL_RESULT_NO_DATA:  resultColor = vec3(0.25f, 0.25f, 0.25f); break;
+  // Blue fades to a quarter brightness at four times maxDistance, showing how far past the hand-off a surface lies.
+  case SCCR_SHELL_RESULT_DISTANCE:
+    resultColor = vec3(0.1f, 0.2f, 0.8f) *
+      lerp(1.0f, 0.25f, saturate((result.distance / max(cb.pomSccrShellMaxDistance, 1e-3f) - 1.0f) / 3.0f));
+    break;
+  case SCCR_SHELL_RESULT_FAILED:   resultColor = vec3(1.0f, 0.5f, 0.0f); break;
+  case SCCR_SHELL_RESULT_HIT:      resultColor = vec3(0.1f, 0.85f, 0.1f); break;
+  case SCCR_SHELL_RESULT_BOUNDARY: resultColor = vec3(1.0f, 0.05f, 0.05f); break;
+  case SCCR_SHELL_RESULT_OUTER:    resultColor = vec3(1.0f, 0.9f, 0.0f); break;
+  case SCCR_SHELL_RESULT_LIMIT:    resultColor = vec3(1.0f, 0.0f, 1.0f); break;
+  case SCCR_SHELL_RESULT_SOLVE:    resultColor = vec3(0.0f, 0.9f, 0.9f); break;
+  }
+  if (mode == kSccrShellDebugResult || result.reason < SCCR_SHELL_RESULT_HIT)
+  {
+    return resultColor;
+  }
+  if (mode == kSccrShellDebugSteps)
+  {
+    const float fraction = saturate(float(result.steps) / float(max(result.stepBudget, 1u)));
+    return vec3(fraction, 1.0f - fraction, 0.0f);
+  }
+  if (result.crossings == 0u)
+  {
+    return vec3(0.05f, 0.35f, 0.05f);
+  }
+  const float fraction = saturate(float(result.crossings) / float(max(cb.pomSccrShellMaxPrisms, 1u)));
+  return vec3(1.0f, 1.0f - fraction, 0.0f);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Self-shadows of shell pixels.
+//
+// The G-buffer marks a shell pixel with the result's triangle and orientation (SharedTextureCoord.w), and its texture
+// coordinates are the carved texel's. Direct-light visibility finds the carved point from those and marches towards
+// the light through the same prisms, with the view ray's solve, crossing and step rules.
+// The visibility matches the texture-space self-shadow (pomConeStepVisibility). The furthest occluder counts, measured
+// where the light ray leaves it, and visibility ramps from 1 at half a step of depth from the texel to 0 at 1.5 steps.
+// Every other way out keeps the visibility so far, since the scene's shadow ray is traced anyway.
+
+// The carved point of a shell pixel. The prism loads with the march's orientation, so the fold limits match the view ray.
+struct SccrShellCarvedPoint
+{
+  SccrShellData data;
+  SccrShellPrism prism;
+  float3 x;            // (b1, b2, h) with h = d(uv), since the point lies on the field.
+  float orientation;   // The primary march's orientation.
+  float worldDepth;    // D
+  float2 depthCone;    // The field at the texel.
+};
+
+// Returns a prism with every field 0, for an out value where no triangle loads.
+SccrShellPrism sccrShellPrismEmpty()
+{
+  SccrShellPrism prism;
+  prism.triangle = 0u;
+  prism.p0 = float3(0.0f, 0.0f, 0.0f);
+  prism.e1 = float3(0.0f, 0.0f, 0.0f);
+  prism.e2 = float3(0.0f, 0.0f, 0.0f);
+  prism.s0 = float3(0.0f, 0.0f, 0.0f);
+  prism.f1 = float3(0.0f, 0.0f, 0.0f);
+  prism.f2 = float3(0.0f, 0.0f, 0.0f);
+  prism.uv0 = float2(0.0f, 0.0f);
+  prism.duv1 = float2(0.0f, 0.0f);
+  prism.duv2 = float2(0.0f, 0.0f);
+  prism.maxStep = 0.0f;
+  prism.size = 0.0f;
+  return prism;
+}
+
+// Loads the carved point from SharedTextureCoord (texture coordinates in xy, the marker in w).
+// Returns false when w holds no marker, D is 0, there is no data, the prism does not load, or the UVs are degenerate.
+bool sccrShellCarvedPointLoad(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  Surface surface,
+  float4 pomCoords,
+  PomSingleConeField field,
+  out SccrShellCarvedPoint carved)
+{
+  uint triIndex;
+  float orientation;
+  const bool hasMarker = sccrShellMarkerDecode(pomCoords.w, triIndex, orientation);
+  carved.data = sccrShellDataCreate(surface, triIndex);
+  carved.prism = sccrShellPrismEmpty();
+  carved.x = float3(0.0f, 0.0f, 0.0f);
+  carved.orientation = orientation;
+  carved.worldDepth = (abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut)) * cb.pomSccrReferenceUvToWorld;
+  carved.depthCone = float2(0.0f, 0.0f);
+  if (!hasMarker || !carved.data.valid || !(carved.worldDepth > 0.0f) ||
+      !sccrShellPrismLoad(surface, carved.data, triIndex, carved.worldDepth, orientation, carved.prism))
+  {
+    return false;
+  }
+  // The triangle's texture coordinates are affine in (b1, b2): duv1 b1 + duv2 b2 = uv - uv0.
+  const float2 duv1 = carved.prism.duv1;
+  const float2 duv2 = carved.prism.duv2;
+  const float det = duv1.x * duv2.y - duv1.y * duv2.x;
+  if (!(abs(det) > 1e-6f * length(duv1) * length(duv2)))
+  {
+    return false;
+  }
+  const float2 d = pomCoords.xy - carved.prism.uv0;
+  const float b1 = (d.x * duv2.y - d.y * duv2.x) / det;
+  const float b2 = (duv1.x * d.y - duv1.y * d.x) / det;
+  carved.depthCone = field.sampleDepthCone(pomCoords.xy);
+  carved.x = sccrShellClamp(float3(b1, b2, carved.depthCone.x));
+  return isValidValue(carved.x);
+}
+
+// What a shadow march found.
+struct SccrShellShadowResult
+{
+  // SCCR_SHELL_RESULT_*. HIT means an occluder darkened it to 0.
+  // OUTER means it left through the top, or there was nothing to march.
+  // BOUNDARY, LIMIT and SOLVE mean it stopped there and is lit from there on.
+  // FAILED means the light does not leave the shell at the texel, which is lit since the shading normal decides.
+  // NO_DATA means there is no carved point.
+  uint reason;
+  float visibility;
+  uint steps;
+  uint crossings;
+  uint stepBudget;
+  // OUTER only: where the light ray leaves through the mesh surface and that triangle's outward,
+  // unnormalised normal, both in object space. The scene's shadow ray starts there, so the uncarved triangles the
+  // march walked through cannot shadow it.
+  bool exited;
+  float3 exitPosition;
+  float3 exitNormal;
+};
+
+void sccrShellShadowFinish(inout SccrShellShadowResult shadow, uint reason, float visibility)
+{
+  shadow.reason = reason;
+  shadow.visibility = saturate(visibility);
+}
+
+// Finishes OUTER and records the exit at position (object space) in prism.
+void sccrShellShadowExit(inout SccrShellShadowResult shadow, SccrShellPrism prism, float3 position, float visibility)
+{
+  sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_OUTER, visibility);
+  shadow.exited = true;
+  shadow.exitPosition = position;
+  // The triangle's normal on the side its shell vectors point to.
+  const float3 triangleNormal = cross(prism.e1, prism.e2);
+  const float3 middleShell = prism.s0 + (prism.f1 + prism.f2) * (1.0f / 3.0f);
+  shadow.exitNormal = dot(triangleNormal, middleShell) >= 0.0f ? triangleNormal : -triangleNormal;
+}
+
+// The direct-light self-shadow of a shell pixel, marching the unit world lightDirection from the carved
+// point outward through the prisms. Returns false when there is no carved point, and true with the visibility otherwise.
+// Cones step only with SCCR_SHELL_MARCH_FLAG_CONSERVATIVE_CONES, since relaxed cones only bound rays entering the field.
+bool sccrShellShadowMarch(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  Surface surface,
+  float4 pomCoords,
+  vec3 lightDirection,
+  out SccrShellShadowResult shadow)
+{
+  shadow.reason = SCCR_SHELL_RESULT_NO_DATA;
+  shadow.visibility = 1.0f;
+  shadow.steps = 0u;
+  shadow.crossings = 0u;
+  shadow.stepBudget = 1u;
+  shadow.exited = false;
+  shadow.exitPosition = float3(0.0f, 0.0f, 0.0f);
+  shadow.exitNormal = float3(0.0f, 0.0f, 0.0f);
+
+  PomSingleConeField field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+  field.hasCone = field.hasCone && (cb.pomSccrShellFlags & SCCR_SHELL_MARCH_FLAG_CONSERVATIVE_CONES) != 0u;
+  SccrShellCarvedPoint carved;
+  if (!sccrShellCarvedPointLoad(opaqueSurfaceMaterial, surface, pomCoords, field, carved))
+  {
+    return false;
+  }
+
+  // A texel on top of the field has no relief above it.
+  const float texelDepth = carved.x.z;
+  if (!(texelDepth > 0.0f))
+  {
+    sccrShellShadowExit(shadow, carved.prism, carved.prism.p0 + carved.prism.position(carved.x), 1.0f);
+    return true;
+  }
+
+  SccrShellPrism prism = carved.prism;
+  float3 x = carved.x;
+  const float detSign = -carved.orientation;
+  const float worldDepth = carved.worldDepth;
+  // As for the view ray, the object-space direction is not normalised, so t stays a world distance.
+  const float3 rayDirection = mul(transpose(surface.normalObjectToWorld), lightDirection);
+  const float rayLength = length(rayDirection);
+  const float3 entryPoint = prism.p0 + prism.position(x);
+  float3 entryRelative = entryPoint - prism.p0;
+  SccrShellJacobian inverse;
+  if (!(rayLength > 0.0f) || !sccrShellJacobianInverse(prism, x, detSign, inverse))
+  {
+    sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_FAILED, 1.0f);
+    return true;
+  }
+  float3 rate = sccrShellJacobianMul(inverse, rayDirection);
+  if (!(rate.z < 0.0f))
+  {
+    sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_FAILED, 1.0f);
+    return true;
+  }
+
+  // Linear steps are 1/N in depth, as in the texture-space self-shadow.
+  // -rate.z * D is the cosine between the light and the shell direction, exactly so in a flat prism.
+  const float numSamples = pomGetNumSamples(float3(0.0f, 0.0f, saturate(-rate.z * worldDepth)));
+  const float minStepDepth = rcp(numSamples);
+  const float rateFloor = kSccrShellMinRate / worldDepth;
+  const float objectMaxStepScale = rcp(rayLength);
+
+  // Step LOD uses the height map's texels, since a shadow ray has no pixel footprint (as sccrSampleVisibility).
+  // A light ray whose whole travel to the top is below kSccrSkipFootprints of that is lit.
+  uint width, height, mipLevels;
+  textures[nonuniformEXT(uint(opaqueSurfaceMaterial.heightTextureIndex))].GetDimensions(0, width, height, mipLevels);
+  const float texelUv = rcp(float(max(max(width, height), 1u)));
+  const float lodUv = cb.pomStepLodScale > 0.0f ? texelUv / cb.pomStepLodScale : 0.0f;
+  const float entryUvRate = length(prism.duv1 * rate.x + prism.duv2 * rate.y);
+  if (lodUv > 0.0f && entryUvRate * texelDepth / -rate.z < kSccrSkipFootprints * lodUv)
+  {
+    // The top, in the carved prism's linearisation.
+    sccrShellShadowExit(shadow, prism, entryPoint + rayDirection * (texelDepth / -rate.z), 1.0f);
+    return true;
+  }
+  // The visibility ramp's step in depth, as pomConeStepVisibility's minStep. Refinement stops at an eighth of it.
+  float rampStep = minStepDepth;
+  if (lodUv > 0.0f && entryUvRate > 0.0f)
+  {
+    rampStep = max(rampStep, lodUv * -rate.z / entryUvRate);
+  }
+  rampStep = min(rampStep, texelDepth);
+  // Distance along the light ray is measured in depth at the texel's rate, s = t * -dh/dt there. In a flat prism this
+  // is h0 - h, the texture-space measure, and it keeps growing where prisms bend round the ray.
+  // A point below the field at s >= 1.5 ramp steps lies inside an occluder, so visibility is 0 whatever follows.
+  const float progressRate = -rate.z;
+  const float occludedT = 1.5f * rampStep / progressRate;
+  const float precisionT = lodUv > 0.0f ? 0.125f * rampStep / max(-rate.z, rateFloor) : 0.0f;
+
+  const uint maxPrisms = (cb.pomSccrShellFlags >> SCCR_SHELL_MARCH_SHADOW_PRISMS_SHIFT) & SCCR_SHELL_MARCH_SHADOW_PRISMS_MASK;
+  const uint maxSteps = max(min(cb.pomSccrShellMaxSteps,
+                                cb.pomConeShadowSteps + uint(ceil(texelDepth / rampStep)) + 1u + kSccrShellStepsPerCrossing * maxPrisms), 1u);
+  shadow.stepBudget = maxSteps;
+
+  float t = 0.0f;
+  uint coneStepsLeft = cb.pomConeShadowSteps;
+  float visibility = 1.0f;
+  // The current sample. It starts at the texel, which lies on the field and is not sampled again.
+  float2 depthCone = carved.depthCone;
+  float gap = 0.0f;
+  bool sampleHere = false;
+  // The last sample when it lay inside an occluder. belowAcross means a crossing came after it, so the point where the
+  // light ray leaves the occluder is interpolated instead of refined.
+  bool hasBelow = false;
+  bool belowAcross = false;
+  float belowT = 0.0f;
+  float3 belowX = x;
+  float belowGap = 0.0f;
+  // As sccrShellMarch.
+  bool pending = false;
+  bool pendingFromStep = false;
+  uint pendingFace = kSccrShellFaceNone;
+
+  const uint iterationLimit = maxSteps + maxPrisms + 2u;
+  for (uint iteration = 0; iteration < iterationLimit; ++iteration)
+  {
+    if (!pending || pendingFromStep)
+    {
+      if (sampleHere)
+      {
+        depthCone = field.sampleDepthCone(prism.textureCoordinates(x));
+        gap = depthCone.x - x.z;
+        if (gap <= 0.0f)
+        {
+          if (t >= occludedT)
+          {
+            sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_HIT, 0.0f);
+            return true;
+          }
+          hasBelow = true;
+          belowAcross = false;
+          belowT = t;
+          belowX = x;
+          belowGap = gap;
+        }
+        else if (hasBelow)
+        {
+          // The light ray left an occluder since the last sample, and where it did sets the ramp.
+          float leaveT;
+          if (belowAcross)
+          {
+            leaveT = lerp(belowT, t, saturate(-belowGap / max(gap - belowGap, 1e-6f)));
+          }
+          else
+          {
+            float3 leaveX;
+            sccrShellRefine(field, prism, entryRelative, rayDirection, detSign, precisionT,
+                            t, x, gap, belowT, belowX, belowGap, leaveT, leaveX, shadow.steps);
+          }
+          hasBelow = false;
+          visibility = min(visibility, saturate(1.5f - leaveT * progressRate / rampStep));
+          if (visibility <= 0.0f)
+          {
+            sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_HIT, 0.0f);
+            return true;
+          }
+        }
+      }
+      sampleHere = true;
+    }
+
+    if (pending)
+    {
+      pending = false;
+      if (pendingFace == kSccrShellFaceTop)
+      {
+        sccrShellShadowExit(shadow, prism, entryPoint + t * rayDirection, visibility);
+        return true;
+      }
+      if (shadow.crossings >= maxPrisms || shadow.steps >= maxSteps)
+      {
+        sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_LIMIT, visibility);
+        return true;
+      }
+      const uint neighbourWord = carved.data.neighbour(prism.triangle, pendingFace);
+      SccrShellPrism next;
+      if (SCCR_SHELL_NEIGHBOUR_IS_BOUNDARY(neighbourWord) ||
+          !sccrShellPrismLoad(surface, carved.data, neighbourWord & SCCR_SHELL_NEIGHBOUR_TRIANGLE_MASK, worldDepth, carved.orientation, next))
+      {
+        sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_BOUNDARY, visibility);
+        return true;
+      }
+      float3 nextX = sccrShellCarry(x, pendingFace, neighbourWord >> SCCR_SHELL_NEIGHBOUR_SLOT_SHIFT);
+      const float3 nextEntryRelative = entryPoint - next.p0;
+      SccrShellJacobian nextInverse;
+      if (!sccrShellSolve(next, nextEntryRelative + t * rayDirection, detSign, nextX, nextInverse))
+      {
+        sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_SOLVE, visibility);
+        return true;
+      }
+      prism = next;
+      x = nextX;
+      x.z = min(x.z, 1.0f);
+      inverse = nextInverse;
+      entryRelative = nextEntryRelative;
+      rate = sccrShellJacobianMul(inverse, rayDirection);
+      shadow.crossings++;
+      shadow.steps++;
+      coneStepsLeft = cb.pomConeShadowSteps;
+      belowAcross = hasBelow;
+      pending = sccrShellOutside(x, false, kSccrShellFaceNone, pendingFace);
+      pendingFromStep = false;
+      continue;
+    }
+
+    if (shadow.steps >= maxSteps)
+    {
+      sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_LIMIT, visibility);
+      return true;
+    }
+
+    // The step, as in sccrShellMarch but with |dh/dt|, since the light ray rises unless the prisms curve round it.
+    const float a = rate.z;
+    const float uvRate = length(prism.duv1 * rate.x + prism.duv2 * rate.y);
+    float dt = minStepDepth / max(abs(a), rateFloor);
+    bool coneStep = false;
+    if (gap > 0.0f && coneStepsLeft > 0u && depthCone.y > 0.0f)
+    {
+      // The field cannot rise above the sample texel's cone, d(q) >= d(p) - |q - p| / c, so the ray stays above it
+      // while t (max(a, 0) + b / c) < gap. With a < 0 this conservatively ignores the ray's own rise.
+      dt = max(dt, gap / (kSccrShellConeSafety * (max(a, 0.0f) + uvRate / depthCone.y)));
+      coneStep = true;
+    }
+    if (lodUv > 0.0f && uvRate > 0.0f)
+    {
+      dt = max(dt, lodUv / uvRate);
+    }
+    dt = min(dt, prism.maxStep * objectMaxStepScale);
+
+    const float3 b = sccrShellBarycentrics(x);
+    const float3 db = float3(-(rate.x + rate.y), rate.x, rate.y);
+    float exitT = 1e30f;
+    uint exitFace = kSccrShellFaceNone;
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+      const float rateI = sccrShellComponent(db, i);
+      if (rateI < 0.0f)
+      {
+        const float faceT = max(sccrShellComponent(b, i), 0.0f) / -rateI;
+        if (faceT < exitT)
+        {
+          exitT = faceT;
+          exitFace = i;
+        }
+      }
+    }
+    if (a < 0.0f)
+    {
+      const float faceT = max(x.z, 0.0f) / -a;
+      if (faceT < exitT)
+      {
+        exitT = faceT;
+        exitFace = kSccrShellFaceTop;
+      }
+    }
+    else if (a > 0.0f)
+    {
+      const float faceT = max(1.0f - x.z, 0.0f) / a;
+      if (faceT < exitT)
+      {
+        exitT = faceT;
+        exitFace = kSccrShellFaceBottom;
+      }
+    }
+    bool exitLimited = false;
+    if (exitT <= dt)
+    {
+      dt = exitT * (1.0f + kSccrShellExitOvershoot) + kSccrShellExitNudge * prism.size * objectMaxStepScale;
+      exitLimited = exitFace < 3u || exitFace == kSccrShellFaceTop;
+    }
+
+    t += dt;
+    float3 nextX = x + rate * dt;
+    if (!sccrShellSolve(prism, entryRelative + t * rayDirection, detSign, nextX, inverse))
+    {
+      sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_SOLVE, visibility);
+      return true;
+    }
+    x = nextX;
+    x.z = min(x.z, 1.0f);
+    rate = sccrShellJacobianMul(inverse, rayDirection);
+    shadow.steps++;
+    if (coneStep)
+    {
+      coneStepsLeft--;
+    }
+    pending = sccrShellOutside(x, exitLimited, exitFace, pendingFace);
+    pendingFromStep = true;
+  }
+
+  sccrShellShadowFinish(shadow, SCCR_SHELL_RESULT_LIMIT, visibility);
+  return true;
+}
+
+// The self-shadow of a shell pixel in SCCR mode, from the marker in pomCoords.w. surfaceIndex is the pixel's Surface,
+// or SURFACE_INDEX_INVALID when unknown.
+// Returns false when there is no marker or carved point, and the caller runs the texture-space self-shadow.
+// Full-detail queries (shadowFootprintUv = kSccrFullShadow) with rtx.displacement.shell.shadows on march the prisms.
+// Other queries run sccrSampleVisibility at the carved texel, in the carved triangle's frame and at the shell's depth
+// along its normal there, which includes the fold guard's clamp.
+//
+// When a full-detail march left through the mesh surface, hasExit is true. exitPosition is then the world exit point
+// lifted kSccrShellShadowExitOffset x D along exitNormal, the exit triangle's outward unit world normal.
+// The scene's shadow ray starts there.
+bool sccrShellShadowVisibility(
+  MinimalSurfaceInteraction minimalSurfaceInteraction,
+  vec3 rayDirection,
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  float4 pomCoords,
+  float shadowFootprintUv,
+  uint surfaceIndex,
+  vec3 lightDirTangentSpace,
+  out float visibility,
+  out bool hasExit,
+  out vec3 exitPosition,
+  out vec3 exitNormal)
+{
+  visibility = 1.0f;
+  hasExit = false;
+  exitPosition = vec3(0.0f);
+  exitNormal = vec3(0.0f);
+  if (surfaceIndex == SURFACE_INDEX_INVALID || !(abs(pomCoords.w) >= kSccrShellMarkerBase))
+  {
+    return false;
+  }
+  const Surface surface = surfaces[surfaceIndex];
+  const vec3 lightDirection = normalize(rayDirection);
+  if (shadowFootprintUv < 0.0f && (cb.pomSccrShellFlags & SCCR_SHELL_MARCH_FLAG_SHADOWS) != 0u)
+  {
+    SccrShellShadowResult shadow;
+    if (!sccrShellShadowMarch(opaqueSurfaceMaterial, surface, pomCoords, lightDirection, shadow))
+    {
+      return false;
+    }
+    visibility = shadow.visibility;
+    if (shadow.exited)
+    {
+      const float worldDepth =
+        (abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut)) * cb.pomSccrReferenceUvToWorld;
+      exitNormal = safeNormalize(mul(surface.normalObjectToWorld, shadow.exitNormal), lightDirection);
+      exitPosition = mul(surface.objectToWorld, float4(shadow.exitPosition, 1.0f)).xyz +
+                     exitNormal * (kSccrShellShadowExitOffset * worldDepth);
+      hasExit = isValidValue(exitPosition) && isValidValue(exitNormal);
+    }
+    return true;
+  }
+
+  PomSingleConeField field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+  SccrShellCarvedPoint carved;
+  if (!(pomCoords.z > 0.0f) || !sccrShellCarvedPointLoad(opaqueSurfaceMaterial, surface, pomCoords, field, carved))
+  {
+    return false;
+  }
+  const float3 objectNormal = cross(carved.prism.e1, carved.prism.e2) * carved.orientation;
+  const vec3 normal = safeNormalize(mul(surface.normalObjectToWorld, objectNormal), minimalSurfaceInteraction.geometryNormal);
+  const float3 shellVector = carved.prism.s0 + carved.x.x * carved.prism.f1 + carved.x.y * carved.prism.f2;
+  const float3 worldShellVector = mul(surface.objectToWorld, float4(shellVector, 0.0f));
+  const float normalDepth = abs(dot(worldShellVector, normal));
+  const float totalHeight = abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut);
+  // sccrSampleVisibility's world depth is totalHeight x depthScale x the carved triangle's UV density (pomCoords.z).
+  const float depthScale = normalDepth / (totalHeight * pomCoords.z);
+  if (!(depthScale > 0.0f) || !isValidValue(depthScale))
+  {
+    return false;
+  }
+  visibility = sccrSampleVisibility(
+    opaqueSurfaceMaterial, pomCoords.xy,
+    sccrShadowLightDirInFrame(minimalSurfaceInteraction, lightDirection, normal, lightDirTangentSpace),
+    depthScale, shadowFootprintUv);
+  return true;
+}
+
+// DEBUG_VIEW_SCCR_SHELL_SHADOW, for direct-light queries of G-buffer surfaces, where the last light sampled wins.
+// It shows the shadow march's steps over its budget, green (few) to red (all), dimmed to 0.4 where fully shadowed.
+// Blue means the light does not leave the shell at the texel.
+// Grey means a shell pixel whose carved point was not found.
+// Black means no shell pixel, or rtx.displacement.shell.shadows off.
+vec3 sccrShellShadowDebugColor(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  uint surfaceIndex,
+  float4 pomCoords,
+  vec3 lightDirection)
+{
+  if (surfaceIndex == SURFACE_INDEX_INVALID || !(abs(pomCoords.w) >= kSccrShellMarkerBase) ||
+      (cb.pomSccrShellFlags & SCCR_SHELL_MARCH_FLAG_SHADOWS) == 0u)
+  {
+    return vec3(0.0f, 0.0f, 0.0f);
+  }
+  SccrShellShadowResult shadow;
+  if (!sccrShellShadowMarch(opaqueSurfaceMaterial, surfaces[surfaceIndex], pomCoords, normalize(lightDirection), shadow))
+  {
+    return vec3(0.25f, 0.25f, 0.25f);
+  }
+  if (shadow.reason == SCCR_SHELL_RESULT_FAILED)
+  {
+    return vec3(0.1f, 0.2f, 0.8f);
+  }
+  const float fraction = saturate(float(shadow.steps) / float(max(shadow.stepBudget, 1u)));
+  return vec3(fraction, 1.0f - fraction, 0.0f) * (0.4f + 0.6f * shadow.visibility);
+}

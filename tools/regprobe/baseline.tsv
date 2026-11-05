@@ -1,0 +1,2 @@
+# regcheck baseline: none recorded yet. Needs an NVIDIA GPU: python tools/regprobe/regcheck.py --update-baseline
+variant	registers	local	shared	binary	workgroup	warps

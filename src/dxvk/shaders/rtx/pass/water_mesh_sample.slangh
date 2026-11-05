@@ -1,0 +1,198 @@
+#pragma once
+#include "rtx/pass/water_surface_args.h"
+
+bool waterMeshTriangle(float3 a, float3 b, float3 c, float2 p, out float3 hg) {
+  float den = (b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
+  hg = 0;
+  if (!isfinite(den) || abs(den) < 1e-8f) { return false; }
+  float u = ((b.y-c.y)*(p.x-c.x)+(c.x-b.x)*(p.y-c.y))/den;
+  float v = ((c.y-a.y)*(p.x-c.x)+(a.x-c.x)*(p.y-c.y))/den;
+  float w = 1-u-v;
+  if (!isfinite(u+v+w) || min(min(u,v),w) < -.0001f) { return false; }
+  float3 n = cross(b-a,c-a);
+  hg = float3(u*a.z+v*b.z+w*c.z,-n.x/n.z,-n.y/n.z);
+  return all(isfinite(hg));
+}
+
+float3 waterMeshPoint(StructuredBuffer<float3> pos,int2 c,bool fine) {
+  c=clamp(c,int2(0),int2(fine?90:60));
+  return pos[(fine?WATER_COARSE_COUNT:0)+c.y*(fine?91:61)+c.x];
+}
+float3 waterMeshNormal(StructuredBuffer<float3> pos,int2 c,bool fine) {
+  float3 dx=waterMeshPoint(pos,c+int2(1,0),fine)-waterMeshPoint(pos,c-int2(1,0),fine);
+  float3 dy=waterMeshPoint(pos,c+int2(0,1),fine)-waterMeshPoint(pos,c-int2(0,1),fine);
+  float3 n=cross(dx,dy);return n*rsqrt(max(dot(n,n),1e-8f));
+}
+float3 waterMeshVertexNormal(StructuredBuffer<float> data,StructuredBuffer<float3> pos,int2 c,bool fine) {
+  float3 n=waterMeshNormal(pos,c,fine);
+  if(fine) {
+    float edge=min(min(c.x,c.y),min(90-c.x,90-c.y))*data[9];
+    float blend=smoothstep(0.0f,0.7f,edge);
+    if(blend<1.0f) {
+      float2 p=data[8]+float2(c)*data[9],g=p/data[3];
+      int2 cell=int2(g);float2 f=frac(g);
+      float3 coarse=lerp(lerp(waterMeshNormal(pos,cell,false),waterMeshNormal(pos,cell+int2(1,0),false),f.x),
+        lerp(waterMeshNormal(pos,cell+int2(0,1),false),waterMeshNormal(pos,cell+int2(1,1),false),f.x),f.y);
+      n=normalize(lerp(coarse,n,blend));
+    }
+  }
+  return n;
+}
+float2 waterMeshShadingGradient(StructuredBuffer<float> data,StructuredBuffer<float3> pos,
+    int2 ca,int2 cb,int2 cc,bool fine,float2 p) {
+  float3 a=waterMeshPoint(pos,ca,fine),b=waterMeshPoint(pos,cb,fine),c=waterMeshPoint(pos,cc,fine);
+  float den=(b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
+  float u=((b.y-c.y)*(p.x-c.x)+(c.x-b.x)*(p.y-c.y))/den;
+  float v=((c.y-a.y)*(p.x-c.x)+(a.x-c.x)*(p.y-c.y))/den;
+  float3 n=0.0f;int2 corners[3]={ca,cb,cc};float weights[3]={u,v,1.0f-u-v};
+  [loop] for(uint i=0;i<3;++i) { n+=weights[i]*waterMeshVertexNormal(data,pos,corners[i],fine); }
+  return -n.xy/max(n.z,1e-5f);
+}
+
+bool waterMeshClipVisible(StructuredBuffer<float4> depths,int2 ca,int2 cb,int2 cc,bool fine,
+    float3 a,float3 b,float3 c,float2 p,float waterHeight) {
+  float den=(b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
+  float u=((b.y-c.y)*(p.x-c.x)+(c.x-b.x)*(p.y-c.y))/den;
+  float v=((c.y-a.y)*(p.x-c.x)+(a.x-c.x)*(p.y-c.y))/den;
+  uint base=fine?WATER_COARSE_COUNT:0,side=fine?91:61;
+  float raw=u*depths[base+ca.y*side+ca.x].z+v*depths[base+cb.y*side+cb.x].z
+    +(1.0f-u-v)*depths[base+cc.y*side+cc.x].z;
+  return waterHeight+raw>0.0f;
+}
+
+bool waterMeshCell(StructuredBuffer<float> data, StructuredBuffer<float3> pos, StructuredBuffer<float4> depths,
+    int2 c, bool fine, float2 p, out float3 hg, out bool second) {
+  hg = 0;second=false;
+  int side = fine ? 90 : 60;
+  if (any(c < 0) || any(c >= side)) { return false; }
+  uint mask = fine ? WATER_FINE_MASK : WATER_COARSE_MASK;
+  if (data[mask + c.y*side+c.x] <= 0) { return false; }
+  int half = int(data[10]);
+  if (!fine && all(c >= 30-half) && all(c < 30+half)) { return false; }
+  uint id = (fine ? WATER_COARSE_COUNT : 0) + c.y*(side+1)+c.x;
+  float3 a=pos[id], b=pos[id+1], d=pos[id+side+2], e=pos[id+side+1];
+  bool clip=data[mask+c.y*side+c.x]>=3.0f;
+  if (waterMeshTriangle(a,b,d,p,hg)) {
+    return !clip || waterMeshClipVisible(depths,c,c+int2(1,0),c+int2(1,1),fine,a,b,d,p,hg.x);
+  }
+  if (waterMeshTriangle(a,d,e,p,hg)) {
+    second=true;
+    return !clip || waterMeshClipVisible(depths,c,c+int2(1,1),c+int2(0,1),fine,a,d,e,p,hg.x);
+  }
+  return false;
+}
+
+float2 waterMeshGrid(StructuredBuffer<float> data, StructuredBuffer<float3> pos,
+    float2 p, bool fine) {
+  int side=fine ? 90 : 60;
+  float origin=fine ? data[8] : 0;
+  float spacing=fine ? data[9] : data[3];
+  if (spacing <= 0) { return float2(0); }
+  float2 grid=clamp((p-origin)/spacing,float2(0),float2(side-.0001f));
+  // Invert actual deformed XY, then sample the exact indexed triangle.
+  [loop] for (uint iteration=0; iteration<6; ++iteration) {
+    int2 c=int2(grid); float2 f=grid-float2(c);
+    uint id=(fine ? WATER_COARSE_COUNT : 0)+c.y*(side+1)+c.x;
+    float2 a=pos[id].xy,b=pos[id+1].xy,d=pos[id+side+2].xy,e=pos[id+side+1].xy;
+    float2 error=lerp(lerp(a,b,f.x),lerp(e,d,f.x),f.y)-p;
+    if (dot(error,error)<1e-8f) { break; }
+    float2 dx=lerp(b-a,d-e,f.y),dy=lerp(e-a,d-b,f.x);
+    float det=dx.x*dy.y-dx.y*dy.x;
+    if (!isfinite(det) || abs(det)<1e-8f) { break; }
+    float2 step=float2(error.x*dy.y-error.y*dy.x,dx.x*error.y-dx.y*error.x)/det;
+    if (!all(isfinite(step))) { break; }
+    grid=clamp(grid-clamp(step,float2(-16),float2(16)),float2(0),float2(side-.0001f));
+  }
+  return grid;
+}
+
+bool waterMeshPatch(StructuredBuffer<float> data, StructuredBuffer<float3> pos, StructuredBuffer<float4> depths,
+    float2 p, bool fine, out float3 hg, out int3 hit) {
+  hg=0;hit=int3(0);bool second;
+  float2 grid=waterMeshGrid(data,pos,p,fine);
+  int2 c=int2(grid);
+  if (waterMeshCell(data,pos,depths,c,fine,p,hg,second)) { hit=int3(c,second?1:0);return true; }
+  [loop] for (int y=-1;y<=1;++y) {
+    [loop] for (int x=-1;x<=1;++x) {
+      if ((x!=0 || y!=0) && waterMeshCell(data,pos,depths,c+int2(x,y),fine,p,hg,second)) {
+        hit=int3(c+int2(x,y),second?1:0);return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool waterMeshSample(StructuredBuffer<float> data, StructuredBuffer<float3> pos, StructuredBuffer<float4> depths,
+    float2 world, out float3 hg) {
+  float2 p=world-float2(data[0],data[1]);
+  int3 hit;bool fine=true;
+  bool found=waterMeshPatch(data,pos,depths,p,true,hg,hit);
+  if (!found) { fine=false;found=waterMeshPatch(data,pos,depths,p,false,hg,hit); }
+  if (found) {
+    int2 b=hit.xy+(hit.z!=0?int2(1,1):int2(1,0));
+    int2 c=hit.xy+(hit.z!=0?int2(0,1):int2(1,1));
+    hg.yz=waterMeshShadingGradient(data,pos,hit.xy,b,c,fine,p);
+    hg.x+=data[2];
+  }
+  return found;
+}
+
+float waterMeshCross(float2 a,float2 b) { return a.x*b.y-a.y*b.x; }
+
+// The difference of two planes is affine. Its maximum over their triangle
+// intersection is attained at an included vertex or an edge intersection.
+float waterTriangleDifference(float3 a,float3 b,float3 c,float3 u,float3 v,float3 w) {
+  float3 foam[3]={a,b,c}, water[3]={u,v,w};
+  float difference=-1e20f;
+  [unroll] for(uint i=0;i<3;++i) {
+    float3 hg;
+    if(waterMeshTriangle(a,b,c,water[i].xy,hg)) { difference=max(difference,water[i].z-hg.x); }
+    if(waterMeshTriangle(u,v,w,foam[i].xy,hg)) { difference=max(difference,hg.x-foam[i].z); }
+    float3 f0=foam[i],f1=foam[(i+1)%3];
+    [unroll] for(uint j=0;j<3;++j) {
+      float3 w0=water[j],w1=water[(j+1)%3];
+      float2 fd=f1.xy-f0.xy,wd=w1.xy-w0.xy;
+      float den=waterMeshCross(fd,wd);
+      if(abs(den)<1e-9f) { continue; }
+      float2 offset=w0.xy-f0.xy;
+      float t=waterMeshCross(offset,wd)/den,s=waterMeshCross(offset,fd)/den;
+      if(min(t,s)>=0 && max(t,s)<=1) {
+        difference=max(difference,lerp(w0.z,w1.z,s)-lerp(f0.z,f1.z,t));
+      }
+    }
+  }
+  return difference;
+}
+
+float waterMeshTriangleLift(StructuredBuffer<float> data, StructuredBuffer<float3> pos,
+    float3 a,float3 b,float3 c,float clearance) {
+  float3 origin=float3(data[0],data[1],data[2]);
+  a-=origin;b-=origin;c-=origin;
+  float2 lo=min(a.xy,min(b.xy,c.xy)),hi=max(a.xy,max(b.xy,c.xy));
+  float difference=-1e20f;
+  [unroll] for(uint patch=0;patch<2;++patch) {
+    bool fine=patch==0;
+    int side=fine?90:60,half=int(data[10]);
+    float2 ga=waterMeshGrid(data,pos,a.xy,fine);
+    float2 gb=waterMeshGrid(data,pos,b.xy,fine);
+    float2 gc=waterMeshGrid(data,pos,c.xy,fine);
+    // A two-cell guard includes the deformed-cell neighbourhood on either
+    // side of an inverse-map rounding/diagonal boundary.
+    int2 first=max(int2(floor(min(ga,min(gb,gc))))-2,int2(0));
+    int2 last=min(int2(floor(max(ga,max(gb,gc))))+2,int2(side-1));
+    [loop] for(int y=first.y;y<=last.y;++y) {
+      [loop] for(int x=first.x;x<=last.x;++x) {
+        if(!fine && x>=30-half && x<30+half && y>=30-half && y<30+half) { continue; }
+        if(data[(fine?WATER_FINE_MASK:WATER_COARSE_MASK)+y*side+x]<=0) { continue; }
+        uint id=(fine?WATER_COARSE_COUNT:0)+y*(side+1)+x;
+        float3 u=pos[id],v=pos[id+1],w=pos[id+side+2],q=pos[id+side+1];
+        float2 cellLo=min(min(u.xy,v.xy),min(w.xy,q.xy));
+        float2 cellHi=max(max(u.xy,v.xy),max(w.xy,q.xy));
+        if(any(cellLo>hi)||any(cellHi<lo)) { continue; }
+        difference=max(difference,waterTriangleDifference(a,b,c,u,v,w));
+        difference=max(difference,waterTriangleDifference(a,b,c,u,w,q));
+      }
+    }
+  }
+  return max(0.0f,difference+clearance);
+}

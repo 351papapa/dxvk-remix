@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "dff": "grass_smoke",
+  "meshes": [
+    {
+      "materials": [
+        {
+          "texture": "test_window",
+          "draw_calls": [
+            {
+              "hashes": [
+                {
+                  "texture0_hash": "b5eb6b71a7136b32"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

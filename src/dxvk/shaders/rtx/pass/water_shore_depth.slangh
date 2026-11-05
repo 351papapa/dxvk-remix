@@ -1,0 +1,9 @@
+#pragma once
+float4 shoreBedAt(StructuredBuffer<float4> depths, int2 c, bool fine) {
+  c = clamp(c, int2(0), int2(fine ? 90 : 60));
+  return depths[(fine ? WATER_COARSE_COUNT : 0) + c.y * (fine ? 91 : 61) + c.x];
+}
+float4 smoothShoreBed(StructuredBuffer<float4> depths, int2 c, bool fine) {
+  // The shore pass already filters in the coarse domain and resamples onto the fine patch.
+  return shoreBedAt(depths, c, fine);
+}

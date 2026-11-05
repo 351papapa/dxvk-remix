@@ -1,0 +1,191 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Reads the per-geometry shell data (SccrShellManager, layout in sccr_shell_args.h) and draws its debug view.
+// pom_sccr.slangh includes it. The shell march itself is in sccr_shell_march.slangh.
+
+#include "rtx/pass/sccr_shell/sccr_shell_args.h"
+
+// The shell data of a Surface: its bindless slot, triangle count and vertex count. valid is false when the geometry has
+// none (not built yet, not eligible, or rtx.displacement.shell.enable off), or when triangle lies outside it.
+struct SccrShellData
+{
+  uint bufferIndex;
+  uint triangleCount;
+  uint vertexCount;
+  bool valid;
+
+  uint neighbour(uint triIndex, uint edgeSlot)
+  {
+    return BUFFER_ARRAY(indices32, bufferIndex, SCCR_SHELL_HEADER_DWORDS + triIndex * 3u + edgeSlot);
+  }
+
+  // Word 0 holds the welded direction (sccrShellDecodeDirection), and word 1 the depth limit (half) and SCCR_SHELL_VERTEX_FLAG_*.
+  uint2 vertexWords(uint vertexIndex)
+  {
+    const uint base = SCCR_SHELL_HEADER_DWORDS + 3u * triangleCount + 2u * vertexIndex;
+    return uint2(BUFFER_ARRAY(indices32, bufferIndex, base), BUFFER_ARRAY(indices32, bufferIndex, base + 1u));
+  }
+};
+
+SccrShellData sccrShellDataCreate(Surface surface, uint triIndex)
+{
+  SccrShellData data;
+  data.bufferIndex = uint(surface.shellBufferIndex);
+  data.triangleCount = 0u;
+  data.vertexCount = 0u;
+  data.valid = false;
+  if (data.bufferIndex == uint(BINDING_INDEX_INVALID))
+  {
+    return data;
+  }
+  data.triangleCount = BUFFER_ARRAY(indices32, data.bufferIndex, SCCR_SHELL_HEADER_TRIANGLES);
+  data.vertexCount = BUFFER_ARRAY(indices32, data.bufferIndex, SCCR_SHELL_HEADER_VERTICES);
+  const uint flags = BUFFER_ARRAY(indices32, data.bufferIndex, SCCR_SHELL_HEADER_FLAGS);
+  data.valid = (flags & SCCR_SHELL_FLAG_VERSION_MASK) == SCCR_SHELL_VERSION && triIndex < data.triangleCount;
+  return data;
+}
+
+vec3 sccrShellDecodeDirection(uint packedDirection)
+{
+  const int2 quantized = int2(int(packedDirection << 16u) >> 16, int(packedDirection) >> 16);
+  const vec2 octahedral = max(vec2(quantized) / 32767.0f, vec2(-1.0f, -1.0f));
+  vec3 direction = vec3(octahedral, 1.0f - abs(octahedral.x) - abs(octahedral.y));
+  const float fold = max(-direction.z, 0.0f);
+  direction.x += direction.x >= 0.0f ? -fold : fold;
+  direction.y += direction.y >= 0.0f ? -fold : fold;
+  return normalize(direction);
+}
+
+uint sccrShellLoadVertexIndex(Surface surface, uint indexIndex)
+{
+  if (surface.indexBufferIndex == BINDING_INDEX_INVALID)
+  {
+    return indexIndex;
+  }
+  if (surface.indexStride == 4)
+  {
+    return BUFFER_ARRAY(indices32, surface.indexBufferIndex, indexIndex);
+  }
+  return BUFFER_ARRAY(indices, surface.indexBufferIndex, indexIndex);
+}
+
+vec3 sccrShellLoadObjectPosition(Surface surface, uint vertexIndex)
+{
+  const uint element = (vertexIndex * uint(surface.positionStride) + surface.positionOffset) / 4;
+  return vec3(
+    BUFFER_ARRAY(geometries, surface.positionBufferIndex, element + 0),
+    BUFFER_ARRAY(geometries, surface.positionBufferIndex, element + 1),
+    BUFFER_ARRAY(geometries, surface.positionBufferIndex, element + 2));
+}
+
+// DEBUG_VIEW_SCCR_SHELL_EDGES.
+// Mid grey means no shell data.
+// Light grey with thin dark lines shows shell data, with triangle edges welded to a neighbour that shares its vertices.
+// Green edges are welded to a neighbour across split vertices (a hard edge or a UV seam, which shell tracing crosses
+// where plain SCCR cannot).
+// Boundary edges (SCCR_SHELL_NEIGHBOUR_*) are red when open (or an end did not weld), orange when non-manifold, blue for
+// flipped winding and yellow for a degenerate direction at an end. The march stops at the last three.
+// Corner dots are yellow for a degenerate welded direction (fin, two-sided sheet) and magenta for a vertex that did not weld.
+// Purple marks shell data that does not match the hit (a triangle beyond its count), which should never show.
+vec3 sccrShellDebugEdges(Surface surface, RayInteraction rayInteraction)
+{
+  const uint triIndex = rayInteraction.primitiveIndex + surface.firstIndex / 3;
+  SccrShellData data = sccrShellDataCreate(surface, triIndex);
+  if (data.bufferIndex == uint(BINDING_INDEX_INVALID))
+  {
+    return vec3(0.25f, 0.25f, 0.25f);
+  }
+  if (!data.valid)
+  {
+    return vec3(0.5f, 0.0f, 0.6f);
+  }
+
+  uint vertexIndices[3];
+  vec3 worldPositions[3];
+  [unroll]
+  for (uint k = 0; k < 3; ++k)
+  {
+    vertexIndices[k] = sccrShellLoadVertexIndex(surface, rayInteraction.primitiveIndex * 3 + k + surface.firstIndex);
+    worldPositions[k] = mul(surface.objectToWorld, vec4(sccrShellLoadObjectPosition(surface, vertexIndices[k]), 1.0f));
+  }
+  const vec3 bary = uintToBarycentrics(rayInteraction.barycentricCoordinates);
+  const float doubleArea = length(cross(worldPositions[1] - worldPositions[0], worldPositions[2] - worldPositions[0]));
+  // Lines are about two pixels wide, since the ray cone's radius at the hit is about half a pixel's footprint.
+  const float lineWidth = max(4.0f * rayInteraction.coneRadius, 1e-6f);
+
+  vec3 color = vec3(0.7f, 0.7f, 0.7f);
+  float nearestEdge = 1e30f;
+  [unroll]
+  for (uint e = 0; e < 3; ++e)
+  {
+    // Edge e lies opposite vertex e, so the distance to it is bary[e] times the triangle's height over it.
+    const float edgeLength = length(worldPositions[(e + 2) % 3] - worldPositions[(e + 1) % 3]);
+    const float edgeDistance = edgeLength > 0.0f ? bary[e] * doubleArea / edgeLength : 0.0f;
+    if (edgeDistance >= lineWidth || edgeDistance >= nearestEdge)
+    {
+      continue;
+    }
+    nearestEdge = edgeDistance;
+    const uint neighbourWord = data.neighbour(triIndex, e);
+    if (SCCR_SHELL_NEIGHBOUR_IS_BOUNDARY(neighbourWord))
+    {
+      color =
+        neighbourWord == SCCR_SHELL_NEIGHBOUR_NON_MANIFOLD ? vec3(1.0f, 0.5f, 0.0f) :
+        neighbourWord == SCCR_SHELL_NEIGHBOUR_FLIPPED ? vec3(0.2f, 0.4f, 1.0f) :
+        neighbourWord == SCCR_SHELL_NEIGHBOUR_DEGENERATE ? vec3(1.0f, 0.9f, 0.0f) :
+                                                           vec3(1.0f, 0.05f, 0.05f);
+      continue;
+    }
+    const uint neighbourTriangle = neighbourWord & SCCR_SHELL_NEIGHBOUR_TRIANGLE_MASK;
+    const uint neighbourSlot = neighbourWord >> SCCR_SHELL_NEIGHBOUR_SLOT_SHIFT;
+    // The neighbour runs along the shared edge the other way, so its (slot + 2) end is our (e + 1) end.
+    const uint neighbourFrom = sccrShellLoadVertexIndex(surface, neighbourTriangle * 3 + (neighbourSlot + 2) % 3);
+    const uint neighbourTo = sccrShellLoadVertexIndex(surface, neighbourTriangle * 3 + (neighbourSlot + 1) % 3);
+    const bool sharesVertices = neighbourFrom == vertexIndices[(e + 1) % 3] && neighbourTo == vertexIndices[(e + 2) % 3];
+    color = sharesVertices ? vec3(0.3f, 0.3f, 0.3f) : vec3(0.05f, 0.9f, 0.05f);
+  }
+
+  // Corner dots, three line widths across.
+  [unroll]
+  for (uint k = 0; k < 3; ++k)
+  {
+    const float edgeA = length(worldPositions[(k + 1) % 3] - worldPositions[k]);
+    const float edgeB = length(worldPositions[(k + 2) % 3] - worldPositions[k]);
+    const float cornerExtent = max(min(edgeA, edgeB), 1e-6f);
+    if ((1.0f - bary[k]) * cornerExtent >= 3.0f * lineWidth)
+    {
+      continue;
+    }
+    const uint vertexFlags = data.vertexWords(vertexIndices[k]).y;
+    if ((vertexFlags & SCCR_SHELL_VERTEX_FLAG_UNWELDED) != 0u)
+    {
+      color = vec3(1.0f, 0.0f, 1.0f);
+    }
+    else if ((vertexFlags & SCCR_SHELL_VERTEX_FLAG_DEGENERATE) != 0u)
+    {
+      color = vec3(1.0f, 0.9f, 0.0f);
+    }
+  }
+  return color;
+}

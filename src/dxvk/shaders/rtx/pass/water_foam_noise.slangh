@@ -1,0 +1,22 @@
+#pragma once
+
+// Foam noise, shared by every pass that needs the foam field's shape.
+//
+// Split out of water_foam_common.slangh on purpose: that header also declares ray
+// tracing resources (topLevelAS, surfaces, cb), so a pass which runs before the
+// frame's ray tracing constants are uploaded cannot include it. The display surface
+// generator is exactly such a pass, and it must compute the same erosion and the same
+// UV drift the composite used, or the foam line visibly changes shape.
+
+float2 foamHash(float2 p) {
+  float3 q = frac(float3(p.x, p.y, p.x) * float3(0.1031f, 0.1030f, 0.0973f));
+  q += dot(q, q.yzx + 33.33f);
+  return frac((q.xx + q.yz) * q.zy);
+}
+
+float2 foamNoise(float2 p) {
+  float2 c = floor(p), f = frac(p);
+  f = f * f * (3.0f - 2.0f * f);
+  return lerp(lerp(foamHash(c), foamHash(c + float2(1, 0)), f.x),
+    lerp(foamHash(c + float2(0, 1)), foamHash(c + float2(1, 1)), f.x), f.y);
+}

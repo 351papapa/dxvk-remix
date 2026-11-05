@@ -1,0 +1,27 @@
+#pragma once
+struct WaterClipVertex {
+  float3 position;
+  float3 normal;
+  float2 uv;
+  float gap;
+};
+WaterClipVertex waterClipEdge(WaterClipVertex a, WaterClipVertex b) {
+  float t=saturate(a.gap/(a.gap-b.gap));
+  WaterClipVertex v;
+  v.position=lerp(a.position,b.position,t);
+  v.normal=lerp(a.normal,b.normal,t);
+  v.uv=lerp(a.uv,b.uv,t);v.gap=0.0f;
+  return v;
+}
+uint waterClipTriangle(WaterClipVertex a,WaterClipVertex b,WaterClipVertex c,
+    out WaterClipVertex polygon[4]) {
+  WaterClipVertex source[3]={a,b,c};
+  uint count=0;
+  [unroll] for(uint i=0;i<3;++i) {
+    WaterClipVertex p=source[i],q=source[(i+1)%3];
+    bool inside=p.gap>0.0f, nextInside=q.gap>0.0f;
+    if(inside) { polygon[count++]=p; }
+    if(inside!=nextInside) { polygon[count++]=waterClipEdge(p,q); }
+  }
+  return count;
+}

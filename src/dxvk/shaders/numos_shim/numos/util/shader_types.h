@@ -1,0 +1,12 @@
+#pragma once
+
+// NUMOS's shaders include their vendored copies of Remix helpers as numos/util/*.
+// Inside Remix the originals are already in scope, so this include directory (ahead of
+// submodules/numos/shaders on the shader include path) maps each copy onto the Remix header it came
+// from, and NUMOS's host functions compile against the same definitions as the rest of the shader.
+
+#include "rtx/utility/shader_types.h"
+
+// NUMOS wraps its shared structs in namespace numos on the C++ side only.
+#define NUMOS_SHARED_BEGIN
+#define NUMOS_SHARED_END

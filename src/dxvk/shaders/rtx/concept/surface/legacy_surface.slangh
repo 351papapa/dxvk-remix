@@ -1,0 +1,271 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The LegacySurface module. It decodes the 80 B legacy side record (legacy_surface_shared.h) and holds the same
+// fixed-function logic as the sites that read the Surface record directly:
+// - the clip plane test (surface_interaction.slangh isSurfaceClipped)
+// - the spritesheet adjustment (surface_interaction.slangh calcSpriteSheetAdjustment / calcSpritesheetValues)
+// - the texture transform of loaded or generated texture coordinates (surfaceInteractionCreate's texgen block)
+// - the texture-stage operations on albedo, emissive and opacity (opaque_surface_material_interaction.slangh
+//   opaqueSurfaceMaterialApplyTextureOperations, without the alpha test and blend emulation, which are core)
+// The record is read from cb.legacySurfaceTable (0xFFFFFFFF = no legacy surface this frame).
+// core_material_check.comp.slang and the core-material direct variants (visibility_core_material.slangh) include it.
+// The _legacy forms (SURFACE_LEGACY_MODULE=1) read the whole record, and the _core forms only the TextureOps part.
+// A kernel declares the uint4 alias where it is used, as for the core record (core_surface_material.slangh).
+
+#include "rtx/utility/shader_types.h"
+#include "rtx/utility/packing.slangh"
+#include "rtx/utility/color.slangh"
+#include "rtx/concept/surface/surface_shared.h"
+#include "rtx/concept/surface/legacy_surface_shared.h"
+#include "rtx/concept/surface/surface.h"
+#include "rtx/concept/surface_material/opaque_surface_material_blending.slangh"
+
+struct LegacySurface
+{
+  uint4 data[LEGACY_SURFACE_ROWS];
+
+  uint loadDword(uint byteOffset)
+  {
+    return data[byteOffset >> 4][(byteOffset >> 2) & 3u];
+  }
+
+  uint loadU8(uint byteOffset)
+  {
+    return (loadDword(byteOffset) >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+  }
+
+  uint loadU16(uint byteOffset)
+  {
+    return (loadDword(byteOffset) >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
+  }
+
+  // Same 4x2 matrix as Surface.textureTransform (rows data11, data12).
+  property mat4x2 textureTransform
+  {
+    get { return mat4x2(asfloat(data[0]), asfloat(data[1])); }
+  }
+  // The eye basis, aliased with the texture transform (isEye).
+  property vec3 eyeBasisU { get { return asfloat(data[0].xyz); } }
+  property vec3 eyeBasisV { get { return asfloat(data[1].xyz); } }
+  property vec4 clipPlane { get { return asfloat(data[2]); } }
+  property uint tFactor { get { return loadDword(LEGACY_SURFACE_OFFSET_TFACTOR); } }
+  property uint textureFlags { get { return loadDword(LEGACY_SURFACE_OFFSET_TEXTURE_FLAGS); } }
+
+  property uint8_t textureColorArg1Source { get { return uint8_t(textureFlags & 0x3); } }
+  property uint8_t textureColorArg2Source { get { return uint8_t((textureFlags >> 2) & 0x3); } }
+  property uint8_t textureColorOperation { get { return uint8_t((textureFlags >> 4) & 0x7); } }
+  property uint8_t textureAlphaArg1Source { get { return uint8_t((textureFlags >> 7) & 0x3); } }
+  property uint8_t textureAlphaArg2Source { get { return uint8_t((textureFlags >> 9) & 0x3); } }
+  property uint8_t textureAlphaOperation { get { return uint8_t((textureFlags >> 11) & 0x7); } }
+  property uint8_t texcoordGenerationMode { get { return uint8_t((textureFlags >> LEGACY_SURFACE_TEXGEN_SHIFT) & LEGACY_SURFACE_TEXGEN_MASK); } }
+  property bool isEye { get { return (textureFlags & LEGACY_SURFACE_FLAG_IS_EYE) != 0; } }
+  property bool isTextureFactorBlend { get { return (textureFlags & LEGACY_SURFACE_FLAG_TEXTURE_FACTOR_BLEND) != 0; } }
+  property bool isVertexColorBakedLighting { get { return (textureFlags & LEGACY_SURFACE_FLAG_VERTEX_COLOR_BAKED_LIGHTING) != 0; } }
+  property bool isClipPlaneEnabled { get { return (textureFlags & LEGACY_SURFACE_FLAG_CLIP_PLANE) != 0; } }
+  property bool skipSurfaceInteractionSpritesheetAdjustment { get { return (textureFlags & LEGACY_SURFACE_FLAG_SKIP_SPRITESHEET) != 0; } }
+
+  property uint8_t spriteSheetRows { get { return uint8_t(loadU8(LEGACY_SURFACE_OFFSET_SPRITESHEET)); } }
+  property uint8_t spriteSheetCols { get { return uint8_t(loadU8(LEGACY_SURFACE_OFFSET_SPRITESHEET + 1)); } }
+  property uint8_t spriteSheetFPS { get { return uint8_t(loadU8(LEGACY_SURFACE_OFFSET_SPRITESHEET + 2)); } }
+  property uint secondaryTextureIndex { get { return loadU16(LEGACY_SURFACE_OFFSET_SECONDARY_TEXTURE); } }
+  property vec3 eyeOrigin { get { return asfloat(data[4].xyz); } }
+};
+
+// isSurfaceClipped.
+bool legacySurfaceIsClipped(LegacySurface legacy, vec3 position)
+{
+  if (!legacy.isClipPlaneEnabled)
+  {
+    return false;
+  }
+
+  const float clipDistance = dot(legacy.clipPlane.xyz, position) + legacy.clipPlane.w;
+
+  return clipDistance < 0.0;
+}
+
+// calcSpritesheetValues.
+void legacySurfaceSpritesheetValues(
+  float timeSinceStartSeconds,
+  uint8_t spriteSheetRows,
+  uint8_t spriteSheetCols,
+  uint8_t spriteSheetFPS,
+  inout vec2 uvSize,
+  inout vec2 uvBias)
+{
+  const uint numSprites = uint(spriteSheetCols) * uint(spriteSheetRows);
+  const uint frame = (uint(timeSinceStartSeconds * spriteSheetFPS)) % numSprites;
+
+  uvSize = vec2(1.0f / spriteSheetCols, 1.0f / spriteSheetRows);
+  uvBias = vec2(frame % spriteSheetCols, frame / spriteSheetCols) * uvSize;
+}
+
+// calcSpriteSheetAdjustment, for a surface that does not skip it.
+void legacySurfaceSpritesheetAdjustment(
+  LegacySurface legacy,
+  inout vec2 textureCoordinates,
+  inout vec2 textureGradientX,
+  inout vec2 textureGradientY,
+  float timeSinceStartSeconds)
+{
+  if (legacy.skipSurfaceInteractionSpritesheetAdjustment || legacy.spriteSheetFPS == 0)
+  {
+    return;
+  }
+  vec2 uvSize, uvBias;
+  legacySurfaceSpritesheetValues(
+    timeSinceStartSeconds,
+    legacy.spriteSheetRows,
+    legacy.spriteSheetCols,
+    legacy.spriteSheetFPS,
+    uvSize,
+    uvBias);
+
+  textureCoordinates = uvBias + frac(textureCoordinates) * uvSize;
+  textureGradientX *= uvSize;
+  textureGradientY *= uvSize;
+}
+
+// The texture transform of a loaded (or texgen-generated) texture coordinate, as surfaceInteractionCreate applies it.
+vec2 legacySurfaceTransformTexcoord(LegacySurface legacy, vec4 rawTextureCoordinate)
+{
+  return mul(legacy.textureTransform, rawTextureCoordinate);
+}
+
+// The TextureOps part of the module. It needs only bytes 48-55 of the record (tFactor and the texture flags dword: ops,
+// texture-factor blend, vertex-colour baked lighting), one 32 B sector. A kernel that applies texture ops without the
+// rest of the LegacySurface module (the _core direct variants) loads just those two words, and only for surfaces with
+// CORE_MATERIAL_TAIL_HAS_TEXTURE_OPS.
+struct LegacyTextureOps
+{
+  uint tFactor;      // bytes 48-51
+  uint textureFlags; // bytes 52-55
+
+  property uint8_t textureColorArg1Source { get { return uint8_t(textureFlags & 0x3); } }
+  property uint8_t textureColorArg2Source { get { return uint8_t((textureFlags >> 2) & 0x3); } }
+  property uint8_t textureColorOperation { get { return uint8_t((textureFlags >> 4) & 0x7); } }
+  property uint8_t textureAlphaArg1Source { get { return uint8_t((textureFlags >> 7) & 0x3); } }
+  property uint8_t textureAlphaArg2Source { get { return uint8_t((textureFlags >> 9) & 0x3); } }
+  property uint8_t textureAlphaOperation { get { return uint8_t((textureFlags >> 11) & 0x7); } }
+  property bool isTextureFactorBlend { get { return (textureFlags & LEGACY_SURFACE_FLAG_TEXTURE_FACTOR_BLEND) != 0; } }
+  property bool isVertexColorBakedLighting { get { return (textureFlags & LEGACY_SURFACE_FLAG_VERTEX_COLOR_BAKED_LIGHTING) != 0; } }
+};
+
+// The two words at LEGACY_SURFACE_OFFSET_TFACTOR / LEGACY_SURFACE_OFFSET_TEXTURE_FLAGS.
+LegacyTextureOps legacyTextureOpsCreate(uint tFactor, uint textureFlags)
+{
+  LegacyTextureOps ops;
+  ops.tFactor = tFactor;
+  ops.textureFlags = textureFlags;
+  return ops;
+}
+
+LegacyTextureOps legacySurfaceGetTextureOps(LegacySurface legacy)
+{
+  return legacyTextureOpsCreate(legacy.tFactor, legacy.textureFlags);
+}
+
+// opaqueSurfaceMaterialApplyTextureOperations without the alpha test / blend emulation (calcOpaqueSurfaceMaterialOpacity,
+// core) and the ignore-alpha flag (material), on the TextureOps part. vertexColorStrength is cb.vertexColorStrength.
+void legacyTextureOpsApply(
+  LegacyTextureOps legacy,
+  inout vec4 vertexColor,
+  float vertexColorStrength,
+  inout vec3 albedo,
+  inout vec3 emissiveColor,
+  inout float opacity)
+{
+  vec4 tFactor = unorm4x8ToFloat4x32(legacy.tFactor).bgra;
+
+  if (legacy.isVertexColorBakedLighting) {
+    vertexColor.rgb = max(vertexColor.rgb, vec3(1.0 / 255.0));
+    float maxColor = max(vertexColor.r, max(vertexColor.g, vertexColor.b));
+    vertexColor.rgb /= maxColor;
+    vertexColor.rgb = mix(vec3(1), vertexColor.rgb, vertexColorStrength);
+  }
+
+  vec3 textureArg1 = vec3(1.0), textureArg2 = vec3(1.0);
+  chooseTextureArgument(textureArg1, legacy.textureColorArg1Source, albedo, vertexColor.rgb, tFactor.rgb, vec3(1.0));
+  chooseTextureArgument(textureArg2, legacy.textureColorArg2Source, albedo, vertexColor.rgb, tFactor.rgb, vec3(1.0));
+  chooseTextureOperationColor(albedo, legacy.textureColorOperation, textureArg1, textureArg2);
+  if (legacy.isTextureFactorBlend) {
+    albedo *= tFactor.rgb;
+  }
+
+  chooseTextureArgument(textureArg1, legacy.textureColorArg1Source, emissiveColor, vertexColor.rgb, tFactor.rgb, vec3(1.0));
+  chooseTextureArgument(textureArg2, legacy.textureColorArg2Source, emissiveColor, vertexColor.rgb, tFactor.rgb, vec3(1.0));
+  chooseTextureOperationColor(emissiveColor, legacy.textureColorOperation, textureArg1, textureArg2);
+  if (legacy.isTextureFactorBlend) {
+    emissiveColor *= tFactor.rgb;
+  }
+
+  float textureAlphaArg1, textureAlphaArg2;
+  chooseTextureArgument(textureAlphaArg1, legacy.textureAlphaArg1Source, opacity, vertexColor.a, tFactor.a, opacity);
+  chooseTextureArgument(textureAlphaArg2, legacy.textureAlphaArg2Source, opacity, vertexColor.a, tFactor.a, float(1.0f));
+  chooseTextureOperationAlpha(opacity, legacy.textureAlphaOperation, textureAlphaArg1, textureAlphaArg2);
+}
+
+// The same on the whole record.
+void legacySurfaceApplyTextureOperations(
+  LegacySurface legacy,
+  inout vec4 vertexColor,
+  float vertexColorStrength,
+  inout vec3 albedo,
+  inout vec3 emissiveColor,
+  inout float opacity)
+{
+  legacyTextureOpsApply(legacySurfaceGetTextureOps(legacy), vertexColor, vertexColorStrength, albedo, emissiveColor, opacity);
+}
+
+// The two per-surface bits from a Surface record, as the host sets them (rtSurfaceHasTextureOps and
+// rtSurfaceHasLegacyState, rtx_materials.h), for the record checks.
+bool legacySurfaceStateHasTextureOps(Surface surface)
+{
+  const uint colorArg1 = uint(surface.textureColorArg1Source);
+  const uint colorArg2 = uint(surface.textureColorArg2Source);
+  const uint alphaArg1 = uint(surface.textureAlphaArg1Source);
+  const uint alphaArg2 = uint(surface.textureAlphaArg2Source);
+  const bool textureOps =
+    colorArg1 != uint(RtTextureArgSource::Texture) || colorArg2 != uint(RtTextureArgSource::None) ||
+    uint(surface.textureColorOperation) != uint(DxvkRtTextureOperation::Modulate) ||
+    alphaArg1 != uint(RtTextureArgSource::Texture) || alphaArg2 != uint(RtTextureArgSource::None) ||
+    uint(surface.textureAlphaOperation) != uint(DxvkRtTextureOperation::SelectArg1);
+  const uint tFactor = uint(RtTextureArgSource::TFactor);
+  const uint vertexColor = uint(RtTextureArgSource::VertexColor0);
+  const bool factorOrColorArg =
+    colorArg1 == tFactor || colorArg1 == vertexColor || colorArg2 == tFactor || colorArg2 == vertexColor ||
+    alphaArg1 == tFactor || alphaArg1 == vertexColor || alphaArg2 == tFactor || alphaArg2 == vertexColor;
+  return textureOps || factorOrColorArg;
+}
+
+bool legacySurfaceStateHasOther(Surface surface)
+{
+  const bool eye = surface.isEye;
+  // The eye basis aliases the texture transform rows.
+  const bool textureTransform = !eye &&
+    (any(asfloat(surface.data11) != vec4(1.0, 0.0, 0.0, 0.0)) || any(asfloat(surface.data12) != vec4(0.0, 1.0, 0.0, 0.0)));
+  const bool spritesheet = surface.spriteSheetFPS != 0 || surface.spriteSheetRows != 1 || surface.spriteSheetCols != 1;
+  return surface.isTextureFactorBlend || surface.texcoordGenerationMode != 0 || textureTransform || spritesheet ||
+         surface.isClipPlaneEnabled || eye;
+}

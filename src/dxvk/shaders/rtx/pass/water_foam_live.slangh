@@ -1,0 +1,115 @@
+#pragma once
+
+layout(binding = 228) StructuredBuffer<FoamSurfaceVertex> LiveWaterVertices;
+
+float foamLiveDensity(float density, float4 heights, float surfaceHeight) {
+  float depthFade = heights.w > 0.5f ? smoothstep(0.025f, 0.15f, surfaceHeight - heights.z) : 1.0f;
+  return density * depthFade;
+}
+
+FoamSurfaceVertex foamWaterVertex(FoamSurfaceVertex a, FoamSurfaceVertex b,
+    FoamSurfaceVertex c, float2 bary) {
+  FoamSurfaceVertex v;
+  v.position = a.position * (1.0f-bary.x-bary.y) + b.position*bary.x + c.position*bary.y;
+  v.normal = normalize(a.normal * (1.0f-bary.x-bary.y) + b.normal*bary.x + c.normal*bary.y);
+  float2 world = v.position.xy;
+  float2 grid = (world-args.gridOrigin)/args.gridSpacing;
+  float edge = min(min(grid.x,grid.y),min(float(args.sheetSide)-grid.x,float(args.sheetSide)-grid.y));
+  int2 cell = clamp(int2(floor(grid)),int2(0),int2(args.sheetSide-1));
+  float2 f = saturate(grid-float2(cell));
+  float4 s00 = FoamDensity.Load(int3(cell, 0)), s10 = FoamDensity.Load(int3(cell + int2(1, 0), 0));
+  float4 s01 = FoamDensity.Load(int3(cell + int2(0, 1), 0)), s11 = FoamDensity.Load(int3(cell + int2(1, 1), 0));
+  float4 state = lerp(lerp(s00, s10, f.x), lerp(s01, s11, f.x), f.y);
+  float4 h00 = FoamHeight.Load(int3(cell, 0)), h10 = FoamHeight.Load(int3(cell + int2(1, 0), 0));
+  float4 h01 = FoamHeight.Load(int3(cell + int2(0, 1), 0)), h11 = FoamHeight.Load(int3(cell + int2(1, 1), 0));
+  // Filter covered density, so partial terrain support cannot switch off the depth fade.
+  float coveredDensity = lerp(
+    lerp(foamLiveDensity(s00.x, h00, v.position.z), foamLiveDensity(s10.x, h10, v.position.z), f.x),
+    lerp(foamLiveDensity(s01.x, h01, v.position.z), foamLiveDensity(s11.x, h11, v.position.z), f.x), f.y);
+  float scale = max(args.textureScale,0.1f), detailScale = 5.0f/scale;
+  float noise = foamNoise(world*(0.42f*detailScale)+float2(args.time*0.13f,-args.time*0.09f)).x;
+  float fine = foamNoise(world*(1.1f*detailScale)+float2(-args.time*0.21f,args.time*0.16f)).x;
+  float density = foamDensityToCoverage(coveredDensity);
+  float erosion = smoothstep(0.0f,0.65f,density-(noise*0.38f+fine*0.18f));
+  float coverage = density*erosion*smoothstep(1.0f,1.0f+args.edgeFadeWidth,edge)*args.coverageScale;
+  uint alpha = isfinite(coverage) ? uint(saturate(coverage)*255.0f+0.5f) : 0u;
+  float2 rotated = float2(0.8f*world.x-0.6f*world.y,0.6f*world.x+0.8f*world.y);
+  float2 warp = foamNoise(world*(0.09f*detailScale))-0.5f;
+  v.texcoord = rotated/scale+warp*0.65f+float2(-0.045f,0.035f)*args.time
+    -state.yz*0.14f+(float2(noise,fine)-0.5f)*0.22f;
+  // A constant translation preserves the water plane and all shared edges.
+  v.position.z += args.surfaceOffset;
+  v.color = (alpha<<24)|0x00ffffffu;
+  return v;
+}
+
+void foamWaterTriangle(uint dst, FoamSurfaceVertex a, FoamSurfaceVertex b, FoamSurfaceVertex c,
+    float2 p, float2 q, float2 r) {
+  FoamSurfaceVertex x=foamWaterVertex(a,b,c,p),y=foamWaterVertex(a,b,c,q),z=foamWaterVertex(a,b,c,r);
+  if (((x.color|y.color|z.color)>>24)==0u) {
+    float3 anchor=x.position;
+    x.position=anchor;y.position=anchor;z.position=anchor;
+  }
+  FoamSheetVertices[dst]=x;FoamSheetVertices[dst+1]=y;FoamSheetVertices[dst+2]=z;
+}
+
+#ifdef FOAM_TRIANGLE_PAIR_REUSE
+// Parameters are values: collapsing one triangle must not alter the original q/r
+// evaluations used by its neighbour. Preserve every non-position attribute.
+void foamWriteEvaluatedTriangle(uint dst, FoamSurfaceVertex x,
+    FoamSurfaceVertex y, FoamSurfaceVertex z) {
+  if (((x.color|y.color|z.color)>>24)==0u) {
+    float3 anchor=x.position;
+    x.position=anchor;y.position=anchor;z.position=anchor;
+  }
+  FoamSheetVertices[dst]=x;FoamSheetVertices[dst+1]=y;FoamSheetVertices[dst+2]=z;
+}
+#endif
+
+void foamEmitWater(uint triangle) {
+  if (triangle>=WATER_FOAM_LIVE_TRIANGLES) { return; }
+  bool coarse=triangle<WATER_FOAM_COARSE_TRIANGLES;
+  uint subdivisions=coarse?WATER_FOAM_COARSE_SUBDIVISIONS:1u;
+  uint count=subdivisions*subdivisions*3u;
+  uint local=coarse?triangle:triangle-WATER_FOAM_COARSE_TRIANGLES;
+  int side=coarse?60:90;
+  int2 cell=int2((local/4u)%uint(side),(local/4u)/uint(side));
+  float spacing=coarse?LiveWaterInput[3]:LiveWaterInput[9];
+  float2 origin=float2(LiveWaterInput[0],LiveWaterInput[1])+(coarse?0.0f:LiveWaterInput[8]);
+  // Correspondence follows world cells when the player moves the simulation window.
+  int2 worldCell=int2(round(origin/spacing))+cell;
+  uint2 slot=uint2(waterFoamWorldCellSlot(worldCell.x,uint(side)),
+    waterFoamWorldCellSlot(worldCell.y,uint(side)));
+  uint slotTriangle=(uint(slot.y)*uint(side)+uint(slot.x))*4u+local%4u;
+  uint dst=WATER_FOAM_AUTHORED_VERTICES+(coarse?slotTriangle*count:
+    WATER_FOAM_COARSE_VERTICES+slotTriangle*3u);
+  FoamSurfaceVertex a=LiveWaterVertices[triangle*3u];
+  FoamSurfaceVertex b=LiveWaterVertices[triangle*3u+1u];
+  FoamSurfaceVertex c=LiveWaterVertices[triangle*3u+2u];
+  float3 crossProduct=cross(b.position-a.position,c.position-a.position);
+  if (dot(crossProduct,crossProduct)<1e-12f) {
+    float3 anchor=a.position+float3(0,0,args.surfaceOffset);
+    [loop] for(uint i=0;i<count;++i) { foamWriteVertex(dst+i,anchor,float3(0,0,1),float2(0),0u); }
+    return;
+  }
+  [loop] for(uint y=0;y<subdivisions;++y) {
+    [loop] for(uint x=0;x<subdivisions-y;++x) {
+      float2 p=float2(x,y)/float(subdivisions),q=float2(x+1,y)/float(subdivisions),r=float2(x,y+1)/float(subdivisions);
+#ifdef FOAM_TRIANGLE_PAIR_REUSE
+      FoamSurfaceVertex vp=foamWaterVertex(a,b,c,p);
+      FoamSurfaceVertex vq=foamWaterVertex(a,b,c,q);
+      FoamSurfaceVertex vr=foamWaterVertex(a,b,c,r);
+      foamWriteEvaluatedTriangle(dst,vp,vq,vr);dst+=3u;
+      if(x+y+1u<subdivisions) {
+        FoamSurfaceVertex vs=foamWaterVertex(a,b,c,float2(x+1,y+1)/float(subdivisions));
+        foamWriteEvaluatedTriangle(dst,vq,vs,vr);dst+=3u;
+      }
+#else
+      foamWaterTriangle(dst,a,b,c,p,q,r);dst+=3u;
+      if(x+y+1u<subdivisions) {
+        foamWaterTriangle(dst,a,b,c,q,float2(x+1,y+1)/float(subdivisions),r);dst+=3u;
+      }
+#endif
+    }
+  }
+}

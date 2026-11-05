@@ -1,0 +1,22 @@
+#pragma once
+
+float2 causticReflectedReach(float heightLimit, float lightHeight) {
+  float traceLimit = min(500.0f, heightLimit / max(lightHeight, 0.001f));
+  return float2(traceLimit, min(heightLimit, traceLimit * lightHeight));
+}
+
+float causticDepthFade(float depth, float limit, float fadeStart) {
+  return smoothstep(0.03f, 0.2f, depth)
+    * (1.0f - smoothstep(limit * fadeStart, limit, depth));
+}
+
+// Solve the planar reflection; geometry rays still validate both legs.
+float3 causticReflectedInterfacePoint(float3 receiver, float3 emitter, float3 up, float waterHeight) {
+  float receiverHeight = dot(receiver, up);
+  float depth = abs(receiverHeight - waterHeight);
+  float airHeight = max(dot(emitter, up) - waterHeight, 0.001f);
+  float3 horizontal = emitter - receiver - up * dot(emitter - receiver, up);
+  float span = length(horizontal);
+  float along = span * depth / (depth + airHeight);
+  return receiver + up * (waterHeight - receiverHeight) + horizontal * (along / max(span, 1e-6f));
+}

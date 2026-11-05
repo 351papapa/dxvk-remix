@@ -1,0 +1,842 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// SCCR (rtx.displacement.mode = SCCR, Silhouette Curvature-Corrected Cone Relief). Included by
+// opaque_surface_material_interaction.slangh under OPAQUE_MATERIAL_USE_POM, after pomGetNumSamples.
+// Depth 0 is the top of the height field (white) and 1 its bottom, as in pomSampleHeight. A march position is
+// (uv, depth), and a ray advances by float3(dirUv, 1) per unit of depth.
+
+// The per-geometry shell data and its debug view.
+#include "rtx/concept/surface_material/sccr_shell.slangh"
+
+interface IPomConeField
+{
+  // Returns the depth at uv in x, and the cone ratio there in UV per unit of depth in y (0 when unknown).
+  float2 sampleDepthCone(float2 uv);
+};
+
+// The material's height texture. With a cone map it is PomConeMapManager's derived texture (R = height,
+// G = sqrt(cone ratio)), and without one G is ignored. lod is 0 except for coarse self-shadows, which then clear
+// hasCone, since the cones bound mip 0 only.
+struct PomSingleConeField : IPomConeField
+{
+  uint16_t textureIndex;
+  uint16_t samplerIndex;
+  bool hasCone;
+  float lod;
+
+  float2 sampleDepthCone(float2 uv)
+  {
+    const float2 heightCone = textures[nonuniformEXT(uint(textureIndex))].SampleLevel(samplers[nonuniformEXT(uint(samplerIndex))], uv, lod).rg;
+    return float2(1.0f - heightCone.x, hasCone ? heightCone.y * heightCone.y : 0.0f);
+  }
+};
+
+// The sign bit of displaceIn marks a height texture with a cone map (RtOpaqueSurfaceMaterial::writeGPUData).
+// It is read as bits, since displaceIn can be -0.
+bool pomMaterialHasConeMap(OpaqueSurfaceMaterial opaqueSurfaceMaterial)
+{
+  return (asuint16(opaqueSurfaceMaterial.displaceIn) & uint16_t(0x8000u)) != uint16_t(0u);
+}
+
+PomSingleConeField pomSingleConeFieldCreate(OpaqueSurfaceMaterial opaqueSurfaceMaterial)
+{
+  PomSingleConeField field;
+  field.textureIndex = opaqueSurfaceMaterial.heightTextureIndex;
+  field.samplerIndex = opaqueSurfaceMaterial.samplerIndex;
+  field.hasCone = pomMaterialHasConeMap(opaqueSurfaceMaterial);
+  field.lod = 0.0f;
+  return field;
+}
+
+// Curvature correction (rtx.displacement.enableCurvatureCorrection): the quadratic term of the smooth base surface
+// (surface_interaction_sccr.slangh) around the hit, as a field offset of 0.5 d^T Q d in depth, with d = uv - origin.
+// sccrPrimaryRay folds the base's height and slope into the ray itself. limit bounds |offset|, since the quadratic is
+// an extrapolation beyond the triangle, and 0 leaves the field unchanged.
+struct SccrBaseCurve
+{
+  float2 origin;
+  float3 quadric; // (uu, uv, vv) of Q, in depth per UV^2.
+  float limit;
+};
+
+SccrBaseCurve sccrBaseCurveFlat(float2 origin)
+{
+  SccrBaseCurve curve;
+  curve.origin = origin;
+  curve.quadric = float3(0.0f, 0.0f, 0.0f);
+  curve.limit = 0.0f;
+  return curve;
+}
+
+// A field seen from a ray bent by an SccrBaseCurve. The offset's slope narrows the cone, c' = 1 / (1/c + |grad|).
+// This is exact for the slope at the sample and approximate where the slope grows within a step.
+struct SccrCurvedField<Field : IPomConeField> : IPomConeField
+{
+  Field field;
+  SccrBaseCurve curve;
+
+  float2 sampleDepthCone(float2 uv)
+  {
+    float2 depthCone = field.sampleDepthCone(uv);
+    if (curve.limit <= 0.0f)
+    {
+      return depthCone;
+    }
+    const float2 d = uv - curve.origin;
+    const float2 gradient = float2(curve.quadric.x * d.x + curve.quadric.y * d.y, curve.quadric.y * d.x + curve.quadric.z * d.y);
+    const float offset = 0.5f * dot(d, gradient);
+    const float clampedOffset = clamp(offset, -curve.limit, curve.limit);
+    if (depthCone.y > 0.0f && clampedOffset == offset)
+    {
+      depthCone.y = depthCone.y / (1.0f + depthCone.y * length(gradient));
+    }
+    return float2(depthCone.x - clampedOffset, depthCone.y);
+  }
+};
+
+// Marches from start (start.z < maxDepth) to the first crossing of the field in at most maxSteps steps, none past
+// maxDepth. The first coneSteps steps are relaxed cone steps (GPU Gems 3, ch. 18) where the cone is known, never shorter
+// than minStep, and the rest are linear steps of minStep. A relaxed cone step crosses the field at most once, so the
+// crossing is refined over the last step by at most binarySteps steps: bisections, a false-position step, then a secant.
+// refinePrecision (in depth, 0 for none) ends the bisections early, without the false-position step.
+// crossed is false when the march reached maxDepth or ran out of steps, and the position is then where it stopped.
+float3 pomConeStepMarchRefined<Field : IPomConeField>(
+  Field field,
+  float3 start,
+  float2 dirUv,
+  float minStep,
+  uint coneSteps,
+  uint maxSteps,
+  uint binarySteps,
+  float refinePrecision,
+  float maxDepth,
+  out bool crossed,
+  inout uint iterations)
+{
+  const float rayRatio = length(dirUv);
+  float3 position = start;
+  float gap = 0.0f; // The field's depth minus the ray's, positive above the field.
+  float3 prevPosition = start;
+  float prevGap = 0.0f;
+  bool hasPrev = false;
+  crossed = false;
+  for (uint i = 0; i < maxSteps; ++i)
+  {
+    const float2 depthCone = field.sampleDepthCone(position.xy);
+    gap = depthCone.x - position.z;
+    if (gap <= 0.0f)
+    {
+      crossed = true;
+      break;
+    }
+    if (position.z >= maxDepth)
+    {
+      break;
+    }
+    float advance = minStep;
+    if (i < coneSteps && depthCone.y > 0.0f)
+    {
+      advance = max(depthCone.y * gap / (rayRatio + depthCone.y), minStep);
+    }
+    advance = min(advance, maxDepth - position.z);
+    prevPosition = position;
+    prevGap = gap;
+    hasPrev = true;
+    position += float3(dirUv, 1.0f) * advance;
+    iterations++;
+  }
+
+  if (!crossed || !hasPrev)
+  {
+    return position;
+  }
+
+  float3 above = prevPosition;
+  float aboveGap = prevGap;
+  float3 below = position;
+  float belowGap = gap;
+  // The last refinement step samples at the secant between the bracket ends instead of the middle. The field is
+  // bilinear per texel, so that sample lands next to the crossing.
+  uint bisections = binarySteps > 0u ? binarySteps - 1u : 0u;
+  bool falsePosition = binarySteps > 0u;
+  if (refinePrecision > 0.0f)
+  {
+    const float bracket = below.z - above.z;
+    const uint needed = bracket > refinePrecision ? uint(ceil(log2(bracket / refinePrecision))) : 0u;
+    if (needed <= bisections)
+    {
+      bisections = needed;
+      falsePosition = false;
+    }
+  }
+  for (uint j = 0; j < bisections; ++j)
+  {
+    const float3 middle = 0.5f * (above + below);
+    const float middleGap = field.sampleDepthCone(middle.xy).x - middle.z;
+    if (middleGap > 0.0f)
+    {
+      above = middle;
+      aboveGap = middleGap;
+    }
+    else
+    {
+      below = middle;
+      belowGap = middleGap;
+    }
+  }
+  iterations += bisections;
+  if (falsePosition)
+  {
+    const float3 secant = lerp(above, below, saturate(aboveGap / max(aboveGap - belowGap, 1e-6f)));
+    const float secantGap = field.sampleDepthCone(secant.xy).x - secant.z;
+    if (secantGap > 0.0f)
+    {
+      above = secant;
+      aboveGap = secantGap;
+    }
+    else
+    {
+      below = secant;
+      belowGap = secantGap;
+    }
+    iterations++;
+  }
+  return lerp(above, below, saturate(aboveGap / max(aboveGap - belowGap, 1e-6f)));
+}
+
+// pomConeStepMarchRefined without a refinePrecision.
+float3 pomConeStepMarch<Field : IPomConeField>(
+  Field field,
+  float3 start,
+  float2 dirUv,
+  float minStep,
+  uint coneSteps,
+  uint maxSteps,
+  uint binarySteps,
+  float maxDepth,
+  out bool crossed,
+  inout uint iterations)
+{
+  return pomConeStepMarchRefined(
+    field, start, dirUv, minStep, coneSteps, maxSteps, binarySteps, 0.0f, maxDepth, crossed, iterations);
+}
+
+// The self-shadow march: the light ray from start (depth 0) down to the texel at texelDepth, in the steps of
+// pomConeStepMarchRefined. Returns saturate(1.5 - (texelDepth - hit) / minStep) for the first crossing, or 1 without one.
+// The march ends lit on reaching the texel, without sampling it, since the texel lies on the field.
+// It returns early once the crossing's bracket lies wholly in the 0 or the 1 range, with the value full refinement gives.
+float pomConeStepVisibility<Field : IPomConeField>(
+  Field field,
+  float3 start,
+  float2 dirUv,
+  float minStep,
+  uint coneSteps,
+  uint maxSteps,
+  uint binarySteps,
+  float refinePrecision,
+  float texelDepth,
+  inout uint iterations)
+{
+  // Brackets ending at or above occludedDepth give 0, and brackets starting at or below litDepth give 1.
+  const float occludedDepth = texelDepth - 1.5f * minStep;
+  const float litDepth = texelDepth - 0.5f * minStep;
+  const float rayRatio = length(dirUv);
+  float3 position = start;
+  float gap = 1.0f; // The field's depth minus the ray's, positive above the field.
+  float3 above = start;
+  float aboveGap = 0.0f;
+  bool hasPrev = false;
+  for (uint i = 0; i < maxSteps; ++i)
+  {
+    if (position.z >= texelDepth)
+    {
+      return 1.0f;
+    }
+    const float2 depthCone = field.sampleDepthCone(position.xy);
+    gap = depthCone.x - position.z;
+    if (gap <= 0.0f)
+    {
+      break;
+    }
+    float advance = minStep;
+    if (i < coneSteps && depthCone.y > 0.0f)
+    {
+      advance = max(depthCone.y * gap / (rayRatio + depthCone.y), minStep);
+    }
+    const float remaining = texelDepth - position.z;
+    above = position;
+    aboveGap = gap;
+    hasPrev = true;
+    position += float3(dirUv, 1.0f) * min(advance, remaining);
+    // The last step lands exactly on the texel, whatever the rounding of the sum.
+    if (advance >= remaining)
+    {
+      position.z = texelDepth;
+    }
+    iterations++;
+  }
+  if (gap > 0.0f)
+  {
+    // Out of steps without a crossing.
+    return 1.0f;
+  }
+  if (!hasPrev)
+  {
+    // The light ray starts below the field.
+    return saturate(1.5f - (texelDepth - position.z) / minStep);
+  }
+
+  float3 below = position;
+  float belowGap = gap;
+  if (below.z <= occludedDepth)
+  {
+    return 0.0f;
+  }
+  if (above.z >= litDepth)
+  {
+    return 1.0f;
+  }
+  // pomConeStepMarchRefined's refinement, with the same two checks after each step.
+  uint bisections = binarySteps > 0u ? binarySteps - 1u : 0u;
+  bool falsePosition = binarySteps > 0u;
+  if (refinePrecision > 0.0f)
+  {
+    const float bracket = below.z - above.z;
+    const uint needed = bracket > refinePrecision ? uint(ceil(log2(bracket / refinePrecision))) : 0u;
+    if (needed <= bisections)
+    {
+      bisections = needed;
+      falsePosition = false;
+    }
+  }
+  for (uint j = 0; j < bisections; ++j)
+  {
+    const float3 middle = 0.5f * (above + below);
+    const float middleGap = field.sampleDepthCone(middle.xy).x - middle.z;
+    iterations++;
+    if (middleGap > 0.0f)
+    {
+      above = middle;
+      aboveGap = middleGap;
+      if (above.z >= litDepth)
+      {
+        return 1.0f;
+      }
+    }
+    else
+    {
+      below = middle;
+      belowGap = middleGap;
+      if (below.z <= occludedDepth)
+      {
+        return 0.0f;
+      }
+    }
+  }
+  if (falsePosition)
+  {
+    const float3 secant = lerp(above, below, saturate(aboveGap / max(aboveGap - belowGap, 1e-6f)));
+    const float secantGap = field.sampleDepthCone(secant.xy).x - secant.z;
+    iterations++;
+    if (secantGap > 0.0f)
+    {
+      above = secant;
+      aboveGap = secantGap;
+    }
+    else
+    {
+      below = secant;
+      belowGap = secantGap;
+    }
+  }
+  const float3 hit = lerp(above, below, saturate(aboveGap / max(aboveGap - belowGap, 1e-6f)));
+  return saturate(1.5f - (texelDepth - hit.z) / minStep);
+}
+
+// Step LOD (rtx.displacement.enableStepLod, cb.pomStepLodScale, 0 when off). A march only resolves its footprint, a
+// pixel's extent in UV for the view ray or a texel's for shadows. So minStep never goes below one footprint of travel,
+// refinement stops at half a footprint, and a march covering less than kSccrSkipFootprints footprints takes one sample.
+static const float kSccrSkipFootprints = 0.25f;
+
+struct SccrStepLod
+{
+  bool skip;
+  // The shortest step in depth, between the minStep given and maxDepth.
+  float minStep;
+  // In depth, for pomConeStepMarchRefined, or 0 when unknown.
+  float refinePrecision;
+};
+
+// parallaxUv is the UV distance the whole march covers (|dirUv| * maxDepth). scale is footprints per step.
+// A footprintUv or scale of 0 changes nothing.
+SccrStepLod sccrFootprintLod(float parallaxUv, float footprintUv, float maxDepth, float minStep, float scale)
+{
+  SccrStepLod lod;
+  lod.skip = false;
+  lod.minStep = minStep;
+  lod.refinePrecision = 0.0f;
+  if (scale <= 0.0f || footprintUv <= 0.0f)
+  {
+    return lod;
+  }
+  // The march's length in footprints, scaled, so a larger scale takes finer steps.
+  const float footprints = parallaxUv * scale / footprintUv;
+  if (footprints < kSccrSkipFootprints)
+  {
+    lod.skip = true;
+    return lod;
+  }
+  const float footprintDepth = maxDepth / footprints;
+  lod.minStep = min(max(minStep, footprintDepth), maxDepth);
+  lod.refinePrecision = 0.5f * footprintDepth;
+  return lod;
+}
+
+// sccrFootprintLod at rtx.displacement.stepLodScale, which changes nothing when the step LOD is off.
+SccrStepLod sccrStepLod(float parallaxUv, float footprintUv, float maxDepth, float minStep)
+{
+  return sccrFootprintLod(parallaxUv, footprintUv, maxDepth, minStep, cb.pomStepLodScale);
+}
+
+// Coarse self-shadows for indirect light (rtx.displacement.indirectShadowSteps, 0 for off, and
+// indirectShadowFootprintScale). Indirect light is wide and heavily filtered, so its self-shadow is resolved no finer
+// than the ray cone's footprint times the scale, or 1/N of the light ray's parallax with N = indirectShadowSteps.
+// The height is read at the mip whose texel is half that footprint, and the march refines with the final secant only.
+// Direct light on primary surfaces, and every query when the option is 0, pass kSccrFullShadow for full detail.
+static const float kSccrFullShadow = -1.0f;
+
+// The self-shadow footprint argument for an indirect-light query: the ray cone's diameter at the surface in UV.
+// coneRadius is in world units, and pomCoords.z (SharedTextureCoord) is the surface's world units per UV.
+// Returns 0 when either is unknown, so only the step budget applies.
+// Returns kSccrFullShadow outside SCCR or with the option at 0.
+float sccrIndirectShadowFootprint(float coneRadius, float4 pomCoords)
+{
+  if (cb.pomMode != DisplacementMode::SCCR || cb.pomSccrIndirectShadowSteps == 0u)
+  {
+    return kSccrFullShadow;
+  }
+  if (!(coneRadius > 0.0f) || !(pomCoords.z > 0.0f))
+  {
+    return 0.0f;
+  }
+  return 2.0f * coneRadius * cb.pomSccrIndirectShadowFootprintScale / pomCoords.z;
+}
+
+// A self-shadow march's footprint in UV and the mip it reads. coarse is set for an indirect-light query
+// (footprintArg >= 0) with the option on. texelUv is the height map's finest texel in UV, 0 when unknown, and
+// parallaxUv the light ray's UV travel over the whole depth range.
+struct SccrShadowFootprint
+{
+  bool coarse;
+  float footprintUv;
+  float lod;
+};
+
+SccrShadowFootprint sccrShadowFootprint(float footprintArg, float texelUv, float parallaxUv)
+{
+  SccrShadowFootprint footprint;
+  footprint.coarse = footprintArg >= 0.0f && cb.pomSccrIndirectShadowSteps > 0u;
+  footprint.footprintUv = texelUv;
+  footprint.lod = 0.0f;
+  if (!footprint.coarse)
+  {
+    return footprint;
+  }
+  footprint.footprintUv = max(max(footprintArg, parallaxUv / float(cb.pomSccrIndirectShadowSteps)), texelUv);
+  if (texelUv > 0.0f)
+  {
+    // The mip whose texel is half the footprint.
+    footprint.lod = max(log2(footprint.footprintUv / texelUv) - 1.0f, 0.0f);
+  }
+  return footprint;
+}
+
+// A pixel's UV extent along dirUv, from the ray-cone footprint ellipse (textureGradientX / Y), at output resolution
+// when upscaling. Returns 0 when there is no footprint or no direction.
+float sccrViewFootprint(SurfaceInteraction surfaceInteraction, float2 dirUv)
+{
+  const float dirLength = length(dirUv);
+  if (dirLength <= 0.0f)
+  {
+    return 0.0f;
+  }
+  const float2 direction = dirUv / dirLength;
+  const float2 axes = float2(dot(surfaceInteraction.textureGradientX, direction), dot(surfaceInteraction.textureGradientY, direction));
+  return length(axes) * min(min(cb.upscaleFactor.x, cb.upscaleFactor.y), 1.0f);
+}
+
+// The view ray of a hit as a march: where it meets the top of the field, and its UV offset per unit of depth.
+// depthScale multiplies the material's depth, and meshDepth is the mesh surface's depth below the top of the field.
+// Returns false when the material does not displace.
+bool sccrViewRayScaled(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  float2 textureCoordinates,
+  float3 viewDir,
+  float depthScale,
+  out float3 start,
+  out float2 dirUv,
+  out float meshDepth)
+{
+  const float displaceIn = abs(float(opaqueSurfaceMaterial.displaceIn));
+  const float totalHeight = displaceIn + float(opaqueSurfaceMaterial.displaceOut);
+  dirUv = -viewDir.xy / max(viewDir.z, 1e-4f) * (totalHeight * depthScale);
+  // The mesh surface lies (1 - neutralHeight) units of depth below the top of the field.
+  // rtx.displacement.zeroPlane overrides the material's split when set (cb.pomSccrZeroPlane >= 0).
+  const float neutralHeight = cb.pomSccrZeroPlane >= 0.0f ? cb.pomSccrZeroPlane : (totalHeight > 0.0f ? displaceIn / totalHeight : 1.0f);
+  meshDepth = 1.0f - neutralHeight;
+  start = float3(textureCoordinates - dirUv * meshDepth, 0.0f);
+  return totalHeight > 0.0f;
+}
+
+// sccrViewRayScaled at the material's own depth.
+bool sccrViewRay(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  float2 textureCoordinates,
+  float3 viewDir,
+  out float3 start,
+  out float2 dirUv)
+{
+  float meshDepth;
+  return sccrViewRayScaled(opaqueSurfaceMaterial, textureCoordinates, viewDir, 1.0f, start, dirUv, meshDepth);
+}
+
+// The normal of the parallax frame, whose tangents are the triangle's constant UV directions (rawTangent / rawBitangent).
+// With rtx.displacement.enableStableFrame in SCCR mode it is the triangle normal, so the relief moves rigidly with the
+// triangle. Otherwise it is the interpolated geometry normal, which shears the frame across smoothed triangles.
+// The frame is inverted as a whole, so mirrored UVs need nothing.
+vec3 pomParallaxFrameNormal(SurfaceInteraction surfaceInteraction)
+{
+  if (cb.pomMode != DisplacementMode::SCCR || cb.pomSccrStableFrame == 0u)
+  {
+    return surfaceInteraction.geometryNormal;
+  }
+  bool valid;
+  return sccrTriangleNormal(surfaceInteraction, valid);
+}
+
+// The view direction in the parallax frame for the debug views, as opaqueSurfaceMaterialInteractionCreate computes it.
+vec3 sccrViewDirTextureSpace(SurfaceInteraction surfaceInteraction, vec3 viewDirection)
+{
+  const mat3 worldToTexture = inverse(transpose(mat3(
+    surfaceInteraction.rawTangent, surfaceInteraction.rawBitangent, pomParallaxFrameNormal(surfaceInteraction))));
+  return normalize(mul(worldToTexture, viewDirection));
+}
+
+// The self-shadow light direction in the frame of a unit world triangle normal, with the G-buffer's tangents made
+// orthogonal to it. Returns lightDirTangentSpace when the light is below the triangle or the tangents degenerate.
+vec3 sccrShadowLightDirInFrame(
+  MinimalSurfaceInteraction minimalSurfaceInteraction,
+  vec3 rayDirection,
+  vec3 normal,
+  vec3 lightDirTangentSpace)
+{
+  const float lightDotNormal = dot(rayDirection, normal);
+  if (!(lightDotNormal > 0.0f))
+  {
+    return lightDirTangentSpace;
+  }
+  vec3 tangent = minimalSurfaceInteraction.geometryTangent - normal * dot(minimalSurfaceInteraction.geometryTangent, normal);
+  const float tangentLength = length(tangent);
+  if (!(tangentLength > 1e-4f))
+  {
+    return lightDirTangentSpace;
+  }
+  tangent /= tangentLength;
+  vec3 bitangent = minimalSurfaceInteraction.geometryBitangent - normal * dot(minimalSurfaceInteraction.geometryBitangent, normal);
+  bitangent -= tangent * dot(bitangent, tangent);
+  const float bitangentLength = length(bitangent);
+  if (!(bitangentLength > 1e-4f))
+  {
+    return lightDirTangentSpace;
+  }
+  bitangent /= bitangentLength;
+  return normalize(vec3(dot(rayDirection, tangent), dot(rayDirection, bitangent), lightDotNormal));
+}
+
+// The self-shadow light direction in the stable frame the primary march used, from the triangle normal packed in
+// pomCoords.w. Returns lightDirTangentSpace when the option is off or w holds no normal (0 or a shell marker).
+vec3 sccrShadowLightDir(
+  MinimalSurfaceInteraction minimalSurfaceInteraction,
+  vec3 rayDirection,
+  float4 pomCoords,
+  vec3 lightDirTangentSpace)
+{
+  if (cb.pomSccrStableFrame == 0u || !sccrHasPackedNormal(pomCoords.w))
+  {
+    return lightDirTangentSpace;
+  }
+  return sccrShadowLightDirInFrame(
+    minimalSurfaceInteraction, rayDirection, sccrUnpackNormal(pomCoords.w), lightDirTangentSpace);
+}
+
+// Bounds of the curvature correction. The base surface moves the relief by at most kSccrMaxBaseDepth of its depth,
+// scaling the curvature down for the whole triangle beyond that. It bends the ray's depth rate by a factor in
+// [kSccrMinBend, kSccrMaxBend].
+static const float kSccrMaxBaseDepth = 0.5f;
+static const float kSccrMinBend = 0.5f;
+static const float kSccrMaxBend = 2.0f;
+
+// The primary march of a hit: start (uv, depth), UV offset per unit of depth, and the base curve of its field.
+// A march depth tau maps back to the flat triangle's depth t = (tau - alpha) / beta, whose mesh point is t = meshDepth.
+// worldPerDepth is the world size of one unit of t along the parallax frame's normal.
+struct SccrPrimaryRay
+{
+  float3 start;
+  float2 dirUv;
+  SccrBaseCurve curve;
+  float depthAlpha;
+  float depthBeta;
+  float meshDepth;
+  float worldPerDepth;
+};
+
+// The view ray of a hit with world-unit depth and the curvature correction applied.
+// Returns false when the material does not displace.
+//
+// With t the flat triangle's depth (mesh point at t0 = meshDepth) and sigma converting world units to depth, the ray's
+// depth below the base surface is
+//   t + sigma h(uv(t)),  h(uv0 + d) = h0 + dot(g, d) + 0.5 d^T H d,  d = dirUv (t - t0).
+// Its affine part tau = beta t + alpha, beta = 1 + sigma dot(g, dirUv), alpha = sigma h0 - (beta - 1) t0, is the
+// march depth. The ray then marches dirUv / beta per unit of tau, and the quadratic term goes into SccrCurvedField.
+bool sccrPrimaryRay(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  SurfaceInteraction surfaceInteraction,
+  float3 viewDir,
+  out SccrPrimaryRay ray)
+{
+  const float depthScale = sccrDepthScale(surfaceInteraction.pomUvToWorld);
+  float meshDepth;
+  ray.curve = sccrBaseCurveFlat(surfaceInteraction.textureCoordinates);
+  ray.depthAlpha = 0.0f;
+  ray.depthBeta = 1.0f;
+  ray.meshDepth = 0.0f;
+  ray.worldPerDepth = 0.0f;
+  if (!sccrViewRayScaled(opaqueSurfaceMaterial, surfaceInteraction.textureCoordinates, viewDir, depthScale,
+                         ray.start, ray.dirUv, meshDepth))
+  {
+    return false;
+  }
+  // The world size of one unit of march depth.
+  const float totalHeight = (abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut)) * depthScale;
+  const float worldPerDepth = totalHeight * surfaceInteraction.pomUvToWorld;
+  ray.meshDepth = meshDepth;
+  ray.worldPerDepth = worldPerDepth;
+  const float baseBound = surfaceInteraction.pomBaseLinear.w;
+  if (cb.pomSccrCurvatureScale <= 0.0f || !(worldPerDepth > 0.0f) || !(baseBound > 0.0f))
+  {
+    return true;
+  }
+  const float sigma = min(cb.pomSccrCurvatureScale / worldPerDepth, kSccrMaxBaseDepth / baseBound);
+  const float beta = clamp(1.0f + sigma * dot(surfaceInteraction.pomBaseLinear.yz, ray.dirUv), kSccrMinBend, kSccrMaxBend);
+  const float alpha = sigma * surfaceInteraction.pomBaseLinear.x - (beta - 1.0f) * meshDepth;
+  ray.depthAlpha = alpha;
+  ray.depthBeta = beta;
+  ray.curve.quadric = sigma * surfaceInteraction.pomBaseQuadric;
+  // The quadratic term stays within twice the base's bound on the triangle.
+  ray.curve.limit = min(2.0f * kSccrMaxBaseDepth, 2.0f * sigma * baseBound);
+  // Where the base is concave, the quadratic term can lift the field above depth 0, so the march starts that much higher.
+  const float3 q = ray.curve.quadric;
+  const bool fallsAway = q.x <= 0.0f && q.z <= 0.0f && q.x * q.z >= q.y * q.y;
+  const float startDepth = fallsAway ? 0.0f : -ray.curve.limit;
+  ray.start = float3(
+    surfaceInteraction.textureCoordinates + ray.dirUv * ((startDepth - alpha) / beta - meshDepth), startDepth);
+  ray.dirUv /= beta;
+  return true;
+}
+
+// Depth offset (rtx.displacement.enableDepthOffset): the along-ray world distance from a hit's mesh point to the relief
+// point at march depth hitDepth, for the depth and motion outputs. viewDir is the normalised view direction in the
+// parallax frame, and viewDirFrameLength its length before normalisation, since the frame's tangents are not unit length.
+// Positive below the mesh, negative where the relief stands above it, and 0 when the material does not displace.
+float sccrDepthOffset(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  SurfaceInteraction surfaceInteraction,
+  float3 viewDir,
+  float viewDirFrameLength,
+  float hitDepth)
+{
+  SccrPrimaryRay ray;
+  if (!sccrPrimaryRay(opaqueSurfaceMaterial, surfaceInteraction, viewDir, ray) || !(ray.worldPerDepth > 0.0f))
+  {
+    return 0.0f;
+  }
+  const float meshRelativeDepth = (hitDepth - ray.depthAlpha) / ray.depthBeta - ray.meshDepth;
+  // The same clamp on the view angle as sccrViewRayScaled.
+  const float normalPerDistance = max(viewDir.z, 1e-4f) * viewDirFrameLength;
+  const float offset = meshRelativeDepth * ray.worldPerDepth / normalPerDistance;
+  return (isinf(offset) || isnan(offset)) ? 0.0f : offset;
+}
+
+// Same contract as pomCalculateTexcoord: returns (uv, depth) of the view ray's first hit with the height field.
+float3 sccrCalculateTexcoord(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  SurfaceInteraction surfaceInteraction,
+  float3 viewDir,
+  inout uint iterations)
+{
+  iterations = 0;
+  SccrPrimaryRay ray;
+  if (!sccrPrimaryRay(opaqueSurfaceMaterial, surfaceInteraction, viewDir, ray))
+  {
+    return float3(surfaceInteraction.textureCoordinates, 0.0f);
+  }
+  SccrCurvedField<PomSingleConeField> field;
+  field.field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+  field.curve = ray.curve;
+  const float numSamples = pomGetNumSamples(viewDir);
+  // 1 unless the curvature correction starts the march above the top of the field.
+  const float marchDepth = 1.0f - ray.start.z;
+  const SccrStepLod lod = sccrStepLod(length(ray.dirUv) * marchDepth, sccrViewFootprint(surfaceInteraction, ray.dirUv),
+                                      marchDepth, rcp(numSamples));
+  if (lod.skip)
+  {
+    // The march moves less than a fraction of a pixel, so the depth at the mesh's texcoord places the hit.
+    iterations = 1;
+    return ray.start + float3(ray.dirUv, 1.0f) * (field.sampleDepthCone(surfaceInteraction.textureCoordinates).x - ray.start.z);
+  }
+  bool crossed;
+  return pomConeStepMarchRefined(
+    field, ray.start, ray.dirUv, lod.minStep, cb.pomConeSteps, cb.pomConeSteps + uint(ceil(marchDepth / lod.minStep)) + 1u,
+    cb.pomBinarySteps, lod.refinePrecision, 1.0f, crossed, iterations);
+}
+
+// Same contract as pomSampleVisibility. The light ray is marched backwards from the top of the field down to the texel,
+// since relaxed cones only hold for rays entering the field from above. depthScale is the primary march's, so shadows
+// match the relief. footprintUv is >= 0 for a coarse indirect-light query and kSccrFullShadow for full detail.
+float sccrSampleVisibility(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  float2 texcoord,
+  float3 rayDirection,
+  float depthScale = 1.0f,
+  float footprintUv = kSccrFullShadow)
+{
+  const float totalHeight = (abs(float(opaqueSurfaceMaterial.displaceIn)) + float(opaqueSurfaceMaterial.displaceOut)) * depthScale;
+  if (totalHeight <= 0.0f)
+  {
+    return 1.0f;
+  }
+  const float2 dirUv = -rayDirection.xy / max(rayDirection.z, 1e-4f) * totalHeight;
+  // Step LOD uses the height map's texels, since a shadow ray has no pixel footprint here.
+  // Coarse queries use their own footprint and its mip.
+  uint width, height, mipLevels;
+  textures[nonuniformEXT(uint(opaqueSurfaceMaterial.heightTextureIndex))].GetDimensions(0, width, height, mipLevels);
+  const float texelUv = rcp(float(max(max(width, height), 1u)));
+  const SccrShadowFootprint footprint = sccrShadowFootprint(footprintUv, texelUv, length(dirUv));
+  PomSingleConeField field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+  field.lod = footprint.lod;
+  field.hasCone = field.hasCone && footprint.lod <= 0.0f;
+  // The texel is read at the march's mip, so it lies on the field the march sees.
+  const float texelDepth = field.sampleDepthCone(texcoord).x;
+  if (texelDepth <= 0.0f)
+  {
+    return 1.0f;
+  }
+  const float numSamples = pomGetNumSamples(rayDirection);
+  const SccrStepLod lod = footprint.coarse ?
+    sccrFootprintLod(length(dirUv) * texelDepth, footprint.footprintUv, texelDepth, rcp(numSamples), 1.0f) :
+    sccrStepLod(length(dirUv) * texelDepth, texelUv, texelDepth, rcp(numSamples));
+  if (lod.skip)
+  {
+    return 1.0f;
+  }
+  const float minStep = lod.minStep;
+  // The result below ramps over one step, so an eighth of one is precise enough.
+  const float refinePrecision = lod.refinePrecision > 0.0f ? 0.125f * minStep : 0.0f;
+  const float3 start = float3(texcoord - dirUv * texelDepth, 0.0f);
+  uint iterations = 0;
+  // A crossing within half a step of the texel is the texel itself, and one a step and a half short of it is an occluder.
+  return pomConeStepVisibility(
+    field, start, dirUv, minStep, cb.pomConeShadowSteps,
+    cb.pomConeShadowSteps + uint(ceil(texelDepth / minStep)) + 1u, footprint.coarse ? 0u : cb.pomBinarySteps,
+    refinePrecision, texelDepth, iterations);
+}
+
+// DEBUG_VIEW_POM_CONE_RATIO: sqrt(cone ratio) as grey, blue where the cone is not generated yet, red for a displaced
+// material without a cone map, black for one that does not displace.
+float3 sccrDebugConeRatio(OpaqueSurfaceMaterial opaqueSurfaceMaterial, float2 texcoord)
+{
+  if (!opaqueSurfaceMaterial.hasValidDisplacement())
+  {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  if (!pomMaterialHasConeMap(opaqueSurfaceMaterial))
+  {
+    return float3(1.0f, 0.0f, 0.0f);
+  }
+  const float cone = textures[nonuniformEXT(uint(opaqueSurfaceMaterial.heightTextureIndex))].SampleLevel(
+    samplers[nonuniformEXT(uint(opaqueSurfaceMaterial.samplerIndex))], texcoord, 0).g;
+  return cone > 0.0f ? float3(cone, cone, cone) : float3(0.0f, 0.0f, 1.0f);
+}
+
+// DEBUG_VIEW_POM_CONE_ERROR: texels between the SCCR hit and a 256-step linear reference march, green (0) to red (2+).
+float3 sccrDebugConeError(
+  OpaqueSurfaceMaterial opaqueSurfaceMaterial,
+  SurfaceInteraction surfaceInteraction,
+  float3 viewDir)
+{
+  SccrPrimaryRay ray;
+  if (!sccrPrimaryRay(opaqueSurfaceMaterial, surfaceInteraction, viewDir, ray))
+  {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  uint iterations = 0;
+  const float3 hit = sccrCalculateTexcoord(opaqueSurfaceMaterial, surfaceInteraction, viewDir, iterations);
+  // The same ray and base curve, in linear steps.
+  SccrCurvedField<PomSingleConeField> field;
+  field.field = pomSingleConeFieldCreate(opaqueSurfaceMaterial);
+  field.field.hasCone = false;
+  field.curve = ray.curve;
+  bool crossed;
+  uint referenceIterations = 0;
+  const float3 reference = pomConeStepMarch(
+    field, ray.start, ray.dirUv, 1.0f / 256.0f, 0u, uint(ceil((1.0f - ray.start.z) * 256.0f)) + 1u, cb.pomBinarySteps,
+    1.0f, crossed, referenceIterations);
+  uint width, height, mipLevels;
+  textures[nonuniformEXT(uint(opaqueSurfaceMaterial.heightTextureIndex))].GetDimensions(0, width, height, mipLevels);
+  const float error = saturate(length((hit.xy - reference.xy) * float2(width, height)) / 2.0f);
+  return float3(error, 1.0f - error, 0.0f);
+}
+
+// The SCCR debug views' colour where cb.pomMode is not SCCR, including when no displaced material is bound
+// (SceneManager::getActivePOMCount is 0). It tells a view that shows nothing from one that is not written.
+static const float3 kSccrDebugInactiveColor = float3(0.35f, 0.0f, 0.0f);
+// The shell views' colour where SCCR runs but cb.pomSccrShellMaxDistance is 0, so the shell march is off.
+static const float3 kSccrShellDebugInactiveColor = float3(0.3f, 0.0f, 0.4f);
+
+// DEBUG_VIEW_POM_DEPTH_SCALE: the world-unit depth scale the texture density asks for against
+// rtx.displacement.referenceWorldUnitsPerUv, before maxWorldUnitDepthScale and whatever enableWorldUnitDepth is.
+// Green is the reference density, red denser tiling (full at 4x) and blue stretched (full at 1/4).
+// Magenta means the density is unknown or referenceWorldUnitsPerUv is 0.
+float3 sccrDebugDepthScale(SurfaceInteraction surfaceInteraction)
+{
+  if (!(surfaceInteraction.pomUvToWorld > 0.0f) || cb.pomSccrReferenceUvToWorld <= 0.0f)
+  {
+    return float3(1.0f, 0.0f, 1.0f);
+  }
+  const float logScale = clamp(log2(cb.pomSccrReferenceUvToWorld / surfaceInteraction.pomUvToWorld) * 0.5f, -1.0f, 1.0f);
+  return float3(saturate(logScale), 1.0f - abs(logScale), saturate(-logScale));
+}
+
+// The prism march comes last, since it uses the helpers above.
+#include "rtx/concept/surface_material/sccr_shell_march.slangh"

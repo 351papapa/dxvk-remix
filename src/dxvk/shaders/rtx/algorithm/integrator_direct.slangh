@@ -1,0 +1,1307 @@
+/*
+* Copyright (c) 2022-2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+#include "rtx/algorithm/path_state.slangh"
+#include "rtx/utility/noise.slangh"
+#include "rtx/utility/color.slangh"
+#include "rtx/utility/packing.slangh"
+#include "rtx/utility/debug_view_helpers.slangh"
+#include "rtx/utility/gbuffer_helpers.slangh"
+#include "rtx/concept/ray/ray.slangh"
+#include "rtx/pass/instance_definitions.slangh"
+#include "rtx/concept/surface/surface.slangh"
+#include "rtx/concept/surface_material/surface_material.slangh"
+#ifdef FRAME_FEATURES_VALIDATE
+// Frame feature validation for rtx.frameFeatures.validate, in the validation variants only.
+#include "rtx/algorithm/frame_features_validate.slangh"
+#endif
+#include "rtx/concept/light/light.slangh"
+#include "rtx/algorithm/lighting.slangh"
+#include "rtx/algorithm/resolve.slangh"
+#include "rtx/algorithm/visibility.slangh"
+// The sky provider must precede rtxcr_material so the SSS NEE paths can fold the cloud
+// shadow onto their internally sampled lights.
+#include "rtx/algorithm/sky_provider.slangh"
+#include "rtx/algorithm/rtxcr/rtxcr_material.slangh"
+#include "integrator.slangh"
+#ifdef LIGHT_SAMPLING_STATS
+#include "rtx/algorithm/light_sampling_stats.slangh"
+#endif
+
+// From 'Predictable and Targeted Softening of the Shadow Terminator'.
+// Returns a [0,1] weight to smooth the shadow terminator on the diffuse lobe.
+//
+// Softens the abrupt shadow terminator by
+// 1) applying a general falloff on terminator angles
+// 2) the falloff is more drastic if a shading normal (normal maps) mismatches geometry normal,
+//    to eliminate the abrupt terminator caused by directions that are in a shading normal hemisphere,
+//    but are NOT valid in a geometry normal hemisphere. (see the red area in Figure 2 of the paper).
+// The paper suggests a heuristic to apply a falloff on a diffuse term
+// when the given ray direction approaches such a range.
+// NOTE: rayDirection points from the surface to a light / sample position.
+// NOTE: this is a separate technique from the shadow terminator offset, 
+//       as this function mostly solves a problem on surfaces with a normal map, as they perturb the shading normal.
+float softenShadowTerminator(const vec3 geometryNormal, const vec3 shadingNormal, const vec3 rayDirection)
+{
+  // Softening is applied up to this angle threshold (in radians). Default ~3 degrees.
+  const float softeningThresholdAngle = 0.05;
+  
+  // Apply more softening the larger the deviation of shading normal (normal map) from geometry normal.
+  // Note: if shading / geometry normals are the same, a constant softening is still applied, so the terminator is always smoother.
+  float softeningThreshold = lerp(
+    sin(softeningThresholdAngle + 0.1),
+    sin(softeningThresholdAngle),
+    saturate(dot(shadingNormal, geometryNormal))
+  );
+
+  // Shadowing factor: closer to 0 when the ray is at grazing angle from geometry normal (i.e. at terminator),
+  // and reaches 0 sooner if the shading normal deviates more from the geometry normal.
+  float shadowing = saturate(dot(geometryNormal, rayDirection) / softeningThreshold);
+
+  // Smoothstep function, for a gradual falloff
+  float G = shadowing * shadowing * (3.0 - 2.0 * shadowing);
+  return saturate(G);
+}
+
+// Diffusion-profile SSS is most of this pass's code and registers. The INTEGRATE_DIRECT_SSS_PROFILE=0 variants
+// compile it out. The host binds them only when no diffusion-profile SSS instance is in this frame's TLAS,
+// where the runtime test below is false for every pixel, so the output is identical.
+#ifndef INTEGRATE_DIRECT_SSS_PROFILE
+#define INTEGRATE_DIRECT_SSS_PROFILE 1
+#endif
+
+bool directIsDiffusionProfileSss(OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction)
+{
+#if INTEGRATE_DIRECT_SSS_PROFILE
+  return cb.sssArgs.enableDiffusionProfile && isSubsurfaceDiffusionProfileMaterial(opaqueSurfaceMaterialInteraction);
+#else
+  return false;
+#endif
+}
+
+// INTEGRATE_DIRECT_LEAN_VISIBILITY=1 variants (only with INTEGRATE_DIRECT_SSS_PROFILE=0) drop the translucent and
+// thin-opaque subsurface handling from the NEE visibility ray. Those two modes make the alpha test build normals and
+// tangents for every candidate hit, which costs registers.
+// The host binds them only when rtx.enableDirectTranslucentShadows is off, which keeps translucent instances out of the
+// ray mask, and no thin-opaque material was ever created, so neither branch could run.
+#ifndef INTEGRATE_DIRECT_LEAN_VISIBILITY
+#define INTEGRATE_DIRECT_LEAN_VISIBILITY 0
+#endif
+
+#if INTEGRATE_DIRECT_LEAN_VISIBILITY
+#define DIRECT_NEE_VISIBILITY_MODE visibilityModeEnablePom | visibilityModeAccurateHitDistance | visibilityModeAccurateHitDistanceOptional
+#else
+#define DIRECT_NEE_VISIBILITY_MODE visibilityModeEnablePom | visibilityModeAccurateHitDistance | visibilityModeAccurateHitDistanceOptional | visibilityModeEnableTranslucentMaterials | visibilityModeEnableSubsurfaceMaterials
+#endif
+
+bool directIsThinOpaqueSubsurface(OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction)
+{
+#if INTEGRATE_DIRECT_LEAN_VISIBILITY
+  return false;
+#else
+  return isThinOpaqueSubsurfaceMaterial(opaqueSurfaceMaterialInteraction);
+#endif
+}
+
+void evalNEEPrimary(
+  vec3 throughput,
+  ivec2 pixelCoordinate,
+  inout vec3 diffuseLobeRadiance,
+  inout vec3 specularLobeRadiance,
+  out float hitDistance, 
+  out bool hasOpaqueHit,
+  out float illuminance,
+  bool isValidLightSample,
+  LightSample lightSample,
+  float invSelectionPdf, 
+  uint8_t sampledTransportPortalIndex, 
+  GeometryFlags geometryFlags, 
+  Ray viewRay,
+  MinimalRayInteraction minimalRayInteraction,
+  MinimalSurfaceInteraction minimalSurfaceInteraction,
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  inout RNG randomState)
+{
+  // Setup and trace the visibility ray
+
+  uint8_t rayMask = OBJECT_MASK_OPAQUE | (geometryFlags.objectMask & OBJECT_MASK_ALL_DYNAMIC);
+  rayMask |= (cb.enableDirectTranslucentShadows) ? OBJECT_MASK_TRANSLUCENT : 0;
+  rayMask |= (cb.enableDirectAlphaBlendShadows) ? OBJECT_MASK_ALPHA_BLEND : 0;
+
+  const bool isThinOpaqueSubsurface = directIsThinOpaqueSubsurface(opaqueSurfaceMaterialInteraction);
+  const bool isDiffusionProfileSss = directIsDiffusionProfileSss(opaqueSurfaceMaterialInteraction);
+
+  // We can encounter a POM surface during resolving (as it's a shared function) but if direct lighting for POM
+  //  is disabled, we must also handle that user choice gracefully.
+  const bool pomOpaqueSurfaceEncountered = geometryFlags.pomOpaqueSurfaceEncountered && cb.pomEnableDirectLighting;
+
+  const uint sharedSurfaceIndex = (pomOpaqueSurfaceEncountered || isDiffusionProfileSss) ? uint(SharedSurfaceIndex[pixelCoordinate]) : SURFACE_INDEX_INVALID;
+
+  VisibilityResult occludedVisibility;
+  occludedVisibility.hasOpaqueHit = true;
+
+#if !INTEGRATE_DIRECT_SSS_PROFILE
+  // Without diffusion-profile SSS nothing after the visibility ray needs the material. The BSDF is evaluated first,
+  // so only the light-weighted lobe radiance (9 floats) stays live across the alpha-tested ray query.
+  // The direction matches the one traceVisibilityRay builds, safeNormalize(target - position).
+  vec3 weightedDiffuseRadiance = vec3(0.0f);
+  vec3 weightedSpecularRadiance = vec3(0.0f);
+  vec3 weightedLightRadiance = vec3(0.0f);
+
+  if (isValidLightSample)
+  {
+    const vec3 lightDirection = safeNormalize(lightSample.position - minimalSurfaceInteraction.position, vec3(0.0f, 0.0f, 1.0f));
+
+    SurfaceMaterialInteractionSplitWeight splitWeight =
+      opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, minimalRayInteraction, lightDirection);
+
+    if (cb.shadowTerminatorArgs.soften)
+    {
+      splitWeight.diffuseReflectionWeight *= softenShadowTerminator(
+        minimalSurfaceInteraction.geometryNormal,
+        opaqueSurfaceMaterialInteraction.shadingNormal,
+        lightDirection
+      );
+    }
+
+    weightedLightRadiance = (invSelectionPdf / lightSample.solidAnglePdf) * lightSample.radiance;
+    weightedDiffuseRadiance = throughput * (weightedLightRadiance * (splitWeight.diffuseReflectionWeight + splitWeight.diffuseTransmissionWeight));
+    weightedSpecularRadiance = throughput * (weightedLightRadiance * splitWeight.specularReflectionWeight);
+  }
+#endif
+
+  VisibilityResult visibility = isValidLightSample ?
+    // The closest-hit search is optional here (see visibilityModeAccurateHitDistanceOptional).
+    traceVisibilityRay<DIRECT_NEE_VISIBILITY_MODE>(
+      minimalSurfaceInteraction,
+      lightSample.position, rayMask,
+      sampledTransportPortalIndex, geometryFlags.portalSpace, pomOpaqueSurfaceEncountered,
+      minimalRayInteraction.coneRadius, viewRay.spreadAngle, 1.0, geometryFlags.isViewModel, false,
+      sharedSurfaceIndex, SharedTextureCoord[pixelCoordinate],
+      isThinOpaqueSubsurface,
+      opaqueSurfaceMaterialInteraction.shadingNormal) :
+    occludedVisibility;
+
+#if !INTEGRATE_DIRECT_SSS_PROFILE
+  hitDistance = visibility.hitDistance;
+  hasOpaqueHit = visibility.hasOpaqueHit;
+  illuminance = 0;
+
+  // Note: an invalid light sample takes occludedVisibility, so past this point the sample is valid.
+  if (visibility.hasOpaqueHit)
+  {
+    return;
+  }
+
+  const vec3 visibilityAttenuation = vec3(visibility.attenuation);
+  diffuseLobeRadiance += weightedDiffuseRadiance * visibilityAttenuation;
+  specularLobeRadiance += weightedSpecularRadiance * visibilityAttenuation;
+  illuminance = calcBt709Luminance(visibilityAttenuation * weightedLightRadiance);
+#else
+  const bool hasNonSssOpaqueHit = visibility.hasOpaqueHit;
+
+  SssDiffusionProfileResult sssDiffusionProfileResult = createEmptySssDiffusionProfileResult();
+  if (isDiffusionProfileSss)
+  {
+    if (geometryFlags.primarySelectedIntegrationSurface)
+    {
+      sssDiffusionProfileResult = evalSssDiffusionProfile(
+        opaqueSurfaceMaterialInteraction, minimalRayInteraction, minimalSurfaceInteraction,
+        rayMask, sampledTransportPortalIndex, geometryFlags, viewRay,
+        sharedSurfaceIndex, pixelCoordinate,
+        PrimaryWorldShadingNormal,
+        randomState);
+    }
+    else
+    {
+      sssDiffusionProfileResult = evalSssDiffusionProfile(
+        opaqueSurfaceMaterialInteraction, minimalRayInteraction, minimalSurfaceInteraction,
+        rayMask, sampledTransportPortalIndex, geometryFlags, viewRay,
+        sharedSurfaceIndex, pixelCoordinate,
+        SecondaryWorldShadingNormal,
+        randomState);
+    }
+
+    visibility.hasOpaqueHit = (hasNonSssOpaqueHit && sssDiffusionProfileResult.allSamplesHaveHit);
+  }
+
+  hitDistance = visibility.hitDistance;
+  hasOpaqueHit = visibility.hasOpaqueHit;
+  illuminance = 0;
+
+  if (visibility.hasOpaqueHit)
+  {
+    return;
+  }
+  
+  // Evaluate the material and accumulate throughput and hit distance
+
+  SurfaceMaterialInteractionSplitWeight emptyWeight;
+  emptyWeight.diffuseReflectionWeight   = vec3(0.0f, 0.0f, 0.0f);
+  emptyWeight.specularReflectionWeight  = vec3(0.0f, 0.0f, 0.0f);
+  emptyWeight.diffuseTransmissionWeight = vec3(0.0f, 0.0f, 0.0f);
+
+  SurfaceMaterialInteractionSplitWeight splitWeight =
+    !hasNonSssOpaqueHit ?
+    opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, minimalRayInteraction, visibility.rayDirection) :
+    emptyWeight;
+
+  const float lightSampleThroughput = isValidLightSample ? invSelectionPdf / lightSample.solidAnglePdf : 0.0f;
+
+  if (cb.shadowTerminatorArgs.soften)
+  {
+    // soften the abrupt edge between light and shadow, see function description
+    splitWeight.diffuseReflectionWeight *= softenShadowTerminator(
+      minimalSurfaceInteraction.geometryNormal,
+      opaqueSurfaceMaterialInteraction.shadingNormal,
+      visibility.rayDirection
+    );
+  }
+
+  // Determine the weight for the lobes lobe
+
+  // SSS is a generic version for diffuse, remove the diffuse lobe when SSS is enabled to avoid duplication.
+  const vec3 diffuseLobeWeight = !isDiffusionProfileSss ? splitWeight.diffuseReflectionWeight : vec3(0.0f, 0.0f, 0.0f);
+  const vec3 specularLobeWeight = splitWeight.specularReflectionWeight;
+  const vec3 diffuseTransmissionLobeWeight = splitWeight.diffuseTransmissionWeight;
+
+  // TODO: Handle Transmission Weight
+
+  // Accumulate Radiance
+
+  const vec3 commonLightThroughput = lightSampleThroughput * vec3(visibility.attenuation);
+  const vec3 diffuseLobeLightThroughput = vec3(diffuseLobeWeight) * commonLightThroughput;
+  const vec3 specularLobeLightThroughput = vec3(specularLobeWeight) * commonLightThroughput;
+  const vec3 diffuseTransmissionLobeLightThroughput = vec3(diffuseTransmissionLobeWeight) * commonLightThroughput;
+  // No need to multiply viz attenuation, it's has already been handled in the evalSssDiffusionProfile
+
+  const vec3 diffuseAttenuatedRadiance = lightSample.radiance * diffuseLobeLightThroughput;
+  const vec3 specularAttenuatedRadiance = lightSample.radiance * specularLobeLightThroughput;
+  const vec3 diffuseTransmissionAttenuatedRadiance = lightSample.radiance * diffuseTransmissionLobeLightThroughput;
+
+  // Accumulate SSS Radiance, we are not calculating the light throughput here because it's different for every SSS sample.
+  // So, we have already multiply the throughput in the sssDiffusionProfileResult.scatteringWeight
+  const vec3 subsurfaceScatteringAttenuatedRadiance = vec3(sssDiffusionProfileResult.scatteringWeight);
+
+  diffuseLobeRadiance += throughput * (diffuseAttenuatedRadiance + diffuseTransmissionAttenuatedRadiance + subsurfaceScatteringAttenuatedRadiance);
+  specularLobeRadiance += throughput * specularAttenuatedRadiance;
+
+  // Illuminance for RTXDI gradients: just light sample radiance and visibility over sampling PDF
+  illuminance = isValidLightSample ? calcBt709Luminance(commonLightThroughput * lightSample.radiance) : 0.0f;
+#endif
+}
+
+#ifdef LIGHT_BVH_DEDICATED_SUN
+// The distant-light (sun) sample of rtx.lightSampling.bvhDedicatedSunSample, added on top of evalNEEPrimary's
+// local-light sample. It matches evalNEEPrimary except for the diffusion-profile SSS block, which samples lights itself
+// and already ran once for this pixel, so running it again would count SSS twice.
+// As in evalNEEPrimary, SSS-profile materials take no diffuse reflection lobe. It is compiled only into
+// integrate_direct_sun_rayquery.
+void evalDedicatedSunPrimary(
+  vec3 throughput,
+  ivec2 pixelCoordinate,
+  inout vec3 diffuseLobeRadiance,
+  inout vec3 specularLobeRadiance,
+  out float hitDistance,
+  out float contributionLuminance,
+  LightSample lightSample,
+  float invSelectionPdf,
+  GeometryFlags geometryFlags,
+  Ray viewRay,
+  MinimalRayInteraction minimalRayInteraction,
+  MinimalSurfaceInteraction minimalSurfaceInteraction,
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction)
+{
+  uint8_t rayMask = OBJECT_MASK_OPAQUE | (geometryFlags.objectMask & OBJECT_MASK_ALL_DYNAMIC);
+  rayMask |= (cb.enableDirectTranslucentShadows) ? OBJECT_MASK_TRANSLUCENT : 0;
+  rayMask |= (cb.enableDirectAlphaBlendShadows) ? OBJECT_MASK_ALPHA_BLEND : 0;
+
+  const bool isThinOpaqueSubsurface = directIsThinOpaqueSubsurface(opaqueSurfaceMaterialInteraction);
+  const bool isDiffusionProfileSss = directIsDiffusionProfileSss(opaqueSurfaceMaterialInteraction);
+  const bool pomOpaqueSurfaceEncountered = geometryFlags.pomOpaqueSurfaceEncountered && cb.pomEnableDirectLighting;
+  const uint sharedSurfaceIndex = (pomOpaqueSurfaceEncountered || isDiffusionProfileSss) ? uint(SharedSurfaceIndex[pixelCoordinate]) : SURFACE_INDEX_INVALID;
+
+  const VisibilityResult visibility =
+    traceVisibilityRay<DIRECT_NEE_VISIBILITY_MODE>(
+      minimalSurfaceInteraction,
+      lightSample.position, rayMask,
+      invalidRayPortalIndex, geometryFlags.portalSpace, pomOpaqueSurfaceEncountered,
+      minimalRayInteraction.coneRadius, viewRay.spreadAngle, 1.0, geometryFlags.isViewModel, false,
+      sharedSurfaceIndex, SharedTextureCoord[pixelCoordinate],
+      isThinOpaqueSubsurface,
+      opaqueSurfaceMaterialInteraction.shadingNormal);
+
+  hitDistance = visibility.hitDistance;
+  contributionLuminance = 0.0f;
+
+  if (visibility.hasOpaqueHit)
+  {
+    return;
+  }
+
+  SurfaceMaterialInteractionSplitWeight splitWeight =
+    opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, minimalRayInteraction, visibility.rayDirection);
+
+  if (cb.shadowTerminatorArgs.soften)
+  {
+    splitWeight.diffuseReflectionWeight *= softenShadowTerminator(
+      minimalSurfaceInteraction.geometryNormal,
+      opaqueSurfaceMaterialInteraction.shadingNormal,
+      visibility.rayDirection
+    );
+  }
+
+  const vec3 diffuseLobeWeight = !isDiffusionProfileSss ? splitWeight.diffuseReflectionWeight : vec3(0.0f, 0.0f, 0.0f);
+  const vec3 commonLightThroughput = (invSelectionPdf / lightSample.solidAnglePdf) * vec3(visibility.attenuation);
+
+  const vec3 diffuseRadiance = lightSample.radiance * (diffuseLobeWeight + splitWeight.diffuseTransmissionWeight) * commonLightThroughput;
+  const vec3 specularRadiance = lightSample.radiance * splitWeight.specularReflectionWeight * commonLightThroughput;
+
+  diffuseLobeRadiance += throughput * diffuseRadiance;
+  specularLobeRadiance += throughput * specularRadiance;
+  contributionLuminance = calcBt709Luminance(throughput * (diffuseRadiance + specularRadiance));
+}
+#endif
+
+void calculateRussianRouletteOnFirstBounce(
+  inout RNG randomState,
+  inout vec3 throughput,
+  inout float firstSampledSolidAnglePdf)
+{
+  if (!(cb.enableRussianRoulette && cb.pathMinBounces == 0) ||
+    // Unbiased NRC training paths don't use RR, but for sake of simplicity
+    // and not having to specialize direct pass we disable RR for all NRC training and query paths.
+    // Also NRC paths should be shorter and it results in better IQ if they end up in the cache 
+    // rather than being terminated at bounce 0
+      cb.enableNrc)
+  {
+    return;
+  }
+
+  // Russian Roulette
+  // Note: This logic will conditionally terminate paths based on the effective throughput, allowing for
+  // paths which contribute little to the final image to be shorter while paths which are more important
+  // are allowed to be longer.
+
+  const float continueProbability =
+    clamp(calcBt709Luminance(throughput), 
+          cb.russianRoulette1stBounceMinContinueProbability,
+          cb.russianRoulette1stBounceMaxContinueProbability);
+  const float continueSample = getNextSampleBlueNoise(randomState);
+  
+  // Note: <= used to ensure path never continues if the probability is 0 (and to avoid NaNs in the
+  // throughput when the probability is divided into it).
+  const bool terminate = continueProbability <= continueSample;
+
+  if (terminate)
+  {
+    // Denote discarded paths with 0 throughput
+    throughput = 0;
+  }
+  else
+  {
+    // Note: Factor the probability of continuing the path into the throughput. This causes odd brightness
+    // in denoising when the continue probability is very low, but this math has been validated to be
+    // correct as far as I can tell.
+    throughput *= 1.0f / continueProbability;
+
+    // Multiply RR probability into the first sampled solid angle pdf as well so that RR probability carries
+    // over into calculateReSTIRGIRadianceFactor() in indirect pass
+    firstSampledSolidAnglePdf *= continueProbability;
+  }
+}
+
+// Samples an indirect ray at ray path's first bounce
+void sampleIndirectRayForFirstBounce(
+  u16vec2 pixelCoordinate,
+  Ray primaryRay,
+  float integrationSurfacePdf,
+  MinimalRayInteraction primaryMinimalRayInteraction, 
+  MinimalSurfaceInteraction primaryMinimalSurfaceInteraction,
+  PolymorphicSurfaceMaterialInteraction primaryPolymorphicSurfaceMaterialInteraction,
+  inout uint mediumMaterialIndex,
+  inout bool insideMedium,
+  out bool mediumChanged,
+  out Ray sampledRay,
+  out vec3 throughput,
+  out float perceptualRoughness,
+  out uint8_t firstRayPathSampledLobe,
+  out float firstSampledLobePdf,
+  out float firstSampledSolidAnglePdf,
+  out bool firstSampledLobeIsSpecular)
+{
+  // Construct RNG as it is not carried in the path state
+  RNG randomState = createRNG(pixelCoordinate, cb.frameIdx, PathState::calculateRNGOffsetOnFirstBounce(kRNGOffsetSampleFirstBounceDirection));
+
+  // Note: Set the perceptual roughness only in the case of a material actually having roughness 
+  // (which for now is only opaque, but may change in the future).
+  perceptualRoughness = 0;
+
+  if (polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque)
+  {
+    perceptualRoughness = roughnessToPerceptualRoughness(
+      opaqueSurfaceMaterialInteractionCreate(primaryPolymorphicSurfaceMaterialInteraction).isotropicRoughness);
+  }
+
+  // Note: Throughput starts off by dividing by the PDF for the integration surface from the g-buffer pass.
+  // This is done to account for PSR-related decisions into the throughput so that the integration output (which is
+  // stochastic, unlike the emissive outputs from the g-buffer pass) will not lose energy.
+  throughput = 1.0f / integrationSurfacePdf;
+
+  const bool oldInsideMedium = insideMedium;
+  
+  // Sample a new direction
+  // Note: If this sample is invalid the throughput and solid angle pdf will be set to 0. Since this throughput is written right out
+  // into the throughput sent to the indirect integration pass though, no check needs to exist to handle this, as it will indicate that
+  // the path should terminate properly. This is in contrast to the indirect pass where the throughput from sampling a direction is not
+  // immediately accumulated into the path's throughput and requires more careful handling, especially since russian roulette plays more
+  // a role in setting the continuation flag there, whereas here it just modifies the throughput. This is because russian roulette may
+  // not be throughput based or may clamp the minimum probability like it does here in the direct integrator, so care must be taken to
+  // not have this dispatch rays on otherwise invalid direction samples.
+  sampledRay = sampleDirection(randomState, insideMedium, throughput,
+                               primaryRay, primaryMinimalRayInteraction, primaryMinimalSurfaceInteraction,
+                               primaryPolymorphicSurfaceMaterialInteraction,
+                               firstRayPathSampledLobe, firstSampledLobePdf, firstSampledSolidAnglePdf,
+                               true);
+
+  // Set the material medium index if a medium was entered or exited
+  mediumChanged = evalMediumChange(oldInsideMedium, insideMedium, primaryPolymorphicSurfaceMaterialInteraction, mediumMaterialIndex);
+  
+  // Set the first sampled lobe type
+
+  firstSampledLobeIsSpecular = true;
+
+  if (polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque)
+  {
+    // Note: Opacity on opaque objects treated as a specular lobe as it should be filtered like a reflection (not blurred).
+    firstSampledLobeIsSpecular = firstRayPathSampledLobe != opaqueLobeTypeDiffuseReflection;
+  }
+
+  // Apply Russian Roulette prior to checking this ray path being valid to integrate
+  calculateRussianRouletteOnFirstBounce(randomState, throughput, firstSampledSolidAnglePdf);
+}
+
+void sampleAndStoreIndirectRayPathSample(
+  u16vec2 pixelCoordinate,
+  Ray primaryRay,
+  float integrationSurfacePdf,
+  MinimalRayInteraction primaryMinimalRayInteraction, 
+  MinimalSurfaceInteraction primarySurfaceInteraction,
+  PolymorphicSurfaceMaterialInteraction primaryPolymorphicSurfaceMaterialInteraction,
+  inout GeometryFlags geometryFlags)
+{
+  uint mediumMaterialIndex = SharedMediumMaterialIndex[pixelCoordinate];
+  bool insideMedium = geometryFlags.insideMedium;
+
+  bool mediumChanged;
+  Ray sampledRay;
+  vec3 throughput;
+  float perceptualRoughness;
+  uint8_t firstRayPathSampledLobe;
+  float firstSampledSolidAnglePdf;
+  float firstSampledLobePdf;
+  bool firstSampledLobeIsSpecular;
+
+  // Sample an indirect ray
+  sampleIndirectRayForFirstBounce(pixelCoordinate, primaryRay, integrationSurfacePdf,
+                                  primaryMinimalRayInteraction, 
+                                  primarySurfaceInteraction,
+                                  primaryPolymorphicSurfaceMaterialInteraction,
+                                  mediumMaterialIndex, insideMedium, 
+                                  mediumChanged, sampledRay, throughput, perceptualRoughness, 
+                                  firstRayPathSampledLobe, firstSampledLobePdf, firstSampledSolidAnglePdf, firstSampledLobeIsSpecular);
+
+  // Serialize out the Medium Material Index if it changed
+  if (mediumChanged)
+  {
+    imageStore(SharedMediumMaterialIndex, pixelCoordinate, mediumMaterialIndex);
+  }
+
+  // Output the sampled lobe information for the Indirect integration pass
+  aliasedData0.IndirectRayOriginDirection[pixelCoordinate] = vec4(
+    sampledRay.origin,
+    uintBitsToFloat(float2x32ToSnorm2x16(sphereDirectionToSignedOctahedral(sampledRay.direction))));
+  IndirectThroughputConeRadius[pixelCoordinate] = vec4(throughput, sampledRay.coneRadius);
+  aliasedData1.IndirectFirstHitPerceptualRoughness[pixelCoordinate] = perceptualRoughness;
+
+  IndirectSampleData indirectSampleData;
+  indirectSampleData.firstSampledLobeIsSpecular = firstSampledLobeIsSpecular;
+  indirectSampleData.firstSampledLobePdf = firstSampledLobePdf;
+  indirectSampleData.firstSampledSolidAnglePdf = firstSampledSolidAnglePdf;
+  indirectSampleData.firstSampledLobeIsOpacityTransmission =
+    polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque &&
+    firstRayPathSampledLobe == opaqueLobeTypeOpacityTransmission;
+  indirectSampleData.store(pixelCoordinate, aliasedData2.IndirectFirstSampledLobeData);
+
+  float totalPdf = 0;
+  if (polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque)
+  {
+    const OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction = opaqueSurfaceMaterialInteractionCreate(primaryPolymorphicSurfaceMaterialInteraction);
+    totalPdf = NEECacheUtils.calculateBSDFSampleTotalPDF(opaqueSurfaceMaterialInteraction, primaryMinimalRayInteraction.viewDirection, sampledRay.direction, firstSampledSolidAnglePdf, firstSampledLobeIsSpecular);
+  }
+  
+  NeeCacheThreadTask[pixelCoordinate] = asuint(vec2(totalPdf, 0));
+
+  // Store the Geometry Flags with the new path information if it changed
+  if (insideMedium != geometryFlags.insideMedium || firstSampledLobeIsSpecular != geometryFlags.firstSampledLobeIsSpecular)
+  {
+    geometryFlags.insideMedium = insideMedium;
+    geometryFlags.firstSampledLobeIsSpecular = firstSampledLobeIsSpecular;
+    geometryFlagsWriteToGBuffer(geometryFlags, pixelCoordinate, SharedFlags);
+  }
+ }
+
+// The output tail of integrateDirectPath, shared with the split trace kernel.
+void integrateDirectPathStoreOutputs(
+  uvec2 pixelCoordinate, GeometryFlags geometryFlags, vec3 surfacePosition,
+  vec3 diffuseLobeRadiance, vec3 specularLobeRadiance, float lightHitDistance, float illuminance)
+{
+  // Output direct lighting radiance information
+
+  // Underwater look, after Mochabeanproto/dxvk-remix legacyrt ef6f42f, used with
+  // permission. It applies to primary surfaces only, and cb.underwaterEnable is tested first so nothing runs while it is off.
+  // It is gated per surface: SharedMediumMaterialIndex is the medium the primary ray was in when it reached this surface,
+  // so a floor seen through the water surface from the air gets it, and a surface behind a thin pane does not.
+  // It dims direct light, adds a two-octave scrolling caustic pattern in world space,
+  // and darkens by the surface's depth below rtx.underwater.surfaceHeight, warm wavelengths first.
+  if (cb.underwaterEnable != 0 && geometryFlags.primarySelectedIntegrationSurface)
+  {
+    const uint surfaceMediumIndex = SharedMediumMaterialIndex[pixelCoordinate];
+    if (surfaceMediumIndex != SURFACE_INDEX_INVALID)
+    {
+      const float3 p = surfacePosition;
+      const float2 wp0 = (cb.isZUp != 0 ? p.xy : p.xz) * (cb.underwaterMetersPerUnit * cb.underwaterCausticScale);
+      const float t = cb.timeSinceStartSeconds * cb.underwaterCausticSpeed;
+      float caustic = 0.0f;
+      [unroll] for (int oct = 0; oct < 2; ++oct)
+      {
+        const float freq = (oct == 0) ? 1.0f : 2.1f;
+        const float2 a = wp0 * freq
+          + float2(sin(t * (0.7f + 0.3f * oct)), cos(t * (0.6f + 0.2f * oct))) + float(oct) * 3.7f;
+        const float v = abs(sin(a.x * 1.7f + t) + sin(a.y * 1.3f - t * 0.8f))
+                      + abs(sin((a.x + a.y) * 1.1f + t * 1.3f) + sin((a.x - a.y) * 0.9f - t));
+        caustic += pow(saturate(1.0f - v * 0.25f), 5.0f) * ((oct == 0) ? 0.7f : 0.5f);
+      }
+
+      const float upSurf = (cb.isZUp != 0) ? p.z : p.y;
+      const float depthMeters = max(0.0f, (cb.underwaterSurfaceHeight - upSurf) * cb.underwaterMetersPerUnit);
+      const float3 transmit = exp(-depthMeters * float3(cb.underwaterMurkAbsorbR, cb.underwaterMurkAbsorbG,
+                                                        cb.underwaterMurkAbsorbB));
+
+      diffuseLobeRadiance *= (cb.underwaterSunScale + cb.underwaterCausticStrength * caustic) * transmit;
+      specularLobeRadiance *= cb.underwaterSunScale * transmit;
+    }
+  }
+
+  if (geometryFlags.primarySelectedIntegrationSurface)
+  {
+    // Note: Output split direct lighting contribution only if the selected integration surface is primary,
+    // the secondary surface uses a combined lighting contribution.
+    PrimaryDirectDiffuseLobeRadianceHitDistance[pixelCoordinate] =
+      sanitizeRadianceHitDistance(diffuseLobeRadiance, lightHitDistance);
+    PrimaryDirectSpecularLobeRadianceHitDistance[pixelCoordinate] =
+      sanitizeRadianceHitDistance(specularLobeRadiance, lightHitDistance);
+    // Store the surface illuminance for gradient computation.
+    if (cb.rtxdiIlluminanceAllocated)
+    {
+      PrimaryRtxdiIlluminance[pixelCoordinate] = illuminance;
+    }
+  }
+  else
+  {
+    float4 secondaryCombinedDiffuseLobeRadianceHitDistance;
+    float4 secondaryCombinedSpecularLobeRadianceHitDistance;
+
+    // Note: For secondary surfaces, output the direct lighting radiance for the opposing lobe as usual and set
+    // the current lobe direct lighting radiance into the current lobe output, intended to be summed into in
+    // the indirect signal (as this acts as a fine way to carry the state between passes, the actual
+    // output packing/firefly filtering will happen in the demodulate pass as well).
+    if (geometryFlags.firstSampledLobeIsSpecular)
+    {
+      secondaryCombinedDiffuseLobeRadianceHitDistance = sanitizeRadianceHitDistance(diffuseLobeRadiance, lightHitDistance);
+      secondaryCombinedSpecularLobeRadianceHitDistance = float4(specularLobeRadiance, kEmptyPixelHitDistance);
+    }
+    else
+    {
+      secondaryCombinedDiffuseLobeRadianceHitDistance = float4(diffuseLobeRadiance, kEmptyPixelHitDistance);
+      secondaryCombinedSpecularLobeRadianceHitDistance = sanitizeRadianceHitDistance(specularLobeRadiance, lightHitDistance); 
+    }
+
+    SecondaryCombinedDiffuseLobeRadianceHitDistance[pixelCoordinate] = secondaryCombinedDiffuseLobeRadianceHitDistance;
+    SecondaryCombinedSpecularLobeRadianceHitDistance[pixelCoordinate] = secondaryCombinedSpecularLobeRadianceHitDistance;
+    if (cb.rtxdiIlluminanceAllocated)
+    {
+      PrimaryRtxdiIlluminance[pixelCoordinate] = 0;
+    }
+  }
+
+  integratorDirectPathOutputDebugView(pixelCoordinate, geometryFlags);
+}
+
+void integrateDirectPath(
+  inout RNG randomState, uvec2 pixelCoordinate,
+  GeometryFlags geometryFlags, float integrationSurfacePdf,
+  Ray primaryRay, MinimalRayInteraction primaryMinimalRayInteraction, MinimalSurfaceInteraction primarySurfaceInteraction,
+  PolymorphicSurfaceMaterialInteraction primaryPolymorphicSurfaceMaterialInteraction)
+{
+
+  // Note: Throughput starts off by dividing by the PDF for the integration surface from the g-buffer pass.
+  // This is done to account for PSR-related decisions into the throughput so that the integration output (which is
+  // stochastic, unlike the emissive outputs from the g-buffer pass) will not lose energy.
+  vec3 throughput = 1.0f / integrationSurfacePdf;
+
+  // Note: Emission not added in for the primary vertex as it is handled already by the G-Buffer
+  // pass. This is done because these contributions are noise-free and do not need to be denoised.
+
+  vec3 diffuseLobeRadiance = vec3(0.0f, 0.0f, 0.0f);
+  vec3 specularLobeRadiance = vec3(0.0f, 0.0f, 0.0f);
+  float lightHitDistance = 0.0f;
+  float illuminance = 0;
+
+  // In LightBVH mode the primary sample comes from the light_bvh_select pass as an RTXDI-format reservoir and takes
+  // the RTXDI branch below. Without the select pass, and on PSR-selected surfaces, sampleLightRIS uses the light BVH.
+  const bool lightBvhUsesReservoir = cb.lightSamplingMode == lightSamplingModeLightBvh && cb.lightBvhSelectPassActive != 0;
+
+  if (cb.enableDirectLighting && polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque)
+  {
+    OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction = opaqueSurfaceMaterialInteractionCreate(primaryPolymorphicSurfaceMaterialInteraction);
+
+    // Select a light for NEE
+
+    LightSample lightSample;
+    float inverseSelectionPdf;
+    bool rtxdiLightSampleValid = false;
+    bool risLightSampleValid = false;
+    // Note: The Ray Portal index that the NEE light sample should be assumed to be sampled through.
+    // Set to the invalid index if the light was not sampled through a Ray Portal.
+    uint8_t sampledTransportPortalIndex = invalidRayPortalIndex;
+
+    // Note: Use RTXDI for NEE only if it is requested and if the primary surface is being integrated as
+    // running RTXDI on secondary surfaces will attempt to use lights from the primary surface which results
+    // in poor quality lighting if the surface is in a significantly different spatial location.
+    uint16_t lightIdx = kInvalidLightIdx;
+    // Synthetic customIndex forwarding the view-model flag to light sampling so lights
+    // created with remixapi_LightInfo::ignoreViewModel are skipped for view-model surfaces.
+    uint customIndex = geometryFlags.isViewModel ? CUSTOM_INDEX_IS_VIEW_MODEL : 0;
+
+    if (
+      (cb.enableRtxdi || lightBvhUsesReservoir) &&
+      geometryFlags.primarySelectedIntegrationSurface)
+    {
+      // Select and sample a light for NEE via RTXDI
+      rtxdiLightSampleValid = sampleLightRTXDI(
+        pixelCoordinate,
+        primarySurfaceInteraction,
+        lightSample, inverseSelectionPdf, sampledTransportPortalIndex, lightIdx, customIndex);
+    }
+    else
+    {
+      // Select and sample a light for NEE via RIS
+      risLightSampleValid = sampleLightRIS(
+        randomState,
+        primarySurfaceInteraction, opaqueSurfaceMaterialInteraction, primaryMinimalRayInteraction.viewDirection,
+        lightSample, inverseSelectionPdf, lightIdx, customIndex, cb.lightBvhPrimaryCandidateCount);
+    }
+
+    const bool isDiffusionProfileSss = directIsDiffusionProfileSss(opaqueSurfaceMaterialInteraction);
+
+    // Folds the per-pixel cloud transmittance onto the NEE radiance of the sky provider's cloud-shadowed lights (the sun).
+    // It is correct indoors because the light's own shadow ray handles the roof.
+    if ((rtxdiLightSampleValid || risLightSampleValid)
+        && skyProviderActive()
+        && lightIdx != kInvalidLightIdx)
+    {
+      const DecodedPolymorphicLight cloudShadowLight = decodePolymorphicLight(lights[lightIdx]);
+      if (cloudShadowLight.atmosphereCloudShadowed)
+      {
+        const vec3 dirToLight = normalize(lightSample.position - primarySurfaceInteraction.position);
+        lightSample.radiance *= skyProviderCloudShadow(primarySurfaceInteraction.position, dirToLight);
+      }
+    }
+
+    // Evaluate NEE
+    if (rtxdiLightSampleValid || risLightSampleValid || isDiffusionProfileSss)
+    {
+      bool hasOpaqueHit = false;
+      const bool isValidLightSample = (rtxdiLightSampleValid || risLightSampleValid);
+#ifdef LIGHT_SAMPLING_STATS
+      g_lightSamplingStatsCandidates = 0;
+      g_lightSamplingStatsAlphaCommits = 0;
+      g_lightSamplingStatsPartialHits = 0;
+#endif
+      evalNEEPrimary(
+        throughput, pixelCoordinate,
+        diffuseLobeRadiance, specularLobeRadiance, lightHitDistance, hasOpaqueHit, illuminance,
+        isValidLightSample, lightSample,
+        inverseSelectionPdf, sampledTransportPortalIndex, geometryFlags,
+        primaryRay, primaryMinimalRayInteraction, primarySurfaceInteraction,
+        opaqueSurfaceMaterialInteraction,
+        randomState);
+
+#ifdef FRAME_FEATURES_VALIDATE
+      // Records the type of the primary NEE light sample for the frame feature mask's light types.
+      if (isValidLightSample && geometryFlags.primarySelectedIntegrationSurface)
+      {
+        uint validateSeen = 0u;
+        for (uint validateType = 0; validateType < FRAME_FEATURES_SEEN_LIGHT_TYPE_COUNT; ++validateType)
+        {
+          const LightRangeInfo validateRange = cb.lightRanges[validateType];
+          if (lightIdx >= validateRange.offset && lightIdx < validateRange.offset + validateRange.count)
+          {
+            validateSeen = 1u << (FRAME_FEATURES_SEEN_LIGHT_TYPE_SHIFT + validateType);
+          }
+        }
+        frameFeaturesNoteSeen(validateSeen);
+      }
+      else
+      {
+        frameFeaturesNoteSeen(0u);
+      }
+#endif
+#ifdef LIGHT_SAMPLING_STATS
+      // The [LightSamplingStats] counters are identical in every light sampling mode.
+      if (cb.lightSamplingStatsEnabled != 0 && geometryFlags.primarySelectedIntegrationSurface)
+      {
+        lightSamplingStatsRecordPrimary(isValidLightSample, lightIdx, hasOpaqueHit, g_lightSamplingStatsCandidates,
+          isValidLightSample ? length(lightSample.position - primarySurfaceInteraction.position) : 0.0f,
+          g_lightSamplingStatsAlphaCommits, g_lightSamplingStatsPartialHits);
+      }
+#endif
+
+      if (rtxdiLightSampleValid && hasOpaqueHit && cb.enableRtxdiDiscardInvisibleSamples)
+      {
+        RTXDI_Reservoir reservoir = RAB_LoadReservoir(pixelCoordinate, RTXDI_GetSpatialOutputPage());
+
+        // LightBVH keeps the light index so next frame's select pass can see which light was occluded here.
+        // The zero weight still makes it unusable for stealing.
+        if (!lightBvhUsesReservoir)
+        {
+          reservoir.lightIdx = RTXDI_INVALID_LIGHT_INDEX;
+        }
+        reservoir.weightSum = 0;
+
+        RAB_StoreReservoir(reservoir, pixelCoordinate, RTXDI_GetSpatialOutputPage());
+      }
+    }
+
+#ifdef LIGHT_BVH_DEDICATED_SUN
+    // With rtx.lightSampling.bvhDedicatedSunSample the select pass reservoir covers local lights only,
+    // so the distant lights get their own sample and shadow ray here. This runs only where the reservoir path ran.
+    // PSR and secondary surfaces take sampleLightRIS, whose BVH sample includes the distant lights.
+    if (cb.lightBvhDedicatedSun != 0 && lightBvhUsesReservoir && geometryFlags.primarySelectedIntegrationSurface)
+    {
+      uint sunLightIdx;
+      LightSample sunSample;
+      float sunInvPmf;
+      if (lightBvhSampleDistant(randomState, primarySurfaceInteraction,
+                                directIsThinOpaqueSubsurface(opaqueSurfaceMaterialInteraction), customIndex,
+                                sunLightIdx, sunSample, sunInvPmf))
+      {
+        // Same cloud shadow fold the single-sample path applies to a sampled sun (see above).
+        if (skyProviderActive())
+        {
+          const DecodedPolymorphicLight sunDecoded = decodePolymorphicLight(lights[sunLightIdx]);
+          if (sunDecoded.atmosphereCloudShadowed)
+          {
+            const vec3 dirToSun = normalize(sunSample.position - primarySurfaceInteraction.position);
+            sunSample.radiance *= skyProviderCloudShadow(primarySurfaceInteraction.position, dirToSun);
+          }
+        }
+
+        const bool localSampleValid = rtxdiLightSampleValid || risLightSampleValid;
+        const float localLuminance = calcBt709Luminance(diffuseLobeRadiance + specularLobeRadiance);
+        float sunHitDistance;
+        float sunLuminance;
+        evalDedicatedSunPrimary(
+          throughput, pixelCoordinate,
+          diffuseLobeRadiance, specularLobeRadiance, sunHitDistance, sunLuminance,
+          sunSample, sunInvPmf, geometryFlags,
+          primaryRay, primaryMinimalRayInteraction, primarySurfaceInteraction,
+          opaqueSurfaceMaterialInteraction);
+
+        // Only one hit distance feeds the denoiser, so it comes from the sample that contributes more.
+        if (!localSampleValid || sunLuminance > localLuminance)
+        {
+          lightHitDistance = sunHitDistance;
+        }
+        illuminance += sunLuminance;
+      }
+    }
+#endif
+  }
+
+  integrateDirectPathStoreOutputs(
+    pixelCoordinate, geometryFlags, primarySurfaceInteraction.position,
+    diffuseLobeRadiance, specularLobeRadiance, lightHitDistance, illuminance);
+}
+
+void integratorDirectPathOutputDebugView(
+  uvec2 pixelCoordinate,
+  GeometryFlags geometryFlags)
+{
+  IndirectSampleData indirectSampleData;
+
+  switch(cb.debugView)
+  {
+  default:
+  case DEBUG_VIEW_DISABLED:
+    break;
+  case DEBUG_VIEW_NOISY_SECONDARY_DIRECT_DIFFUSE_RADIANCE:
+  {
+    if (!geometryFlags.primarySelectedIntegrationSurface)  
+      storeInDebugView(pixelCoordinate, SecondaryCombinedDiffuseLobeRadianceHitDistance[pixelCoordinate].xyz);
+    else
+      storeInDebugView(pixelCoordinate, 0);
+    break;
+  }
+  case DEBUG_VIEW_NOISY_SECONDARY_DIRECT_SPECULAR_RADIANCE:
+  {
+    if (!geometryFlags.primarySelectedIntegrationSurface)  
+      storeInDebugView(pixelCoordinate, SecondaryCombinedSpecularLobeRadianceHitDistance[pixelCoordinate].xyz);
+    else
+      storeInDebugView(pixelCoordinate, 0);
+    break;
+  }
+  case DEBUG_VIEW_NOISY_SECONDARY_DIRECT_RADIANCE:
+  {
+    if (!geometryFlags.primarySelectedIntegrationSurface)  
+    {
+      storeInDebugView(pixelCoordinate, 
+        SecondaryCombinedDiffuseLobeRadianceHitDistance[pixelCoordinate].xyz +
+        SecondaryCombinedSpecularLobeRadianceHitDistance[pixelCoordinate].xyz);
+    }
+    break;
+  }
+  case DEBUG_VIEW_INDIRECT_FIRST_HIT_PERCEPTUAL_ROUGHNESS:
+    storeInDebugView(pixelCoordinate, aliasedData1.IndirectFirstHitPerceptualRoughness[pixelCoordinate]);
+    break;
+  case DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_RAY_THROUGHPUT:
+    storeInDebugView(pixelCoordinate, IndirectThroughputConeRadius[pixelCoordinate].xyz);
+    break;
+  case DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_SAMPLED_LOBE_PDF:
+    indirectSampleData.load(pixelCoordinate, aliasedData2.IndirectFirstSampledLobeData);
+    storeInDebugView(pixelCoordinate, indirectSampleData.firstSampledLobePdf);
+    break;
+  case DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_SAMPLED_SOLID_ANGLE_PDF:
+    indirectSampleData.load(pixelCoordinate, aliasedData2.IndirectFirstSampledLobeData);
+    storeInDebugView(pixelCoordinate, indirectSampleData.firstSampledSolidAnglePdf);
+    break;
+  case DEBUG_VIEW_NAN:
+  {
+    bool isValid = true;
+    
+    // DEBUG_VIEW_NOISY_SECONDARY_DIRECT_DIFFUSE_RADIANCE
+    // DEBUG_VIEW_NOISY_SECONDARY_DIRECT_SPECULAR_RADIANCE
+    if (!geometryFlags.primarySelectedIntegrationSurface)  
+    {
+      isValid &= isValidValue(SecondaryCombinedDiffuseLobeRadianceHitDistance[pixelCoordinate]);
+      isValid &= isValidValue(SecondaryCombinedSpecularLobeRadianceHitDistance[pixelCoordinate]);
+    }
+
+    // DEBUG_VIEW_INDIRECT_FIRST_HIT_PERCEPTUAL_ROUGHNESS
+    isValid &= isValidValue(aliasedData1.IndirectFirstHitPerceptualRoughness[pixelCoordinate]);
+
+    // DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_RAY_THROUGHPUT
+    isValid &= isValidValue(IndirectThroughputConeRadius[pixelCoordinate].xyz);  
+
+    indirectSampleData.load(pixelCoordinate, aliasedData2.IndirectFirstSampledLobeData);
+
+    // DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_SAMPLED_LOBE_PDF
+    isValid &= isValidValue(indirectSampleData.firstSampledLobePdf);
+
+    // DEBUG_VIEW_INTEGRATE_INDIRECT_FIRST_SAMPLED_SOLID_ANGLE_PDF
+    isValid &= isValidValue(indirectSampleData.firstSampledSolidAnglePdf);
+
+    accumulateInDebugViewAnd(pixelCoordinate, isValid);
+    break;
+  }
+  }
+}
+
+#ifndef INTEGRATE_DIRECT_SPLIT
+#define INTEGRATE_DIRECT_SPLIT 0
+#endif
+#if INTEGRATE_DIRECT_SPLIT
+// The direct pass of the Lean levels as two kernels.
+// integrate_direct_split_shade does everything up to the NEE visibility rays (light selection, the BSDF in the NoSss order,
+// the indirect ray sample) and writes a record per pixel.
+// integrate_direct_split_trace traces the visibility rays, accumulates in the same order and writes the outputs.
+// Only the INTEGRATE_DIRECT_SSS_PROFILE=0 + INTEGRATE_DIRECT_LEAN_VISIBILITY=1 levels are split, where nothing after the
+// visibility ray needs the material.
+
+// The distance distantLightSampleArea places a distant light's sample at, along the sampled direction.
+static const float kDirectSplitDistantSampleDistance = 100000.0f;
+
+uint directSplitAddress(uvec2 pixelCoordinate, uint plane)
+{
+  return plane * (cb.camera.resolution.x * cb.camera.resolution.y) + pixelCoordinate.y * cb.camera.resolution.x + pixelCoordinate.x;
+}
+
+// Packs two radiance triplets as six fp16 values, clamped to the fp16 range so that no value becomes infinite.
+uint3 directSplitPackRadiance(vec3 diffuse, vec3 specular)
+{
+  const vec3 d = min(diffuse, vec3(float16Max));
+  const vec3 s = min(specular, vec3(float16Max));
+  return uint3(
+    f32tof16(d.x) | (f32tof16(d.y) << 16),
+    f32tof16(d.z) | (f32tof16(s.x) << 16),
+    f32tof16(s.y) | (f32tof16(s.z) << 16));
+}
+
+void directSplitUnpackRadiance(uint3 packed, out vec3 diffuse, out vec3 specular)
+{
+  diffuse = vec3(f16tof32(packed.x & 0xFFFFu), f16tof32(packed.x >> 16), f16tof32(packed.y & 0xFFFFu));
+  specular = vec3(f16tof32(packed.y >> 16), f16tof32(packed.z & 0xFFFFu), f16tof32(packed.z >> 16));
+}
+
+// Packs what the RTXDI illuminance needs of the weighted light radiance: its BT.709 luminance as fp16 in the low half,
+// and the red and green shares of that luminance as unorm8 above it. The blue share is the remainder, so under an
+// achromatic visibility attenuation the unpacked illuminance is the luminance itself.
+uint directSplitPackIlluminance(vec3 weightedLightRadiance)
+{
+  const float luminance = calcBt709Luminance(weightedLightRadiance);
+  if (!(luminance > 0.0f))
+  {
+    return 0u;
+  }
+
+  const float redShare = saturate(0.2126f * weightedLightRadiance.r / luminance);
+  const float greenShare = saturate(0.7152f * weightedLightRadiance.g / luminance);
+  const uint red = uint(redShare * 255.0f + 0.5f);
+  const uint green = min(uint(greenShare * 255.0f + 0.5f), 255u - red);
+  return f32tof16(min(luminance, float16Max)) | (red << 16) | (green << 24);
+}
+
+// Returns the BT.709 luminance of the weighted light radiance after the visibility attenuation.
+float directSplitUnpackIlluminance(uint packed, vec3 visibilityAttenuation)
+{
+  const float red = float((packed >> 16) & 0xFFu) * (1.0f / 255.0f);
+  const float green = float(packed >> 24) * (1.0f / 255.0f);
+  const float blue = 1.0f - red - green;
+  return f16tof32(packed & 0xFFFFu) * dot(visibilityAttenuation, vec3(red, green, blue));
+}
+#endif
+
+#if INTEGRATE_DIRECT_SPLIT == 1
+#if INTEGRATE_DIRECT_SSS_PROFILE || !INTEGRATE_DIRECT_LEAN_VISIBILITY
+#error "The split direct kernels exist for the Lean levels only."
+#endif
+
+// The shade half of integrateDirectPath: the same light selection and cloud shadow fold, then the BSDF terms of
+// evalNEEPrimary's NoSss branch (and of evalDedicatedSunPrimary, evaluated with the direction traceVisibilityRay will use,
+// which is the one the NoSss branch already relies on), written to the record instead of carried across the ray.
+// originPositionError is the secondary surface's position error when the header carries INTEGRATE_DIRECT_SPLIT_FLAG_ORIGIN.
+void integrateDirectShadePath(
+  inout RNG randomState, uvec2 pixelCoordinate,
+  GeometryFlags geometryFlags, float integrationSurfacePdf,
+  Ray primaryRay, MinimalRayInteraction primaryMinimalRayInteraction, MinimalSurfaceInteraction primarySurfaceInteraction,
+  PolymorphicSurfaceMaterialInteraction primaryPolymorphicSurfaceMaterialInteraction,
+  uint header, float originPositionError)
+{
+  vec3 throughput = 1.0f / integrationSurfacePdf;
+
+  // Becomes true once plane 0 holds the final header.
+  bool headerWritten = false;
+
+  const bool lightBvhUsesReservoir = cb.lightSamplingMode == lightSamplingModeLightBvh && cb.lightBvhSelectPassActive != 0;
+
+  if (cb.enableDirectLighting && polymorphicSurfaceMaterialInteractionGetTypeHelper(primaryPolymorphicSurfaceMaterialInteraction) == surfaceMaterialTypeOpaque)
+  {
+    OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction = opaqueSurfaceMaterialInteractionCreate(primaryPolymorphicSurfaceMaterialInteraction);
+
+    LightSample lightSample;
+    float inverseSelectionPdf;
+    bool rtxdiLightSampleValid = false;
+    bool risLightSampleValid = false;
+    uint8_t sampledTransportPortalIndex = invalidRayPortalIndex;
+    uint16_t lightIdx = kInvalidLightIdx;
+    uint customIndex = geometryFlags.isViewModel ? CUSTOM_INDEX_IS_VIEW_MODEL : 0;
+
+    if (
+      (cb.enableRtxdi || lightBvhUsesReservoir) &&
+      geometryFlags.primarySelectedIntegrationSurface)
+    {
+      rtxdiLightSampleValid = sampleLightRTXDI(
+        pixelCoordinate,
+        primarySurfaceInteraction,
+        lightSample, inverseSelectionPdf, sampledTransportPortalIndex, lightIdx, customIndex);
+    }
+    else
+    {
+      risLightSampleValid = sampleLightRIS(
+        randomState,
+        primarySurfaceInteraction, opaqueSurfaceMaterialInteraction, primaryMinimalRayInteraction.viewDirection,
+        lightSample, inverseSelectionPdf, lightIdx, customIndex, cb.lightBvhPrimaryCandidateCount);
+    }
+
+    if ((rtxdiLightSampleValid || risLightSampleValid)
+        && skyProviderActive()
+        && lightIdx != kInvalidLightIdx)
+    {
+      const DecodedPolymorphicLight cloudShadowLight = decodePolymorphicLight(lights[lightIdx]);
+      if (cloudShadowLight.atmosphereCloudShadowed)
+      {
+        const vec3 dirToLight = normalize(lightSample.position - primarySurfaceInteraction.position);
+        lightSample.radiance *= skyProviderCloudShadow(primarySurfaceInteraction.position, dirToLight);
+      }
+    }
+
+    // No diffusion-profile SSS in these levels, so NEE runs exactly when the sample is valid.
+    if (rtxdiLightSampleValid || risLightSampleValid)
+    {
+      // evalNEEPrimary's NoSss branch, up to the visibility ray.
+      const vec3 lightDirection = safeNormalize(lightSample.position - primarySurfaceInteraction.position, vec3(0.0f, 0.0f, 1.0f));
+
+      SurfaceMaterialInteractionSplitWeight splitWeight =
+        opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, primaryMinimalRayInteraction, lightDirection);
+
+      if (cb.shadowTerminatorArgs.soften)
+      {
+        splitWeight.diffuseReflectionWeight *= softenShadowTerminator(
+          primarySurfaceInteraction.geometryNormal,
+          opaqueSurfaceMaterialInteraction.shadingNormal,
+          lightDirection
+        );
+      }
+
+      const vec3 weightedLightRadiance = (inverseSelectionPdf / lightSample.solidAnglePdf) * lightSample.radiance;
+      const vec3 weightedDiffuseRadiance = throughput * (weightedLightRadiance * (splitWeight.diffuseReflectionWeight + splitWeight.diffuseTransmissionWeight));
+      const vec3 weightedSpecularRadiance = throughput * (weightedLightRadiance * splitWeight.specularReflectionWeight);
+
+      header |= INTEGRATE_DIRECT_SPLIT_FLAG_LOCAL;
+      header |= rtxdiLightSampleValid ? INTEGRATE_DIRECT_SPLIT_FLAG_RTXDI : 0u;
+      header |= uint(sampledTransportPortalIndex) << 8;
+      header |= uint(lightIdx) << 16;
+      DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_LIGHT)] =
+        uint4(header, asuint(lightSample.position));
+      headerWritten = true;
+
+      // Only the primary surface writes an illuminance (integrateDirectPathStoreOutputs).
+      const uint radianceW = !geometryFlags.primarySelectedIntegrationSurface
+        ? asuint(originPositionError)
+        : (cb.rtxdiIlluminanceAllocated ? directSplitPackIlluminance(weightedLightRadiance) : 0u);
+      DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_RADIANCE)] =
+        uint4(directSplitPackRadiance(weightedDiffuseRadiance, weightedSpecularRadiance), radianceW);
+    }
+
+#ifdef LIGHT_BVH_DEDICATED_SUN
+    // The dedicated sun sample of integrateDirectPath, taken on the primary surface only.
+    if (cb.lightBvhDedicatedSun != 0 && lightBvhUsesReservoir && geometryFlags.primarySelectedIntegrationSurface)
+    {
+      uint sunLightIdx;
+      LightSample sunSample;
+      float sunInvPmf;
+      if (lightBvhSampleDistant(randomState, primarySurfaceInteraction,
+                                directIsThinOpaqueSubsurface(opaqueSurfaceMaterialInteraction), customIndex,
+                                sunLightIdx, sunSample, sunInvPmf))
+      {
+        if (skyProviderActive())
+        {
+          const DecodedPolymorphicLight sunDecoded = decodePolymorphicLight(lights[sunLightIdx]);
+          if (sunDecoded.atmosphereCloudShadowed)
+          {
+            const vec3 dirToSun = normalize(sunSample.position - primarySurfaceInteraction.position);
+            sunSample.radiance *= skyProviderCloudShadow(primarySurfaceInteraction.position, dirToSun);
+          }
+        }
+
+        // evalDedicatedSunPrimary's BSDF terms, with the direction its visibility ray will report.
+        const vec3 sunDirection = safeNormalize(sunSample.position - primarySurfaceInteraction.position, vec3(0.0f, 0.0f, 1.0f));
+        SurfaceMaterialInteractionSplitWeight sunWeight =
+          opaqueSurfaceMaterialInteractionCalcProjectedWeight(opaqueSurfaceMaterialInteraction, primaryMinimalRayInteraction, sunDirection);
+
+        if (cb.shadowTerminatorArgs.soften)
+        {
+          sunWeight.diffuseReflectionWeight *= softenShadowTerminator(
+            primarySurfaceInteraction.geometryNormal,
+            opaqueSurfaceMaterialInteraction.shadingNormal,
+            sunDirection
+          );
+        }
+
+        // The sample's weight and the path throughput are folded in here, so the trace kernel only applies the visibility.
+        const vec3 sunScale = throughput * (sunInvPmf / sunSample.solidAnglePdf);
+        header |= INTEGRATE_DIRECT_SPLIT_FLAG_SUN;
+        headerWritten = false;
+        DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_SUN)] = uint4(
+          directSplitPackRadiance(
+            sunScale * (sunSample.radiance * (sunWeight.diffuseReflectionWeight + sunWeight.diffuseTransmissionWeight)),
+            sunScale * (sunSample.radiance * sunWeight.specularReflectionWeight)),
+          sphereDirectionToSnorm2x16(sunDirection));
+      }
+    }
+#endif
+  }
+
+  if (!headerWritten)
+  {
+    DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_LIGHT)].x = header;
+  }
+
+  // The trace kernel reads the origin's position error from the radiance plane even without a local sample.
+  if ((header & (INTEGRATE_DIRECT_SPLIT_FLAG_ORIGIN | INTEGRATE_DIRECT_SPLIT_FLAG_LOCAL)) == INTEGRATE_DIRECT_SPLIT_FLAG_ORIGIN)
+  {
+    DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_RADIANCE)].w = asuint(originPositionError);
+  }
+}
+#endif
+
+#if INTEGRATE_DIRECT_SPLIT == 2
+#if INTEGRATE_DIRECT_SSS_PROFILE || !INTEGRATE_DIRECT_LEAN_VISIBILITY
+#error "The split direct kernels exist for the Lean levels only."
+#endif
+
+// The trace half: evalNEEPrimary's visibility ray and accumulation, the RTXDI discard, the [LightSamplingStats] record,
+// then evalDedicatedSunPrimary's ray and accumulation, and the output tail of integrateDirectPath, in that order.
+// lightRecord is the pixel's INTEGRATE_DIRECT_SPLIT_PLANE_LIGHT entry.
+void integrateDirectTracePath(
+  uvec2 pixelCoordinate, uint4 lightRecord, GeometryFlags geometryFlags,
+  Ray primaryRay, MinimalRayInteraction primaryMinimalRayInteraction, MinimalSurfaceInteraction primarySurfaceInteraction)
+{
+  const uint header = lightRecord.x;
+
+  vec3 diffuseLobeRadiance = vec3(0.0f, 0.0f, 0.0f);
+  vec3 specularLobeRadiance = vec3(0.0f, 0.0f, 0.0f);
+  float lightHitDistance = 0.0f;
+  float illuminance = 0;
+
+  const bool lightBvhUsesReservoir = cb.lightSamplingMode == lightSamplingModeLightBvh && cb.lightBvhSelectPassActive != 0;
+
+  uint8_t rayMask = OBJECT_MASK_OPAQUE | (geometryFlags.objectMask & OBJECT_MASK_ALL_DYNAMIC);
+  rayMask |= (cb.enableDirectTranslucentShadows) ? OBJECT_MASK_TRANSLUCENT : 0;
+  rayMask |= (cb.enableDirectAlphaBlendShadows) ? OBJECT_MASK_ALPHA_BLEND : 0;
+
+  const bool pomOpaqueSurfaceEncountered = geometryFlags.pomOpaqueSurfaceEncountered && cb.pomEnableDirectLighting;
+  const uint sharedSurfaceIndex = pomOpaqueSurfaceEncountered ? uint(SharedSurfaceIndex[pixelCoordinate]) : SURFACE_INDEX_INVALID;
+
+  if ((header & INTEGRATE_DIRECT_SPLIT_FLAG_LOCAL) != 0u)
+  {
+    const vec3 lightPosition = asfloat(lightRecord.yzw);
+    const uint8_t sampledTransportPortalIndex = uint8_t((header >> 8) & 0xFFu);
+    const uint16_t lightIdx = uint16_t(header >> 16);
+
+#ifdef LIGHT_SAMPLING_STATS
+    g_lightSamplingStatsCandidates = 0;
+    g_lightSamplingStatsAlphaCommits = 0;
+    g_lightSamplingStatsPartialHits = 0;
+#endif
+    const VisibilityResult visibility =
+      traceVisibilityRay<DIRECT_NEE_VISIBILITY_MODE>(
+        primarySurfaceInteraction,
+        lightPosition, rayMask,
+        sampledTransportPortalIndex, geometryFlags.portalSpace, pomOpaqueSurfaceEncountered,
+        primaryMinimalRayInteraction.coneRadius, primaryRay.spreadAngle, 1.0, geometryFlags.isViewModel, false,
+        sharedSurfaceIndex, SharedTextureCoord[pixelCoordinate],
+        false,
+        vec3(0.0f));
+
+    lightHitDistance = visibility.hitDistance;
+    const bool hasOpaqueHit = visibility.hasOpaqueHit;
+
+    if (!visibility.hasOpaqueHit)
+    {
+      const vec3 visibilityAttenuation = vec3(visibility.attenuation);
+      const uint4 radianceRecord = DirectSplitRecords[directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_RADIANCE)];
+      vec3 weightedDiffuseRadiance;
+      vec3 weightedSpecularRadiance;
+      directSplitUnpackRadiance(radianceRecord.xyz, weightedDiffuseRadiance, weightedSpecularRadiance);
+      diffuseLobeRadiance += weightedDiffuseRadiance * visibilityAttenuation;
+      specularLobeRadiance += weightedSpecularRadiance * visibilityAttenuation;
+      // Only written out while allocated, and for the primary surface (integrateDirectPathStoreOutputs).
+      if (cb.rtxdiIlluminanceAllocated && geometryFlags.primarySelectedIntegrationSurface)
+      {
+        illuminance = directSplitUnpackIlluminance(radianceRecord.w, visibilityAttenuation);
+      }
+    }
+
+#ifdef LIGHT_SAMPLING_STATS
+    if (cb.lightSamplingStatsEnabled != 0 && geometryFlags.primarySelectedIntegrationSurface)
+    {
+      lightSamplingStatsRecordPrimary(true, lightIdx, hasOpaqueHit, g_lightSamplingStatsCandidates,
+        length(lightPosition - primarySurfaceInteraction.position),
+        g_lightSamplingStatsAlphaCommits, g_lightSamplingStatsPartialHits);
+    }
+#endif
+
+    if ((header & INTEGRATE_DIRECT_SPLIT_FLAG_RTXDI) != 0u && hasOpaqueHit && cb.enableRtxdiDiscardInvisibleSamples)
+    {
+      RTXDI_Reservoir reservoir = RAB_LoadReservoir(pixelCoordinate, RTXDI_GetSpatialOutputPage());
+
+      if (!lightBvhUsesReservoir)
+      {
+        reservoir.lightIdx = RTXDI_INVALID_LIGHT_INDEX;
+      }
+      reservoir.weightSum = 0;
+
+      RAB_StoreReservoir(reservoir, pixelCoordinate, RTXDI_GetSpatialOutputPage());
+    }
+  }
+
+  if ((header & INTEGRATE_DIRECT_SPLIT_FLAG_SUN) != 0u)
+  {
+    const uint sunAddress = directSplitAddress(pixelCoordinate, INTEGRATE_DIRECT_SPLIT_PLANE_SUN);
+    const vec3 sunDirection = snorm2x16ToSphereDirection(DirectSplitRecords[sunAddress].w);
+    const vec3 sunPosition = primarySurfaceInteraction.position + sunDirection * kDirectSplitDistantSampleDistance;
+    const bool localSampleValid = (header & INTEGRATE_DIRECT_SPLIT_FLAG_LOCAL) != 0u;
+    const float localLuminance = calcBt709Luminance(diffuseLobeRadiance + specularLobeRadiance);
+
+    const VisibilityResult sunVisibility =
+      traceVisibilityRay<DIRECT_NEE_VISIBILITY_MODE>(
+        primarySurfaceInteraction,
+        sunPosition, rayMask,
+        invalidRayPortalIndex, geometryFlags.portalSpace, pomOpaqueSurfaceEncountered,
+        primaryMinimalRayInteraction.coneRadius, primaryRay.spreadAngle, 1.0, geometryFlags.isViewModel, false,
+        sharedSurfaceIndex, SharedTextureCoord[pixelCoordinate],
+        false,
+        vec3(0.0f));
+
+    const float sunHitDistance = sunVisibility.hitDistance;
+    float sunLuminance = 0.0f;
+
+    if (!sunVisibility.hasOpaqueHit)
+    {
+      // The record holds the sun radiance with the sample weight and the path throughput already applied.
+      vec3 diffuseRadiance;
+      vec3 specularRadiance;
+      directSplitUnpackRadiance(DirectSplitRecords[sunAddress].xyz, diffuseRadiance, specularRadiance);
+      diffuseRadiance *= vec3(sunVisibility.attenuation);
+      specularRadiance *= vec3(sunVisibility.attenuation);
+
+      diffuseLobeRadiance += diffuseRadiance;
+      specularLobeRadiance += specularRadiance;
+      sunLuminance = calcBt709Luminance(diffuseRadiance + specularRadiance);
+    }
+
+    // Only one hit distance feeds the denoiser, so it comes from the sample that contributes more.
+    if (!localSampleValid || sunLuminance > localLuminance)
+    {
+      lightHitDistance = sunHitDistance;
+    }
+    illuminance += sunLuminance;
+  }
+
+  integrateDirectPathStoreOutputs(
+    pixelCoordinate, geometryFlags, primarySurfaceInteraction.position,
+    diffuseLobeRadiance, specularLobeRadiance, lightHitDistance, illuminance);
+}
+#endif

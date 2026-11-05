@@ -1,0 +1,281 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+#include "rtx/pass/sharc/sharc_bindings.slangh"
+#include "rtx/utility/common.slangh"
+
+#if SHARC_UPDATE
+// The ceiling one deposit into this cell may reach, as a multiple of what the cell already holds.
+// An absolute cap has to sit below the dimmest cell worth keeping, so a value low enough to catch
+// fireflies also caps every cell's mean. Scaling by the cell's own converged value instead leaves a
+// bright cell its headroom while a dark one refuses spikes it could never average away.
+// The ceiling is in this frame's units, like the radiance it limits.
+float sharcDepositCeiling(SharcParameters p, uint index) {
+  if (cb.sharcArgs.maxDepositRatio <= 0.0f) {
+    return 0.0f;
+  }
+
+  const SharcVoxelData voxel = SharcGetVoxelData(p.resolvedBuffer, index);
+  // A cell this thin has no mean to scale by, but exempting it would exempt the cells that boil,
+  // because one deposit is a third or more of the mean a two-sample cell resolves to.
+  // Those cells are held to the absolute floor instead.
+  if (voxel.accumulatedSampleNum <= float(cb.sharcArgs.minSampleCount)) {
+    return cb.sharcArgs.minDepositCeiling;
+  }
+
+  const float mean = SharcLuma(sharcCacheToFrame(SharcDecodeRadiance(voxel.accumulatedRadiance, vec3(0.0f, 0.0f, 1.0f))));
+  return max(cb.sharcArgs.maxDepositRatio * mean, cb.sharcArgs.minDepositCeiling);
+}
+
+#if SHARC_DEFERRED_FLUSH
+// rtx.sharc.deferredFlush. The vertices of an update path go to a per-tile record instead of registers.
+// Only the open (last inserted) vertex's radiance and weight stay live, because only that vertex still
+// accumulates. A vertex is closed and stored when the next one is inserted, and at path end.
+// sharc_update_flush.comp then runs the reverse propagation and deposits of sharcDepositTileVertices
+// in the same order and with the same arithmetic as the inline flush, so a cell receives exactly the
+// same integer atomic adds.
+//
+// Record layout, as dword planes of tileCount entries each, so neighbouring tiles are adjacent:
+//   plane 0                     vertex count (written at path end, reset to 0 by the flush)
+//   plane 1 + slot * 7 + 0      hash grid index (written at insertion)
+//   plane 1 + slot * 7 + 1..3   radiance (written when the vertex closes)
+//   plane 1 + slot * 7 + 4..6   segment weight (written when the vertex closes)
+// The host sizes the buffer for (1 + 7 * SHARC_PROPAGATION_DEPTH) planes of the tile count below.
+static const uint kSharcDeferredDwordsPerSlot = 7;
+
+uvec2 sharcDeferredTileCount() {
+  const uint tileSize = max(cb.sharcArgs.updateTileSize, 1u);
+  return (cb.camera.resolution + tileSize - 1u) / tileSize;
+}
+
+// The update thread's source pixel lies inside its own tile, including after initPixelCoordinateOnLaunch
+// clamps it to the last row or column, so the pixel identifies the tile.
+uint sharcDeferredTileIndex(uvec2 pixel) {
+  const uint tileSize = max(cb.sharcArgs.updateTileSize, 1u);
+  const uvec2 tile = pixel / tileSize;
+  return tile.y * sharcDeferredTileCount().x + tile.x;
+}
+
+uint sharcDeferredAddress(uint tile, uint plane) {
+  const uvec2 tileCount = sharcDeferredTileCount();
+  return plane * (tileCount.x * tileCount.y) + tile;
+}
+
+uint sharcDeferredSlotPlane(uint slot, uint component) {
+  return 1u + slot * kSharcDeferredDwordsPerSlot + component;
+}
+
+void sharcDeferredStoreClosedVertex(uint tile, uint slot, vec3 radiance, vec3 weight) {
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 1))] = asuint(radiance.x);
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 2))] = asuint(radiance.y);
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 3))] = asuint(radiance.z);
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 4))] = asuint(weight.x);
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 5))] = asuint(weight.y);
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, 6))] = asuint(weight.z);
+}
+
+vec3 sharcDeferredLoadVec3(uint tile, uint slot, uint firstComponent) {
+  return vec3(
+    asfloat(SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, firstComponent + 0))]),
+    asfloat(SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, firstComponent + 1))]),
+    asfloat(SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(slot, firstComponent + 2))]));
+}
+
+// The body of the inline sharcFlushVertices below, reading the closed vertices from the record.
+// The flush kernel and the sky retry share it, so both deposit exactly what the inline flush would.
+void sharcDepositTileVertices(uint tile, uint count) {
+  SharcParameters p = makeSharcParameters();
+  vec3 radiance = vec3(0.0f);
+
+  [unroll]
+  for (int i = SHARC_PROPAGATION_DEPTH - 1; i >= 0; --i) {
+    if (uint(i) < count) {
+      const uint index = SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(uint(i), 0))];
+      radiance = sharcDeferredLoadVec3(tile, uint(i), 1) + sharcDeferredLoadVec3(tile, uint(i), 4) * radiance;
+      const vec3 deposit = sharcFrameToCache(fireflyFiltering(radiance, sharcDepositCeiling(p, index)));
+      SharcAddVoxelData(p, index, deposit, vec3(1.0f), vec3(0.0f, 0.0f, 1.0f), 0.0f, 1);
+    }
+  }
+}
+
+// The open vertex is slot count - 1. Earlier slots are closed and live in the record.
+struct SharcUpdateState {
+  vec3 radiance;
+  vec3 weight;
+  uint count;
+};
+
+void sharcUpdateStateInit(inout SharcUpdateState state) {
+  state.count = 0;
+  state.radiance = vec3(0.0f);
+  state.weight = vec3(1.0f);
+}
+
+// This is unpredicated, because with count 0 the open vertex is unused and insertion overwrites it.
+void sharcAccumulateRadiance(inout SharcUpdateState state, vec3 radiance) {
+  state.radiance += state.weight * radiance;
+}
+
+void sharcAccumulateThroughput(inout SharcUpdateState state, vec3 throughput) {
+  state.weight *= throughput;
+}
+
+void sharcInsertVertex(inout SharcUpdateState state, SharcHitData hit, uint portalSpace, uvec2 pixel) {
+  if (state.count >= SHARC_PROPAGATION_DEPTH) {
+    return;
+  }
+
+  SharcParameters p = makeSharcParametersAt(portalSpace, hit.positionWorld);
+  HashGridKey key;
+  HashGridIndex index;
+  if (!HashGridInsertEntry(p.hashGridData, hit.positionWorld, hit.normalWorld,
+                           p.hashGridParameters, key, index)) {
+    return;
+  }
+
+  const uint tile = sharcDeferredTileIndex(pixel);
+  if (state.count > 0) {
+    sharcDeferredStoreClosedVertex(tile, state.count - 1, state.radiance, state.weight);
+  }
+  SharcDeferredVertices[sharcDeferredAddress(tile, sharcDeferredSlotPlane(state.count, 0))] = index;
+  state.radiance = vec3(0.0f);
+  state.weight = vec3(1.0f);
+  ++state.count;
+}
+
+// Callers only seed a vertex they have just inserted, so the open vertex is the one.
+void sharcSeedVertex(inout SharcUpdateState state, vec3 radiance, vec3 weight) {
+  state.radiance = radiance;
+  state.weight = weight;
+}
+
+// Deposits immediately, for the sky retry. Closes the open vertex into the record and runs the flush body on it.
+void sharcFlushVertices(SharcUpdateState state, uvec2 pixel) {
+  if (state.count == 0) {
+    return;
+  }
+  const uint tile = sharcDeferredTileIndex(pixel);
+  sharcDeferredStoreClosedVertex(tile, state.count - 1, state.radiance, state.weight);
+  sharcDepositTileVertices(tile, state.count);
+}
+
+// Called at path end. Closes the open vertex and publishes the count for the flush kernel.
+// A tile whose path stored nothing keeps the 0 that the previous flush or the buffer clear left there.
+void sharcEndPath(SharcUpdateState state, uvec2 pixel) {
+  if (state.count == 0) {
+    return;
+  }
+  const uint tile = sharcDeferredTileIndex(pixel);
+  sharcDeferredStoreClosedVertex(tile, state.count - 1, state.radiance, state.weight);
+  SharcDeferredVertices[sharcDeferredAddress(tile, 0)] = state.count;
+}
+#else
+// Radiance and segment weight are recorded between cached vertices and propagated once, in
+// reverse, at path end. The camera prefix never enters the propagation, so no throughput
+// division is needed and a zero-throughput colour channel stays well defined. Constant array
+// indices let the compiler scalarize the small arrays.
+struct SharcUpdateState {
+  uint indices[SHARC_PROPAGATION_DEPTH];
+  vec3 radiance[SHARC_PROPAGATION_DEPTH];
+  vec3 weights[SHARC_PROPAGATION_DEPTH];
+  uint count;
+};
+
+void sharcUpdateStateInit(inout SharcUpdateState state) {
+  state.count = 0;
+}
+
+void sharcAccumulateRadiance(inout SharcUpdateState state, vec3 radiance) {
+  [unroll]
+  for (uint i = 0; i < SHARC_PROPAGATION_DEPTH; ++i) {
+    if (state.count == i + 1) {
+      state.radiance[i] += state.weights[i] * radiance;
+    }
+  }
+}
+
+void sharcAccumulateThroughput(inout SharcUpdateState state, vec3 throughput) {
+  [unroll]
+  for (uint i = 0; i < SHARC_PROPAGATION_DEPTH; ++i) {
+    if (state.count == i + 1) {
+      state.weights[i] *= throughput;
+    }
+  }
+}
+
+void sharcInsertVertex(inout SharcUpdateState state, SharcHitData hit, uint portalSpace, uvec2 pixel) {
+  if (state.count >= SHARC_PROPAGATION_DEPTH) {
+    return;
+  }
+
+  SharcParameters p = makeSharcParametersAt(portalSpace, hit.positionWorld);
+  HashGridKey key;
+  HashGridIndex index;
+  if (!HashGridInsertEntry(p.hashGridData, hit.positionWorld, hit.normalWorld,
+                           p.hashGridParameters, key, index)) {
+    return;
+  }
+
+  [unroll]
+  for (uint i = 0; i < SHARC_PROPAGATION_DEPTH; ++i) {
+    if (state.count == i) {
+      state.indices[i] = index;
+      state.radiance[i] = vec3(0.0f);
+      state.weights[i] = vec3(1.0f);
+    }
+  }
+  ++state.count;
+}
+
+// Seeds the vertex just inserted with lighting already known at insertion and the weight of the
+// segment leaving it. The primary vertex needs both, because the direct pass lit it and sampled
+// its continuation before this stage ran.
+void sharcSeedVertex(inout SharcUpdateState state, vec3 radiance, vec3 weight) {
+  [unroll]
+  for (uint i = 0; i < SHARC_PROPAGATION_DEPTH; ++i) {
+    if (state.count == i + 1) {
+      state.radiance[i] = radiance;
+      state.weights[i] = weight;
+    }
+  }
+}
+
+void sharcFlushVertices(SharcUpdateState state, uvec2 pixel) {
+  SharcParameters p = makeSharcParameters();
+  vec3 radiance = vec3(0.0f);
+
+  [unroll]
+  for (int i = SHARC_PROPAGATION_DEPTH - 1; i >= 0; --i) {
+    if (uint(i) < state.count) {
+      radiance = state.radiance[i] + state.weights[i] * radiance;
+      const vec3 deposit = sharcFrameToCache(fireflyFiltering(radiance, sharcDepositCeiling(p, state.indices[i])));
+      SharcAddVoxelData(p, state.indices[i], deposit, vec3(1.0f), vec3(0.0f, 0.0f, 1.0f), 0.0f, 1);
+    }
+  }
+}
+
+void sharcEndPath(SharcUpdateState state, uvec2 pixel) {
+  sharcFlushVertices(state, pixel);
+}
+#endif // SHARC_DEFERRED_FLUSH
+#endif

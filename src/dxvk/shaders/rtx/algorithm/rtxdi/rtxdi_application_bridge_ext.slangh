@@ -1,0 +1,233 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// Includes NVIDIA's RTXDI application bridge (RtxdiApplicationBridge.slangh), which is used unmodified, and wraps some
+// of its RAB_ functions. While the bridge is included, those functions are renamed with a Base suffix, and the wrappers
+// below take the original names, so the RTXDI SDK and the passes call the wrappers.
+// Calls from one bridge function to another inside the bridge resolve to the Base versions.
+// Nothing included by the bridge may call a renamed function, or that call would skip its wrapper.
+
+#define RAB_GetLightSample RAB_GetLightSampleBase
+#define RAB_GetPortalSpaceLightSample RAB_GetPortalSpaceLightSampleBase
+#define RAB_LoadReservoir RAB_LoadReservoirBase
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW || VOLUME_WATER_SURFACE_LIGHTING
+#define RAB_GetLightSampleWithTypeHint RAB_GetLightSampleWithTypeHintBase
+#endif
+#ifdef RESTIR_GI_PREVIOUS_FRAME_PAGE
+#define RAB_LoadGIReservoir RAB_LoadGIReservoirBase
+#endif
+#ifdef LIGHT_BVH_SELECT_NO_SUBSURFACE
+#define RAB_GetGBufferSurface RAB_GetGBufferSurfaceBase
+#endif
+
+#include "rtx/algorithm/rtxdi/RtxdiApplicationBridge.slangh"
+
+#undef RAB_GetLightSample
+#undef RAB_GetPortalSpaceLightSample
+#undef RAB_LoadReservoir
+#undef RAB_GetLightSampleWithTypeHint
+#undef RAB_LoadGIReservoir
+#undef RAB_GetGBufferSurface
+
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+#include "rtx/algorithm/sky_provider.slangh"
+#endif
+
+#ifdef LIGHT_BVH_SELECT_NO_SUBSURFACE
+// Bound only while no thin-opaque material exists and no diffusion-profile instance is in the scene, where the G-buffer
+// holds the no-subsurface encoding for every pixel. The subsurface interaction is that encoding's decode, so the
+// subsurface G-buffer and the surface material are not read.
+// The decode is all zeros, as RAB_EmptySurface sets it, so it also holds for the surfaces the bridge returns early.
+RAB_Surface RAB_GetGBufferSurface(ivec2 pixel, bool previousFrame)
+{
+  RAB_Surface surface = RAB_GetGBufferSurfaceBase(pixel, previousFrame);
+  surface.opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction = subSurfaceMaterialReadHelper(uint2(0u, 0u), uint2(0u, 0u));
+  return surface;
+}
+#endif
+
+// The reservoir buffer is zero-filled on creation, and a zero record would unpack as a valid reservoir for light 0.
+// Sparse rendering reuses pixels that have not written a reservoir since then, so a zero record is read as empty.
+// A written reservoir for light 0 is not affected, since holding a sample makes its M at least 1, which keeps data1 nonzero.
+RTXDI_Reservoir RAB_LoadReservoir(int2 pixel, int page)
+{
+#ifdef RAB_HAS_RTXDI_RESERVOIRS
+  const RTXDI_PackedReservoir packedReservoir = RtxdiReservoirBuffer[RTXDI_ReservoirPositionToPointer(pixel, cb.camera.resolution, page)];
+  if (all((packedReservoir.data0 | packedReservoir.data1) == 0u))
+  {
+    return RTXDI_EmptyReservoir();
+  }
+
+  return RTXDI_UnpackReservoir(packedReservoir);
+#else
+  return RTXDI_EmptyReservoir();
+#endif
+}
+
+#ifdef RESTIR_GI_PREVIOUS_FRAME_PAGE
+ReSTIRGI_Reservoir RAB_LoadGIReservoir(int2 pixel, int page)
+{
+  ReSTIRGI_Reservoir reservoir = RAB_LoadGIReservoirBase(pixel, page);
+#ifdef RAB_HAS_RESTIR_GI_RESERVOIRS
+  // A pass that runs before this frame's reservoirs replace the previous frame's (the temporal reuse) reads
+  // radiance at the previous pre-exposure on this page (rtx_pre_exposure.h).
+  if (page == RESTIR_GI_PREVIOUS_FRAME_PAGE)
+  {
+    reservoir.radiance *= cb.preExposureHistoryRatio;
+  }
+#endif
+  return reservoir;
+}
+#endif
+
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+// Multiplies a volume light sample of a light the sky provider marks cloud-shadowed (the sun and moons)
+// by the cloud transmittance toward the light, so the froxel cache keeps the clouds' shadows.
+// Only the volume integrate pass enables it, so the volume ReSTIR passes resample without it.
+void applyVolumeLightSampleCloudShadow(inout RAB_LightSample lightSample, DecodedPolymorphicLight light, RAB_VolumeInteraction volumeInteraction)
+{
+  if (!skyProviderActive() || !light.atmosphereCloudShadowed)
+  {
+    return;
+  }
+
+  const vec3 position = volumeInteraction.volumeInteraction.position;
+  lightSample.radiance *= skyProviderCloudShadow(position, normalize(lightSample.position - position));
+}
+#endif
+
+#if VOLUME_WATER_SURFACE_LIGHTING
+void applyVolumeWaterSurface(inout RAB_LightSample lightSample, DecodedPolymorphicLight light, RAB_VolumeInteraction volumeInteraction)
+{
+  lightSample.volumeVisibilityRay = float4(0.0f);
+  if (!cb.cameraWaterVolumeActive || !cb.cameraWaterSurfaceValid || light.polymorphicType != lightTypeDistant)
+  {
+    return;
+  }
+
+  const float3 position = volumeInteraction.volumeInteraction.position;
+  const float3 toLight = lightSample.position - position;
+  const float sourceDistance = length(toLight);
+  if (!isfinite(sourceDistance) || sourceDistance <= 0.0f)
+  {
+    return;
+  }
+  const float3 direction = toLight / sourceDistance;
+  // The submitted water-height protocol uses world Z as its height axis.
+  if (direction.z <= 0.0001f)
+  {
+    return;
+  }
+
+  if (!all(isfinite(position)) || !isfinite(cb.cameraWaterSurfaceHeight))
+  {
+    return;
+  }
+  const float depth = max(cb.cameraWaterSurfaceHeight - position.z, 0.0f);
+  // Keep the virtual sample distinct from its froxel even at the surface.
+  const float positionScale = max(max(abs(position.x), abs(position.y)), abs(position.z));
+  const float minDistance = max(0.0001f, positionScale * 0.000001f);
+  const float waterDistance = clamp(depth / direction.z, minDistance, sourceDistance);
+  lightSample.volumeVisibilityRay = float4(direction, sourceDistance);
+  lightSample.position = position + direction * waterDistance;
+}
+#endif
+
+// A sample of the previous frame's lights is encoded at the previous pre-exposure (rtx_pre_exposure.h).
+// The wrappers below bring it to this frame's pre-exposure.
+
+RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, MinimalSurfaceInteraction minimalSurfaceInteraction, bool usePreviousLights = false)
+{
+  RAB_LightSample lightSample = RAB_GetLightSampleBase(lightID, lightUV, minimalSurfaceInteraction, usePreviousLights);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
+  if (usePreviousLights)
+  {
+    lightSample.radiance *= cb.preExposureHistoryRatio;
+  }
+  return lightSample;
+}
+
+RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, RAB_Surface surface, bool usePreviousLights = false)
+{
+  return RAB_GetLightSample(lightID, lightUV, surface.minimalSurfaceInteraction, usePreviousLights);
+}
+
+RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, RAB_VolumeInteraction volumeInteraction, bool usePreviousLights = false)
+{
+  RAB_LightSample lightSample = RAB_GetLightSampleBase(lightID, lightUV, volumeInteraction, usePreviousLights);
+  if (usePreviousLights)
+  {
+    lightSample.radiance *= cb.preExposureHistoryRatio;
+  }
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+  applyVolumeLightSampleCloudShadow(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
+#endif
+#if VOLUME_WATER_SURFACE_LIGHTING
+  applyVolumeWaterSurface(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
+#endif
+  return lightSample;
+}
+
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW || VOLUME_WATER_SURFACE_LIGHTING
+RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uint lightType, RAB_Surface surface)
+{
+  RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, surface);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
+  return lightSample;
+}
+
+RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uint lightType, RAB_VolumeInteraction volumeInteraction)
+{
+  RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, volumeInteraction);
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+  applyVolumeLightSampleCloudShadow(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
+#endif
+#if VOLUME_WATER_SURFACE_LIGHTING
+  applyVolumeWaterSurface(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
+#endif
+  return lightSample;
+}
+#endif
+
+// The light sample is taken in the light's space and its position moved to portal space, which leaves the radiance as is.
+RAB_LightSample RAB_GetPortalSpaceLightSample(uint lightIdx, float2 lightUV, uint8_t portalIdx, MinimalSurfaceInteraction minimalSurfaceInteraction, bool usePreviousLights = false)
+{
+  RAB_LightSample lightSample = RAB_GetPortalSpaceLightSampleBase(lightIdx, lightUV, portalIdx, minimalSurfaceInteraction, usePreviousLights);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  lightSample.volumeVisibilityRay = float4(0.0f);
+#endif
+  if (usePreviousLights)
+  {
+    lightSample.radiance *= cb.preExposureHistoryRatio;
+  }
+  return lightSample;
+}
+
+RAB_LightSample RAB_GetPortalSpaceLightSample(uint lightIdx, float2 lightUV, uint8_t portalIdx, RAB_Surface surface, bool usePreviousLights = false)
+{
+  return RAB_GetPortalSpaceLightSample(lightIdx, lightUV, portalIdx, surface.minimalSurfaceInteraction, usePreviousLights);
+}

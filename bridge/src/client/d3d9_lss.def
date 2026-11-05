@@ -1,0 +1,32 @@
+LIBRARY D3D9.DLL
+EXPORTS
+  D3DPERF_BeginEvent @ 27
+  D3DPERF_EndEvent @ 28
+  D3DPERF_GetStatus @ 29
+  D3DPERF_QueryRepeatFrame @ 30
+  D3DPERF_SetMarker @ 31
+  D3DPERF_SetOptions @ 32
+  D3DPERF_SetRegion @ 33
+
+  DebugSetLevel @ 34
+  DebugSetMute @ 35
+
+  Direct3D9EnableMaximizedWindowedModeShim @ 36
+
+  Direct3DCreate9 @ 37
+  Direct3DCreate9Ex @ 38
+
+  DetourFinishHelperProcess @ 1
+
+  remixapi_InitializeLibrary @ 39
+  remixapi_RegisterCallbacks @ 40
+
+  remixapi_SetColorGradePreset @ 41
+  remixapi_SetColorGrade @ 42
+  remixapi_MixColorGradePresets @ 43
+  remixapi_GetColorGrade @ 44
+  remixapi_SaveColorGradePreset @ 45
+  BridgeClient_SetOuterDevice @ 46
+  remixapi_GetRetainedInterface
+  remixapi_GetRetainedVisibilityInterface
+  remixapi_SubmitLocalStarbursts

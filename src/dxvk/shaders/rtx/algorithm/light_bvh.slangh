@@ -1,0 +1,719 @@
+/*
+* Light BVH sampling.
+*
+* GPU half of PBRT 4ed BVHLightSampler (https://pbr-book.org/4ed/Light_Sources/Light_Sampling).
+* A single stochastic path walks the light BVH built by rtx_fork_light_bvh.cpp, choosing each child
+* in proportion to its LightBounds importance at the shading point. Distant (infinite) lights are
+* sampled separately, as in PBRT. The walk returns a light index with its PMF, and a bit-trail walk
+* evaluates the PMF of a given light for MIS.
+*
+* Buffer layout (lightBvhNodes, StructuredBuffer<uint4>):
+*   [2i]   x: octahedral w (2x16)  y: phi (f32)  z: cosTheta_o q15 | cosTheta_e q15 << 15 | twoSided << 30
+*          w: childOrLightIndex (31) | isLeaf << 31
+*   [2i+1] x: qMin.x | qMin.y << 16  y: qMin.z | qMax.x << 16  z: qMax.y | qMax.z << 16  (16-bit, root box)
+*   [2*nodeCount + (l >> 2)][l & 3]: bit trail of light l (bit d = took child 1 at depth d, bit 31 = in BVH)
+*
+* The distance clamp uses (half the box diagonal)^2 instead of PBRT's Length(diagonal) / 2, which mixes units.
+* Both only matter at or inside the box.
+*
+* Everything that depends only on the shading point (distant-light importance, root importance and the
+* infinite/BVH split) is computed once per LightBvhContext rather than per candidate. The walk carries the
+* chosen child's node word down, so each level is one round of two independent child loads.
+* Candidates are stratified on their first decision.
+*/
+#pragma once
+
+static const uint lightSamplingModeRtxdi = 0;
+static const uint lightSamplingModeLightBvh = 1;
+
+static const uint kLightBvhLeafBit = 0x80000000u;
+static const uint kLightBvhTrailValidBit = 0x80000000u;
+static const uint kLightBvhMaxTraversalSteps = 64;
+
+struct LightBvhBounds
+{
+  vec3 pMin;
+  vec3 pMax;
+  vec3 w;
+  float phi;
+  float cosThetaO;
+  float cosThetaE;
+  bool twoSided;
+};
+
+// The traversal RNG is full-precision hashed white noise. Blue noise is 8-bit quantized, which would make
+// the realized per-level child probabilities differ from the PMF the estimator divides by.
+uint lightBvhSeed(inout RNG randomState)
+{
+  uint h = randomState.pixelIdx.x * 0x8da6b343u ^ randomState.pixelIdx.y * 0xd8163841u ^
+           randomState.temporalIdx * 0xcb1ab31fu ^ (randomState.seed + 0x9e3779b9u) * 0x165667b1u;
+  h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+  // Advance the caller's RNG so repeated calls at the same vertex draw different streams.
+  randomState.seed++;
+  return h;
+}
+
+float lightBvhRandom(inout uint state)
+{
+  state = state * 747796405u + 2891336453u;
+  uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  word = (word >> 22u) ^ word;
+  return float(word >> 8) * (1.0f / 16777216.0f);
+}
+
+float lightBvhSafeSqrt(float v)
+{
+  return sqrt(max(v, 0.0f));
+}
+
+// cos(max(0, a - b)) from sines/cosines of a and b (PBRT cosSubClamped).
+float lightBvhCosSubClamped(float sinA, float cosA, float sinB, float cosB)
+{
+  if (cosA > cosB)
+  {
+    return 1.0f;
+  }
+  return cosA * cosB + sinA * sinB;
+}
+
+// sin(max(0, a - b)) (PBRT sinSubClamped).
+float lightBvhSinSubClamped(float sinA, float cosA, float sinB, float cosB)
+{
+  if (cosA > cosB)
+  {
+    return 0.0f;
+  }
+  return sinA * cosB - cosA * sinB;
+}
+
+vec3 lightBvhDecodeOctahedral(uint packed)
+{
+  const float x = float(packed & 0xffffu) * (2.0f / 65535.0f) - 1.0f;
+  const float y = float(packed >> 16) * (2.0f / 65535.0f) - 1.0f;
+  vec3 v = vec3(x, y, 1.0f - abs(x) - abs(y));
+  if (v.z < 0.0f)
+  {
+    v.x = (1.0f - abs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+    v.y = (1.0f - abs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+  }
+  return normalize(v);
+}
+
+float lightBvhDecodeCos(uint q)
+{
+  return float(q) * (2.0f / 32767.0f) - 1.0f;
+}
+
+// Loads a node's bounds. nodeWord receives its childOrLightIndex | isLeaf word.
+LightBvhBounds lightBvhLoadBounds(uint nodeIndex, out uint nodeWord)
+{
+  const uint4 a = lightBvhNodes[2 * nodeIndex];
+  const uint4 b = lightBvhNodes[2 * nodeIndex + 1];
+
+  LightBvhBounds bounds;
+  bounds.w = lightBvhDecodeOctahedral(a.x);
+  bounds.phi = uintBitsToFloat(a.y);
+  bounds.cosThetaO = lightBvhDecodeCos(a.z & 0x7fffu);
+  bounds.cosThetaE = lightBvhDecodeCos((a.z >> 15) & 0x7fffu);
+  bounds.twoSided = ((a.z >> 30) & 1u) != 0u;
+  nodeWord = a.w;
+
+  const vec3 origin = vec3(cb.lightBvhBoundsMinX, cb.lightBvhBoundsMinY, cb.lightBvhBoundsMinZ);
+  const vec3 scale = vec3(cb.lightBvhBoundsExtentX, cb.lightBvhBoundsExtentY, cb.lightBvhBoundsExtentZ) * (1.0f / 65535.0f);
+  const vec3 qMin = vec3(float(b.x & 0xffffu), float(b.x >> 16), float(b.y & 0xffffu));
+  const vec3 qMax = vec3(float(b.y >> 16), float(b.z & 0xffffu), float(b.z >> 16));
+  bounds.pMin = origin + scale * qMin;
+  bounds.pMax = origin + scale * qMax;
+
+  return bounds;
+}
+
+struct LightBvhContext
+{
+  vec3 p;
+  vec3 n;
+  bool hasNormal;
+  // Receivers that transmit light (thin opaque subsurface) accept light from both hemispheres.
+  bool twoSidedReceiver;
+
+  // Per-shading-point values shared by every candidate and by the PMF walk.
+  float distantImportance;
+  float rootImportance;
+  float pInfinite;
+  uint rootWord;
+#ifdef LIGHT_BVH_SELECT_PASS
+  // The root's two children, evaluated once per pixel by lightBvhSelect and reused by every candidate's first step.
+  bool rootPairCached;
+  uint rootChildWord0;
+  uint rootChildWord1;
+  float rootChildImportance0;
+  float rootChildImportance1;
+#endif
+};
+
+// PBRT LightBounds::Importance: conservative upper bound on the contribution of everything in the
+// bounds to a receiver at ctx.p with normal ctx.n. Zero only where no light in the bounds can contribute.
+float lightBvhImportance(LightBvhBounds b, LightBvhContext ctx)
+{
+  const vec3 pc = 0.5f * (b.pMin + b.pMax);
+  const vec3 halfDiagonal = 0.5f * (b.pMax - b.pMin);
+  const float radius2 = dot(halfDiagonal, halfDiagonal);
+  const vec3 toPoint = ctx.p - pc;
+  const float trueD2 = dot(toPoint, toPoint);
+  const float d2 = max(trueD2, radius2);
+  const vec3 wi = trueD2 > 0.0f ? toPoint * rsqrt(trueD2) : vec3(0.0f, 0.0f, 1.0f);
+
+  // Angle between the emission cone axis and the direction to the receiver.
+  float cosThetaW = dot(b.w, wi);
+  if (b.twoSided)
+  {
+    cosThetaW = abs(cosThetaW);
+  }
+  const float sinThetaW = lightBvhSafeSqrt(1.0f - cosThetaW * cosThetaW);
+
+  // Half-angle of the cone that bounds the box as seen from the receiver.
+  const bool inside = all(ctx.p >= b.pMin) && all(ctx.p <= b.pMax);
+  const float cosThetaB = (inside || trueD2 < radius2) ? -1.0f : lightBvhSafeSqrt(1.0f - radius2 / trueD2);
+  const float sinThetaB = lightBvhSafeSqrt(1.0f - cosThetaB * cosThetaB);
+
+  // theta' = max(0, theta_w - theta_o - theta_b)
+  const float sinThetaO = lightBvhSafeSqrt(1.0f - b.cosThetaO * b.cosThetaO);
+  const float cosThetaX = lightBvhCosSubClamped(sinThetaW, cosThetaW, sinThetaO, b.cosThetaO);
+  const float sinThetaX = lightBvhSinSubClamped(sinThetaW, cosThetaW, sinThetaO, b.cosThetaO);
+  const float cosThetaP = lightBvhCosSubClamped(sinThetaX, cosThetaX, sinThetaB, cosThetaB);
+  if (cosThetaP <= b.cosThetaE)
+  {
+    return 0.0f;
+  }
+
+  float importance = b.phi * cosThetaP / d2;
+
+  // Incident angle at the receiver (toward the light is -wi).
+  if (ctx.hasNormal)
+  {
+    float cosThetaI = dot(-wi, ctx.n);
+    if (ctx.twoSidedReceiver)
+    {
+      cosThetaI = abs(cosThetaI);
+    }
+    const float sinThetaI = lightBvhSafeSqrt(1.0f - cosThetaI * cosThetaI);
+    const float cosThetaPI = lightBvhCosSubClamped(sinThetaI, cosThetaI, sinThetaB, cosThetaB);
+    importance *= max(cosThetaPI, 0.0f);
+  }
+
+  return max(importance, 0.0f);
+}
+
+// Importance of a distant light on the same scale as lightBvhImportance (pi x irradiance bound).
+float lightBvhDistantImportance(uint lightIdx, LightBvhContext ctx)
+{
+  const DistantLight distantLight = distantLightCreate(decodePolymorphicLight(lights[lightIdx]));
+  const float sin2 = max(distantLight.sinHalfAngle * distantLight.sinHalfAngle, 1e-8f);
+  float importance = calcBt709Luminance(distantLight.radiance) / sin2 *
+    twoPi * (1.0f - distantLight.cosHalfAngle) * pi;
+
+  if (ctx.hasNormal)
+  {
+    float cosThetaI = dot(-distantLight.direction, ctx.n);
+    if (ctx.twoSidedReceiver)
+    {
+      cosThetaI = abs(cosThetaI);
+    }
+    const float sinThetaI = lightBvhSafeSqrt(1.0f - cosThetaI * cosThetaI);
+    importance *= max(lightBvhCosSubClamped(sinThetaI, cosThetaI, distantLight.sinHalfAngle, distantLight.cosHalfAngle), 0.0f);
+  }
+
+  return importance;
+}
+
+// The probability of sampling the distant lights instead of the BVH. PBRT uses a fixed nInf / (nInf + 1).
+// This follows the importance ratio, clamped so neither side starves when both can contribute.
+float lightBvhInfiniteProbability(float distantImportance, float rootImportance)
+{
+  if (distantImportance <= 0.0f)
+  {
+    return 0.0f;
+  }
+  if (rootImportance <= 0.0f)
+  {
+    return 1.0f;
+  }
+  return clamp(distantImportance / (distantImportance + rootImportance),
+               cb.lightBvhInfiniteMinProbability, cb.lightBvhInfiniteMaxProbability);
+}
+
+// skipDistant leaves out the distant-light loop, for callers that set pInfinite to 0 and never read
+// distantImportance afterwards (lightBvhSelect with excludeDistant).
+LightBvhContext lightBvhCreateContext(vec3 position, vec3 normal, bool twoSidedReceiver, bool skipDistant = false)
+{
+  LightBvhContext ctx;
+  ctx.p = position;
+  ctx.n = normal;
+  ctx.hasNormal = cb.lightBvhUseSurfaceNormal != 0 && dot(normal, normal) > 0.0f;
+  ctx.twoSidedReceiver = twoSidedReceiver;
+  ctx.distantImportance = 0.0f;
+  ctx.rootImportance = 0.0f;
+  ctx.pInfinite = 0.0f;
+  ctx.rootWord = 0u;
+#ifdef LIGHT_BVH_SELECT_PASS
+  ctx.rootPairCached = false;
+  ctx.rootChildWord0 = 0u;
+  ctx.rootChildWord1 = 0u;
+  ctx.rootChildImportance0 = 0.0f;
+  ctx.rootChildImportance1 = 0.0f;
+#endif
+
+  if (!skipDistant)
+  {
+    const LightRangeInfo distantRange = cb.lightRanges[lightTypeDistant];
+    for (uint i = 0; i < distantRange.count; ++i)
+    {
+      ctx.distantImportance += lightBvhDistantImportance(distantRange.offset + i, ctx);
+    }
+  }
+
+  if (cb.lightBvhNodeCount != 0)
+  {
+    const LightBvhBounds rootBounds = lightBvhLoadBounds(0, ctx.rootWord);
+    ctx.rootImportance = lightBvhImportance(rootBounds, ctx);
+  }
+
+  ctx.pInfinite = lightBvhInfiniteProbability(ctx.distantImportance, ctx.rootImportance);
+  return ctx;
+}
+
+// Picks a light (buffer index) for the receiver described by ctx, with pmf the probability of that choice.
+// u is the first decision's random number, stratified by the caller. Later levels draw from rngState.
+bool lightBvhSampleLightIndex(LightBvhContext ctx, float u, inout uint rngState, out uint lightIdx, out float pmf)
+{
+  lightIdx = 0;
+  pmf = 0.0f;
+
+  if (u < ctx.pInfinite)
+  {
+    // Distant lights, proportional to their importance (u remapped to [0,1) within the distant branch).
+    const LightRangeInfo range = cb.lightRanges[lightTypeDistant];
+    const float target = (u / ctx.pInfinite) * ctx.distantImportance;
+    float accumulated = 0.0f;
+    float selectedImportance = 0.0f;
+    for (uint i = 0; i < range.count; ++i)
+    {
+      const float importance = lightBvhDistantImportance(range.offset + i, ctx);
+      if (importance <= 0.0f)
+      {
+        continue;
+      }
+      accumulated += importance;
+      // The last positive entry doubles as the fallback against float round-off in the running sum.
+      lightIdx = range.offset + i;
+      selectedImportance = importance;
+      if (target < accumulated)
+      {
+        break;
+      }
+    }
+    pmf = ctx.pInfinite * selectedImportance / ctx.distantImportance;
+    return selectedImportance > 0.0f;
+  }
+
+  if (ctx.rootImportance <= 0.0f)
+  {
+    return false;
+  }
+
+  // The first random number, remapped into the BVH branch, drives the root split.
+  float r = (u - ctx.pInfinite) / (1.0f - ctx.pInfinite);
+  float nodePmf = 1.0f - ctx.pInfinite;
+  uint nodeIndex = 0;
+  uint nodeWord = ctx.rootWord;
+
+  for (uint step = 0; step < kLightBvhMaxTraversalSteps; ++step)
+  {
+    if ((nodeWord & kLightBvhLeafBit) != 0u)
+    {
+      lightIdx = nodeWord & ~kLightBvhLeafBit;
+      pmf = nodePmf;
+      return true;
+    }
+
+    const uint child0 = nodeIndex + 1;
+    const uint child1 = nodeWord & ~kLightBvhLeafBit;
+    uint word0, word1;
+#ifdef LIGHT_BVH_SELECT_PASS
+    // Step 0 is always the root. lightBvhSelect evaluated its pair with the same ctx, whose p, n, hasNormal and
+    // twoSidedReceiver do not change after creation, so the cached values are identical.
+    float importance0, importance1;
+    if (step == 0 && ctx.rootPairCached)
+    {
+      word0 = ctx.rootChildWord0;
+      word1 = ctx.rootChildWord1;
+      importance0 = ctx.rootChildImportance0;
+      importance1 = ctx.rootChildImportance1;
+    }
+    else
+    {
+      const LightBvhBounds bounds0 = lightBvhLoadBounds(child0, word0);
+      const LightBvhBounds bounds1 = lightBvhLoadBounds(child1, word1);
+      importance0 = lightBvhImportance(bounds0, ctx);
+      importance1 = lightBvhImportance(bounds1, ctx);
+    }
+#else
+    const LightBvhBounds bounds0 = lightBvhLoadBounds(child0, word0);
+    const LightBvhBounds bounds1 = lightBvhLoadBounds(child1, word1);
+    const float importance0 = lightBvhImportance(bounds0, ctx);
+    const float importance1 = lightBvhImportance(bounds1, ctx);
+#endif
+    const float importanceSum = importance0 + importance1;
+
+    if (!(importanceSum > 0.0f))
+    {
+      return false;
+    }
+
+    const float p0 = importance0 / importanceSum;
+    if (r < p0)
+    {
+      nodePmf *= p0;
+      nodeIndex = child0;
+      nodeWord = word0;
+    }
+    else
+    {
+      nodePmf *= 1.0f - p0;
+      nodeIndex = child1;
+      nodeWord = word1;
+    }
+
+    r = lightBvhRandom(rngState);
+  }
+
+  return false;
+}
+
+// PMF of lightBvhSampleLightIndex choosing lightIdx at this receiver (PBRT BVHLightSampler::PMF).
+// It serves MIS against BSDF-sampled hits on analytic lights. Nothing calls it, because BSDF rays do not
+// intersect Remix analytic lights.
+float lightBvhLightPmf(LightBvhContext ctx, uint lightIdx)
+{
+  const LightRangeInfo distantRange = cb.lightRanges[lightTypeDistant];
+  if (lightIdx >= distantRange.offset && lightIdx < distantRange.offset + distantRange.count)
+  {
+    return ctx.distantImportance > 0.0f ? ctx.pInfinite * lightBvhDistantImportance(lightIdx, ctx) / ctx.distantImportance : 0.0f;
+  }
+
+  if (cb.lightBvhNodeCount == 0 || ctx.rootImportance <= 0.0f)
+  {
+    return 0.0f;
+  }
+
+  uint trail = lightBvhNodes[2 * cb.lightBvhNodeCount + (lightIdx >> 2)][lightIdx & 3u];
+  if ((trail & kLightBvhTrailValidBit) == 0u)
+  {
+    return 0.0f;
+  }
+
+  float pmf = 1.0f - ctx.pInfinite;
+  uint nodeIndex = 0;
+  uint nodeWord = ctx.rootWord;
+
+  for (uint step = 0; step < kLightBvhMaxTraversalSteps; ++step)
+  {
+    if ((nodeWord & kLightBvhLeafBit) != 0u)
+    {
+      return (nodeWord & ~kLightBvhLeafBit) == lightIdx ? pmf : 0.0f;
+    }
+
+    const uint child0 = nodeIndex + 1;
+    const uint child1 = nodeWord & ~kLightBvhLeafBit;
+    uint word0, word1;
+    const float importance0 = lightBvhImportance(lightBvhLoadBounds(child0, word0), ctx);
+    const float importance1 = lightBvhImportance(lightBvhLoadBounds(child1, word1), ctx);
+    const float importanceSum = importance0 + importance1;
+    if (!(importanceSum > 0.0f))
+    {
+      return 0.0f;
+    }
+
+    const bool takeChild1 = (trail & 1u) != 0u;
+    trail >>= 1;
+    pmf *= (takeChild1 ? importance1 : importance0) / importanceSum;
+    nodeIndex = takeChild1 ? child1 : child0;
+    nodeWord = takeChild1 ? word1 : word0;
+  }
+
+  return 0.0f;
+}
+
+// Draws candidateCount BVH candidates, each a light plus one area sample, and resamples them by the
+// unshadowed approximate BSDF x radiance when candidateCount > 1. Outputs follow the RTXDI reservoir
+// convention (light-UV measure), so the selected sample's contribution estimate is
+// f(x) * weight / lightSample.solidAnglePdf. candidateCount == 1 gives weight = 1 / pmf.
+bool lightBvhSelect(
+  inout RNG randomState,
+  MinimalSurfaceInteraction surfaceInteraction,
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  vec3 viewDirection,
+  uint candidateCount,
+  uint customIndex,
+  out uint outLightIndex,
+  out vec2 outUv,
+  out LightSample lightSample,
+  out float weight,
+  float pInfiniteCap = 1.0f,
+  bool excludeDistant = false)
+{
+  outLightIndex = 0;
+  outUv = vec2(0.0f);
+  lightSample = (LightSample)0;
+  weight = 0.0f;
+
+  const uint totalLightCount = cb.lightRanges[lightTypeCount - 1].offset + cb.lightRanges[lightTypeCount - 1].count;
+  if (totalLightCount == 0)
+  {
+    return false;
+  }
+
+  const bool isThinOpaqueSubsurface = isThinOpaqueSubsurfaceMaterial(opaqueSurfaceMaterialInteraction);
+#ifdef LIGHT_BVH_SELECT_PASS
+  // With excludeDistant the distant loop's results are overwritten or never read below, so the loop is skipped.
+  LightBvhContext ctx = lightBvhCreateContext(surfaceInteraction.position, surfaceInteraction.geometryNormal, isThinOpaqueSubsurface,
+                                              excludeDistant);
+#else
+  LightBvhContext ctx = lightBvhCreateContext(surfaceInteraction.position, surfaceInteraction.geometryNormal, isThinOpaqueSubsurface);
+#endif
+
+  // pInfiniteCap optionally caps the distant-light probability. The select pass lowers it where the sun was occluded
+  // last frame. Any per-pixel pInfinite is unbiased as long as sampling and the pmf use the same value, and ctx is
+  // shared by both. The cap applies only when the BVH side can contribute, so the sun never becomes unreachable.
+  if (excludeDistant)
+  {
+    // Local lights only (rtx.lightSampling.bvhDedicatedSunSample). lightBvhSampleDistant samples the distant lights,
+    // so this estimator covers exactly the BVH lights and its pmf is the BVH pmf.
+    ctx.pInfinite = 0.0f;
+  }
+  else if (ctx.rootImportance > 0.0f && ctx.distantImportance > 0.0f)
+  {
+    ctx.pInfinite = min(ctx.pInfinite, max(pInfiniteCap, cb.lightBvhInfiniteMinProbability));
+  }
+
+  // When nothing can contribute, every candidate is skipped, and the callers skip the shadow ray.
+  if (ctx.pInfinite <= 0.0f && ctx.rootImportance <= 0.0f)
+  {
+    return false;
+  }
+
+#ifdef LIGHT_BVH_SELECT_PASS
+  // The root pair every candidate's walk starts with. A leaf root returns before any child load,
+  // and a zero root importance before the walk, so the pair is only needed past both.
+  if (ctx.rootImportance > 0.0f && (ctx.rootWord & kLightBvhLeafBit) == 0u)
+  {
+    const LightBvhBounds rootChild0 = lightBvhLoadBounds(1u, ctx.rootChildWord0);
+    const LightBvhBounds rootChild1 = lightBvhLoadBounds(ctx.rootWord & ~kLightBvhLeafBit, ctx.rootChildWord1);
+    ctx.rootChildImportance0 = lightBvhImportance(rootChild0, ctx);
+    ctx.rootChildImportance1 = lightBvhImportance(rootChild1, ctx);
+    ctx.rootPairCached = true;
+  }
+#endif
+
+  uint rngState = lightBvhSeed(randomState);
+  const uint candidates = max(candidateCount, 1u);
+  const float invCandidates = 1.0f / float(candidates);
+  const float stratumOffset = lightBvhRandom(rngState);
+
+  MinimalRayInteraction minimalRayInteraction;
+  minimalRayInteraction.viewDirection = viewDirection;
+
+  float weightSum = 0.0f;
+  float selectedTargetPdfUv = 0.0f;
+  float selectedPmf = 0.0f;
+  bool anySelected = false;
+
+  for (uint candidate = 0; candidate < candidates; ++candidate)
+  {
+    uint lightIdx;
+    float pmf;
+    // The first decision is stratified, so candidate i takes u in [i/M, (i+1)/M). Each u is still uniform on its
+    // own, so every candidate keeps the BVH pmf as its source pdf and RIS stays unbiased.
+    const float u = min((float(candidate) + stratumOffset) * invCandidates, 0.99999994f);
+    if (!lightBvhSampleLightIndex(ctx, u, rngState, lightIdx, pmf) || !(pmf > 0.0f))
+    {
+      continue;
+    }
+
+    const DecodedPolymorphicLight decodedPolymorphicLight = decodePolymorphicLight(lights[lightIdx]);
+
+    // Skip lights flagged ignoreViewModel for view-model surfaces (remixapi_LightInfo::ignoreViewModel).
+    if (decodedPolymorphicLight.ignoreViewModel && (customIndex & CUSTOM_INDEX_IS_VIEW_MODEL) != 0)
+    {
+      continue;
+    }
+
+    const vec2 uv = vec2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+    const LightSample candidateSample = decodedPolymorphicLightSampleArea(decodedPolymorphicLight, uv, surfaceInteraction);
+
+    if (!(candidateSample.solidAnglePdf > 0.0f))
+    {
+      continue;
+    }
+
+    if (candidates == 1)
+    {
+      lightSample = candidateSample;
+      selectedPmf = pmf;
+      outLightIndex = lightIdx;
+      outUv = uv;
+      anySelected = true;
+      break;
+    }
+
+    const vec3 inputDirection = normalize(candidateSample.position - surfaceInteraction.position);
+    const SurfaceMaterialInteractionSplitWeight splitWeight =
+      opaqueSurfaceMaterialInteractionCalcApproxProjectedWeight(opaqueSurfaceMaterialInteraction, minimalRayInteraction, inputDirection);
+    // The target in light-UV measure is the unshadowed contribution over the solid angle pdf.
+    const float targetPdfUv = calcBt709Luminance(candidateSample.radiance * (
+      splitWeight.diffuseReflectionWeight + splitWeight.specularReflectionWeight + splitWeight.diffuseTransmissionWeight)) /
+      candidateSample.solidAnglePdf;
+    const float risWeight = targetPdfUv / pmf;
+
+    if (!(risWeight > 0.0f) || isinf(risWeight))
+    {
+      continue;
+    }
+
+    weightSum += risWeight;
+    if (lightBvhRandom(rngState) * weightSum < risWeight)
+    {
+      lightSample = candidateSample;
+      selectedTargetPdfUv = targetPdfUv;
+      outLightIndex = lightIdx;
+      outUv = uv;
+      anySelected = true;
+    }
+  }
+
+  if (!anySelected)
+  {
+    return false;
+  }
+
+  // The unbiased RIS weight is W = sum(w) / (M * p_hat(selected)). Failed candidates still count in M.
+  weight = (candidates == 1) ? 1.0f / selectedPmf : weightSum / (float(candidates) * selectedTargetPdfUv);
+
+  return weight > 0.0f && !isinf(weight);
+}
+
+// A sampleLightRIS-compatible wrapper. inverseSelectionPdf is the light-UV weight, and lightSample keeps its
+// own solid angle pdf, so the NEE estimate is radiance * inverseSelectionPdf / solidAnglePdf.
+bool sampleLightBvh(
+  inout RNG randomState,
+  MinimalSurfaceInteraction surfaceInteraction,
+  OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction,
+  vec3 viewDirection,
+  uint candidateCount,
+  inout LightSample lightSample, inout float inverseSelectionPdf, inout uint16_t outLightIndex,
+  uint customIndex)
+{
+  uint lightIdx;
+  vec2 uv;
+  LightSample selected;
+  float weight;
+  if (!lightBvhSelect(randomState, surfaceInteraction, opaqueSurfaceMaterialInteraction, viewDirection,
+                      candidateCount, customIndex, lightIdx, uv, selected, weight))
+  {
+    return false;
+  }
+
+  lightSample = selected;
+  inverseSelectionPdf = weight;
+  outLightIndex = uint16_t(lightIdx);
+  return lightSample.solidAnglePdf * inverseSelectionPdf > 0.0f;
+}
+
+// The distant-light half of rtx.lightSampling.bvhDedicatedSunSample. Picks one distant light in proportion to its
+// importance at the receiver, with the weights the BVH's distant branch uses, and draws one area sample on it.
+// invPmf is 1 / (selection probability), and the sample keeps its own solid angle pdf, so the NEE estimate is
+// radiance * invPmf / solidAnglePdf as for a BVH sample. With lightBvhSelect(..., excludeDistant) this covers every
+// light once, as two estimators over disjoint light sets. A light whose importance is 0 here cannot contribute at
+// this receiver under the BVH's conservative bound, so skipping it keeps the estimator unbiased.
+bool lightBvhSampleDistant(
+  inout RNG randomState,
+  MinimalSurfaceInteraction surfaceInteraction,
+  bool twoSidedReceiver,
+  uint customIndex,
+  out uint outLightIndex,
+  out LightSample lightSample,
+  out float invPmf)
+{
+  outLightIndex = 0;
+  lightSample = (LightSample)0;
+  invPmf = 0.0f;
+
+  const LightRangeInfo range = cb.lightRanges[lightTypeDistant];
+  if (range.count == 0)
+  {
+    return false;
+  }
+
+  LightBvhContext ctx;
+  ctx.p = surfaceInteraction.position;
+  ctx.n = surfaceInteraction.geometryNormal;
+  ctx.hasNormal = cb.lightBvhUseSurfaceNormal != 0 && dot(ctx.n, ctx.n) > 0.0f;
+  ctx.twoSidedReceiver = twoSidedReceiver;
+  ctx.distantImportance = 0.0f;
+  ctx.rootImportance = 0.0f;
+  ctx.pInfinite = 1.0f;
+  ctx.rootWord = 0u;
+
+  float total = 0.0f;
+  for (uint i = 0; i < range.count; ++i)
+  {
+    total += lightBvhDistantImportance(range.offset + i, ctx);
+  }
+  if (!(total > 0.0f))
+  {
+    return false;
+  }
+
+  uint rngState = lightBvhSeed(randomState);
+  const float target = lightBvhRandom(rngState) * total;
+  float accumulated = 0.0f;
+  float selectedImportance = 0.0f;
+  uint lightIdx = range.offset;
+  for (uint i = 0; i < range.count; ++i)
+  {
+    const float importance = lightBvhDistantImportance(range.offset + i, ctx);
+    if (importance <= 0.0f)
+    {
+      continue;
+    }
+    accumulated += importance;
+    lightIdx = range.offset + i;
+    selectedImportance = importance;
+    if (target < accumulated)
+    {
+      break;
+    }
+  }
+  if (!(selectedImportance > 0.0f))
+  {
+    return false;
+  }
+
+  const DecodedPolymorphicLight decodedPolymorphicLight = decodePolymorphicLight(lights[lightIdx]);
+  // A light flagged ignoreViewModel contributes nothing to view-model surfaces, so this pick's estimate is zero.
+  if (decodedPolymorphicLight.ignoreViewModel && (customIndex & CUSTOM_INDEX_IS_VIEW_MODEL) != 0)
+  {
+    return false;
+  }
+
+  const vec2 uv = vec2(getNextSampleBlueNoise(randomState), getNextSampleBlueNoise(randomState));
+  lightSample = decodedPolymorphicLightSampleArea(decodedPolymorphicLight, uv, surfaceInteraction);
+  if (!(lightSample.solidAnglePdf > 0.0f))
+  {
+    return false;
+  }
+
+  outLightIndex = lightIdx;
+  invPmf = total / selectedImportance;
+  return true;
+}

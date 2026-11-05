@@ -1,0 +1,165 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The decoder of the per-surface core material record (layout in core_surface_material_shared.h).
+// core_material_check.comp.slang reads it, and so do the direct Lean core variants (integrate_direct_*lean_core and
+// *lean_legacy) through core_surface_material_binding.slangh. A kernel reads it through the bindless raw-buffer table at
+// cb.coreMaterialTable (0xFFFFFFFF = not built this frame) and declares the uint4 alias where it is used, for example
+//   [allow("parameterBindingsOverlap")]
+//   layout(set = BINDING_SET_BINDLESS_RAW_BUFFER, binding = 0) StructuredBuffer<uint4> coreMaterialRecords[];
+// and load data[i] = coreMaterialRecords[NonUniformResourceIndex(cb.coreMaterialTable)][surfaceIndex * 4 + i].
+
+#include "rtx/utility/shader_types.h"
+#include "rtx/concept/surface_material/core_surface_material_shared.h"
+
+struct CoreSurfaceMaterial
+{
+  // One 64 B record, 64 B aligned in the buffer.
+  uint4 data[4];
+
+  uint loadDword(uint byteOffset)
+  {
+    return data[byteOffset >> 4][(byteOffset >> 2) & 3u];
+  }
+
+  uint loadU16(uint byteOffset)
+  {
+    return (loadDword(byteOffset) >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
+  }
+
+  uint loadU8(uint byteOffset)
+  {
+    return (loadDword(byteOffset) >> ((byteOffset & 3u) * 8u)) & 0xFFu;
+  }
+
+  float loadF16(uint byteOffset)
+  {
+    return f16tof32(loadU16(byteOffset));
+  }
+
+  // The part common to all classes.
+
+  property uint alphaDword { get { return loadDword(CORE_MATERIAL_OFFSET_ALPHA); } }
+  property uint tailDword { get { return loadDword(CORE_MATERIAL_OFFSET_TAIL); } }
+
+  property uint materialClass { get { return (tailDword >> CORE_MATERIAL_TAIL_CLASS_SHIFT) & CORE_MATERIAL_TAIL_CLASS_MASK; } }
+  property uint extensionIndex { get { return tailDword & CORE_MATERIAL_TAIL_EXTENSION_INDEX_MASK; } }
+  property bool isTwoSided { get { return (tailDword & CORE_MATERIAL_TAIL_TWO_SIDED) != 0; } }
+  property bool hasLegacy { get { return (tailDword & CORE_MATERIAL_TAIL_HAS_LEGACY) != 0; } }
+  property bool hasAlbedoTint { get { return (tailDword & CORE_MATERIAL_TAIL_HAS_ALBEDO_TINT) != 0; } }
+  // Non-default texture ops (the TextureOps part of the legacy record).
+  property bool hasTextureOps { get { return (tailDword & CORE_MATERIAL_TAIL_HAS_TEXTURE_OPS) != 0; } }
+
+  property uint alphaMode { get { return (alphaDword >> CORE_MATERIAL_ALPHA_MODE_SHIFT) & CORE_MATERIAL_ALPHA_MODE_MASK; } }
+  property uint alphaTestType { get { return (alphaDword >> CORE_MATERIAL_ALPHA_TEST_TYPE_SHIFT) & CORE_MATERIAL_ALPHA_TEST_TYPE_MASK; } }
+  // The raw 8-bit reference value. The Surface property returns it divided by 255.
+  property uint alphaTestReferenceValueRaw { get { return (alphaDword >> CORE_MATERIAL_ALPHA_TEST_REFERENCE_SHIFT) & CORE_MATERIAL_ALPHA_TEST_REFERENCE_MASK; } }
+  property uint blendType { get { return (alphaDword >> CORE_MATERIAL_ALPHA_BLEND_TYPE_SHIFT) & CORE_MATERIAL_ALPHA_BLEND_TYPE_MASK; } }
+  property bool isFullyOpaque { get { return (alphaDword & CORE_MATERIAL_ALPHA_FULLY_OPAQUE) != 0; } }
+  property bool isBlendingDisabled { get { return (alphaDword & CORE_MATERIAL_ALPHA_BLENDING_DISABLED) != 0; } }
+  property bool isEmissiveBlend { get { return (alphaDword & CORE_MATERIAL_ALPHA_EMISSIVE_BLEND) != 0; } }
+  property bool isParticle { get { return (alphaDword & CORE_MATERIAL_ALPHA_PARTICLE) != 0; } }
+  property bool isDecal { get { return (alphaDword & CORE_MATERIAL_ALPHA_DECAL) != 0; } }
+  property bool invertedBlend { get { return (alphaDword & CORE_MATERIAL_ALPHA_INVERTED_BLEND) != 0; } }
+  property bool isEmissive { get { return (alphaDword & CORE_MATERIAL_SURFACE_EMISSIVE) != 0; } }
+  property bool isMatte { get { return (alphaDword & CORE_MATERIAL_SURFACE_MATTE) != 0; } }
+  property bool isAnimatedWater { get { return (alphaDword & CORE_MATERIAL_SURFACE_ANIMATED_WATER) != 0; } }
+  property bool hasMaterialChanged { get { return (alphaDword & CORE_MATERIAL_SURFACE_MATERIAL_CHANGED) != 0; } }
+  property bool isMotionBlurMaskOut { get { return (alphaDword & CORE_MATERIAL_SURFACE_MOTION_BLUR_MASK_OUT) != 0; } }
+  property bool isPreservePath { get { return (alphaDword & CORE_MATERIAL_SURFACE_PRESERVE_PATH) != 0; } }
+
+  // Classes 0 and 2 use the opaque layout, and so do class 3 raytraced render targets.
+
+  property uint flags { get { return loadU16(CORE_MATERIAL_OFFSET_FLAGS); } }
+  property uint samplerIndex { get { return loadU16(CORE_MATERIAL_OFFSET_SAMPLER); } }
+  property uint albedoOpacityTextureIndex { get { return loadU16(CORE_MATERIAL_OFFSET_ALBEDO_OPACITY_TEXTURE); } }
+  property uint normalTextureIndex { get { return loadU16(CORE_MATERIAL_OFFSET_NORMAL_TEXTURE); } }
+  property uint roughnessTextureIndex { get { return loadU16(CORE_MATERIAL_OFFSET_ROUGHNESS_TEXTURE); } }
+  property uint metallicTextureIndex { get { return loadU16(CORE_MATERIAL_OFFSET_METALLIC_TEXTURE); } }
+  property uint emissiveColorTextureIndex { get { return loadU16(CORE_MATERIAL_OFFSET_EMISSIVE_TEXTURE); } }
+  property uint samplerFeedbackStamp { get { return loadU16(CORE_MATERIAL_OFFSET_SAMPLER_FEEDBACK_STAMP); } }
+
+  property vec4 albedoOpacityConstant
+  {
+    get
+    {
+      return vec4(loadF16(CORE_MATERIAL_OFFSET_ALBEDO_OPACITY), loadF16(CORE_MATERIAL_OFFSET_ALBEDO_OPACITY + 2),
+                  loadF16(CORE_MATERIAL_OFFSET_ALBEDO_OPACITY + 4), loadF16(CORE_MATERIAL_OFFSET_ALBEDO_OPACITY + 6));
+    }
+  }
+  property vec3 emissiveColorConstant
+  {
+    get
+    {
+      return vec3(loadF16(CORE_MATERIAL_OFFSET_EMISSIVE_COLOR), loadF16(CORE_MATERIAL_OFFSET_EMISSIVE_COLOR + 2),
+                  loadF16(CORE_MATERIAL_OFFSET_EMISSIVE_COLOR + 4));
+    }
+  }
+  property float emissiveIntensity { get { return loadF16(CORE_MATERIAL_OFFSET_EMISSIVE_INTENSITY); } }
+  property float roughnessConstant { get { return loadF16(CORE_MATERIAL_OFFSET_ROUGHNESS); } }
+  property float metallicConstant { get { return loadF16(CORE_MATERIAL_OFFSET_METALLIC); } }
+  property float anisotropy { get { return loadF16(CORE_MATERIAL_OFFSET_ANISOTROPY); } }
+  property float roughnessFloor { get { return loadF16(CORE_MATERIAL_OFFSET_ROUGHNESS_FLOOR); } }
+  property uint dlssControlMask { get { return loadDword(CORE_MATERIAL_OFFSET_DLSS_CONTROL_MASK); } }
+  property uint specularMetalParams { get { return loadDword(CORE_MATERIAL_OFFSET_SPECULAR_METAL) & 0xFFFFu; } }
+  property uint specularMetalTint { get { return loadDword(CORE_MATERIAL_OFFSET_SPECULAR_METAL) >> 16; } }
+  property vec3 albedoTint
+  {
+    get
+    {
+      return vec3(loadF16(CORE_MATERIAL_OFFSET_ALBEDO_TINT), loadF16(CORE_MATERIAL_OFFSET_ALBEDO_TINT + 2),
+                  loadF16(CORE_MATERIAL_OFFSET_ALBEDO_TINT + 4));
+    }
+  }
+  property uint decalSortOrder { get { return loadU8(CORE_MATERIAL_OFFSET_DECAL_SORT_ORDER); } }
+};
+
+// One core side table entry (CORE_MATERIAL_EXT_*), at cb.coreMaterialExtTable, indexed by CoreSurfaceMaterial.extensionIndex.
+struct CoreSurfaceMaterialExtension
+{
+  uint4 data[4];
+
+  uint loadDword(uint byteOffset)
+  {
+    return data[byteOffset >> 4][(byteOffset >> 2) & 3u];
+  }
+
+  uint loadU16(uint byteOffset)
+  {
+    return (loadDword(byteOffset) >> ((byteOffset & 2u) * 8u)) & 0xFFFFu;
+  }
+
+  float loadF16(uint byteOffset)
+  {
+    return f16tof32(loadU16(byteOffset));
+  }
+
+  // Bytes 0-31 are the SubsurfaceMaterial record's first 32 B, so a MemoryPolymorphicSurfaceMaterial built from data[0],
+  // data[1] and two zero rows reinterprets to it.
+  property uint subsurfaceFlags { get { return loadU16(CORE_MATERIAL_EXT_OFFSET_SUBSURFACE); } }
+  property uint tangentTextureIndex { get { return loadU16(CORE_MATERIAL_EXT_OFFSET_TANGENT_TEXTURE); } }
+  property uint heightTextureIndex { get { return loadU16(CORE_MATERIAL_EXT_OFFSET_HEIGHT_TEXTURE); } }
+  property float displaceIn { get { return loadF16(CORE_MATERIAL_EXT_OFFSET_DISPLACE_IN); } }
+  property float displaceOut { get { return loadF16(CORE_MATERIAL_EXT_OFFSET_DISPLACE_OUT); } }
+  property float thinFilmThicknessConstant { get { return loadF16(CORE_MATERIAL_EXT_OFFSET_THIN_FILM_THICKNESS); } }
+};

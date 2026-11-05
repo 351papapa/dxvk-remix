@@ -1,0 +1,83 @@
+/*
+* Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+#include "rtx/pass/common_binding_indices.h"
+
+// Tile size: pixel area each workgroup covers. Can exceed thread count to process multiple pixels per thread.
+// Must satisfy: TILE_SIZE_X <= 256, TILE_SIZE_Y <= 128 (uint16_t local coord packing constraint).
+#define COMPACT_ACTIVE_PIXELS_TILE_SIZE_X 256
+#define COMPACT_ACTIVE_PIXELS_TILE_SIZE_Y 128
+#define COMPACT_ACTIVE_PIXELS_TILE_SIZE (COMPACT_ACTIVE_PIXELS_TILE_SIZE_X * COMPACT_ACTIVE_PIXELS_TILE_SIZE_Y)
+
+// Thread group dimensions (hardware limit: product must be <= 1024).
+// Using maximum 1024 threads so that at even 1/16 spp we end up with at least 2 active warps of 32 active pixels each. Shouldn't be less than 1 warp.
+#define COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_X 32
+#define COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_Y 32
+#define COMPACT_ACTIVE_PIXELS_GROUP_SIZE (COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_X * COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_Y)
+
+// Derived: number of pixels each thread processes, and the 2D block each thread covers within the tile.
+#define COMPACT_ACTIVE_PIXELS_PIXELS_PER_THREAD (COMPACT_ACTIVE_PIXELS_TILE_SIZE / COMPACT_ACTIVE_PIXELS_GROUP_SIZE)
+#define COMPACT_ACTIVE_PIXELS_BLOCK_SIZE_X (COMPACT_ACTIVE_PIXELS_TILE_SIZE_X / COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_X)
+#define COMPACT_ACTIVE_PIXELS_BLOCK_SIZE_Y (COMPACT_ACTIVE_PIXELS_TILE_SIZE_Y / COMPACT_ACTIVE_PIXELS_THREADGROUP_SIZE_Y)
+
+// Every pass launched over the active-pixel list declares this group size, and the list's indirect args count groups of it.
+#define COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_X 16
+#define COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_Y 8
+#define COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE (COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_X * COMPACT_ACTIVE_PIXELS_CONSUMER_GROUP_SIZE_Y)
+
+// The active-pixel list buffer starts with a header of 4 uints, followed by one packed pixel coordinate per active pixel.
+// The first 3 header uints are a VkDispatchIndirectCommand in consumer groups, and the last one is the entry count.
+#define COMPACT_ACTIVE_PIXELS_LIST_HEADER_SIZE 4
+#define COMPACT_ACTIVE_PIXELS_LIST_COUNT_SLOT 3
+
+// These are the bits of SparseRenderingArgs::compactedLaunchMask, one per pass launched over the active-pixel list.
+#define COMPACT_ACTIVE_PIXELS_LAUNCH_INTEGRATE_DIRECT (1u << 0)
+#define COMPACT_ACTIVE_PIXELS_LAUNCH_INTEGRATE_NEE    (1u << 1)
+#define COMPACT_ACTIVE_PIXELS_LAUNCH_RTXDI_INITIAL    (1u << 2)
+// The reuse passes also work on inactive pixels when RTXDI reuse for inactive pixels is on, so they are only
+// launched over the list while it is off.
+#define COMPACT_ACTIVE_PIXELS_LAUNCH_RTXDI_REUSE      (1u << 3)
+
+// Inputs
+
+#define COMPACT_ACTIVE_PIXELS_BINDING_ACTIVE_PIXEL_MASK_INPUT                   150
+
+// Inputs/Outputs
+
+#define COMPACT_ACTIVE_PIXELS_BINDING_ACTIVE_PIXEL_LIST_INPUT_OUTPUT            155
+
+// Outputs
+
+#define COMPACT_ACTIVE_PIXELS_BINDING_ACTIVE_LOCAL_PIXEL_COORDS_OUTPUT          160
+
+
+#define COMPACT_ACTIVE_PIXELS_MIN_BINDING  COMPACT_ACTIVE_PIXELS_BINDING_ACTIVE_PIXEL_MASK_INPUT
+#define COMPACT_ACTIVE_PIXELS_MAX_BINDING  COMPACT_ACTIVE_PIXELS_BINDING_ACTIVE_LOCAL_PIXEL_COORDS_OUTPUT
+
+#if COMPACT_ACTIVE_PIXELS_MIN_BINDING <= COMMON_MAX_BINDING
+#error "Increase the base index of G-buffer bindings to avoid overlap with common bindings!"
+#endif
+
+#if COMPACT_ACTIVE_PIXELS_MIN_BINDING <= BINDING_ATMOSPHERE_MAX && COMPACT_ACTIVE_PIXELS_MAX_BINDING >= BINDING_ATMOSPHERE_MIN
+#error "Increase the base index of Compact Active Pixels bindings to avoid overlap with atmosphere common bindings!"
+#endif

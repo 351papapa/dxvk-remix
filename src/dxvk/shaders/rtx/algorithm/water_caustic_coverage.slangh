@@ -1,0 +1,43 @@
+#pragma once
+
+// The buffer contains origin XY, cell size, shoreline fade distance, then 128 squared water levels.
+bool waterCausticCoverageCell(StructuredBuffer<float> waterInput, int2 cell, float surfaceHeight) {
+  if (any(cell < 0) || any(cell >= 128)) {
+    return false;
+  }
+  const float height = waterInput[4u + uint(cell.y) * 128u + uint(cell.x)];
+  return isfinite(height) && height > -10000.0f && height == surfaceHeight;
+}
+
+float waterCausticCoverage(StructuredBuffer<float> waterInput, float2 worldPosition, float surfaceHeight) {
+  const float2 origin = float2(waterInput[0], waterInput[1]);
+  const float spacing = waterInput[2];
+  const float edgeFade = waterInput[3];
+  if (!all(isfinite(origin)) || !all(isfinite(worldPosition)) || !isfinite(surfaceHeight)
+      || !isfinite(spacing) || spacing <= 0.0f || !isfinite(edgeFade) || edgeFade <= 0.0f) {
+    return 0.0f;
+  }
+  const float2 gridPosition = (worldPosition - origin) / spacing;
+  if (!all(isfinite(gridPosition)) || any(gridPosition < 0.0f) || any(gridPosition >= 128.0f)) {
+    return 0.0f;
+  }
+  const int2 cell = int2(gridPosition);
+  if (!waterCausticCoverageCell(waterInput, cell, surfaceHeight)) {
+    return 0.0f;
+  }
+  const float2 fraction = frac(gridPosition);
+  const float fadeDistance = min(edgeFade, spacing * 0.5f);
+  const float xDistance = min(fraction.x, 1.0f - fraction.x) * spacing;
+  const float yDistance = min(fraction.y, 1.0f - fraction.y) * spacing;
+  float coverage = 1.0f;
+  // Only the nearest edge can lie inside the bounded shoreline fade.
+  if (xDistance < fadeDistance && !waterCausticCoverageCell(waterInput,
+      cell + int2(fraction.x < 0.5f ? -1 : 1, 0), surfaceHeight)) {
+    coverage *= smoothstep(0.0f, fadeDistance, xDistance);
+  }
+  if (yDistance < fadeDistance && !waterCausticCoverageCell(waterInput,
+      cell + int2(0, fraction.y < 0.5f ? -1 : 1), surfaceHeight)) {
+    coverage *= smoothstep(0.0f, fadeDistance, yDistance);
+  }
+  return coverage;
+}

@@ -1,0 +1,296 @@
+/*
+* Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+* DEALINGS IN THE SOFTWARE.
+*/
+#pragma once
+
+// The cutout candidate of a visibility ray, read from the core material record rather than the full material record,
+// the extension buffer and the material and legacy words of Surface.
+// visibility.slangh includes it only with VISIBILITY_CORE_MATERIAL (the integrate_direct_*lean_core and *lean_legacy
+// variants), for visibility modes without translucent or subsurface handling, where the candidate only contributes 1 - opacity.
+//
+// - Surface: only the geometry words are loaded (data0a, data0b, data1, data2.yz, the isStatic bit of data2.w,
+//   data8-data10 and, for the previous TLAS, data3-data5). Everything else holds what handleVisibilityVertex computes with
+//   for a surface without legacy state (identity texture transform, no spritesheet, no clip plane, texgen off as
+//   handleVisibilityVertex forces it). With SURFACE_LEGACY_MODULE=1 and the surface's hasLegacy bit, it holds the legacy record's copy.
+// - Opacity: the albedo and opacity load and the tint come from the core record. The texture operations and alpha test and
+//   blend emulation (opaqueSurfaceMaterialApplyTextureOperations) then run on a Surface value that holds only the core alpha
+//   dword and the texture-stage words. Those are the TextureOps part of the legacy record (bytes 48-55) for surfaces with
+//   hasTextureOps, and the identity defaults otherwise.
+//
+// The host binds these variants only when the frame has no POM, eye, ray portal material or raytraced render target and
+// no debug view, and for _core no LegacySurface bit (rtx_pathtracer_integrate_direct.cpp).
+
+#include "rtx/concept/surface_material/core_surface_material_binding.slangh"
+#include "rtx/concept/surface/legacy_surface.slangh"
+
+#ifndef SURFACE_LEGACY_MODULE
+#define SURFACE_LEGACY_MODULE 0
+#endif
+
+// The texture-stage words of a surface whose ops are RtSurface's defaults (rtSurfaceHasTextureOps):
+// color Texture x None Modulate, and alpha SelectArg1 Texture.
+static const uint kCoreVisibilityDefaultTextureOps =
+  uint(RtTextureArgSource::Texture) |
+  (uint(RtTextureArgSource::None) << 2) |
+  (uint(DxvkRtTextureOperation::Modulate) << 4) |
+  (uint(RtTextureArgSource::Texture) << 7) |
+  (uint(RtTextureArgSource::None) << 9) |
+  (uint(DxvkRtTextureOperation::SelectArg1) << 11);
+
+uint4 coreVisibilityZeroRow()
+{
+  return uint4(0u, 0u, 0u, 0u);
+}
+
+// A Surface value with every word zero.
+Surface coreVisibilityEmptySurface()
+{
+  Surface surface;
+  surface.data0a = u16vec4(0, 0, 0, 0);
+  surface.data0b = u16vec4(0, 0, 0, 0);
+  surface.data1 = coreVisibilityZeroRow();
+  surface.data2 = coreVisibilityZeroRow();
+  surface.data3 = coreVisibilityZeroRow();
+  surface.data4 = coreVisibilityZeroRow();
+  surface.data5 = coreVisibilityZeroRow();
+  surface.data6 = coreVisibilityZeroRow();
+  surface.data7 = coreVisibilityZeroRow();
+  surface.data8 = coreVisibilityZeroRow();
+  surface.data9 = coreVisibilityZeroRow();
+  surface.data10 = coreVisibilityZeroRow();
+  surface.data11 = coreVisibilityZeroRow();
+  surface.data12 = coreVisibilityZeroRow();
+  surface.data13 = coreVisibilityZeroRow();
+  surface.data14 = coreVisibilityZeroRow();
+  surface.data15 = coreVisibilityZeroRow();
+  return surface;
+}
+
+// Builds the Surface of the candidate as handleVisibilityVertex uses it (no normals or tangents) from the geometry words only.
+Surface coreVisibilityLoadSurfaceGeometry(uint surfaceIndex, bool usePreviousTLAS)
+{
+  Surface surface = coreVisibilityEmptySurface();
+  surface.data0a = surfaces[surfaceIndex].data0a;
+  surface.data0b = surfaces[surfaceIndex].data0b;
+  surface.data1 = surfaces[surfaceIndex].data1;
+  surface.data2.y = surfaces[surfaceIndex].data2.y;
+  surface.data2.z = surfaces[surfaceIndex].data2.z;
+  // isStatic (bit 2) is the only geometry flag in data2.w.
+  surface.data2.w = surfaces[surfaceIndex].data2.w & (1u << 2);
+  surface.data8 = surfaces[surfaceIndex].data8;
+  surface.data9 = surfaces[surfaceIndex].data9;
+  surface.data10 = surfaces[surfaceIndex].data10;
+
+  // As handleVisibilityVertex sets them.
+  surface.hashPacked = 0;
+  if (usePreviousTLAS)
+  {
+    surface.data3 = surfaces[surfaceIndex].data3;
+    surface.data4 = surfaces[surfaceIndex].data4;
+    surface.data5 = surfaces[surfaceIndex].data5;
+  }
+  else
+  {
+    surface.previousPositionBufferIndex = BINDING_INDEX_INVALID;
+    surface.prevObjectToWorld = mat4x3(1.f, 0.f, 0.f, 0.f,  0.f, 1.f, 0.f, 0.f,  0.f, 0.f, 1.f, 0.f);
+  }
+  surface.normalBufferIndex = BINDING_INDEX_INVALID;
+  surface.normalObjectToWorld = getIdentityMatrix();
+
+  // Without legacy state the texture transform is identity, the spritesheet is 1x1 at 0 fps, and clip plane and texgen are off.
+  surface.data11 = asuint(vec4(1.0f, 0.0f, 0.0f, 0.0f));
+  surface.data12 = asuint(vec4(0.0f, 1.0f, 0.0f, 0.0f));
+  surface.spriteSheetRows = uint8_t(1);
+  surface.spriteSheetCols = uint8_t(1);
+  return surface;
+}
+
+#if SURFACE_LEGACY_MODULE
+// For _legacy, copies the legacy record's words to where handleVisibilityVertex reads them from Surface
+// (transform or eye basis, clip plane, spritesheet, texture flags). texgen stays off, as handleVisibilityVertex forces it.
+void coreVisibilityApplyLegacyRecord(inout Surface surface, LegacySurface legacy)
+{
+  surface.data11 = legacy.data[0];
+  surface.data12 = legacy.data[1];
+  surface.data14 = legacy.data[2];
+  surface.spriteSheetRows = legacy.spriteSheetRows;
+  surface.spriteSheetCols = legacy.spriteSheetCols;
+  surface.spriteSheetFPS = legacy.spriteSheetFPS;
+  surface.isClipPlaneEnabled = legacy.isClipPlaneEnabled;
+  surface.skipSurfaceInteractionSpritesheetAdjustment = legacy.skipSurfaceInteractionSpritesheetAdjustment;
+}
+#endif
+
+// The Surface value opaqueSurfaceMaterialApplyTextureOperations reads. It holds the core alpha dword in Surface.data2.w's
+// layout and the texture-stage words (tFactor, ops, texture-factor blend, vertex-colour baked lighting).
+Surface coreVisibilityMaterialSurface(CoreSurfaceMaterial core, LegacyTextureOps ops)
+{
+  Surface surface = coreVisibilityEmptySurface();
+  surface.isFullyOpaque = core.isFullyOpaque;
+  surface.alphaTestType = uint8_t(core.alphaTestType);
+  surface.data2.w |= (core.alphaTestReferenceValueRaw & 0xFFu) << 6;
+  surface.blendType = uint8_t(core.blendType);
+  surface.invertedBlend = core.invertedBlend;
+  surface.isBlendingDisabled = core.isBlendingDisabled;
+  surface.tFactor = ops.tFactor;
+  surface.data13.z = ops.textureFlags & 0x3FFFu;
+  surface.isTextureFactorBlend = ops.isTextureFactorBlend;
+  surface.isVertexColorBakedLighting = ops.isVertexColorBakedLighting;
+  return surface;
+}
+
+// opaqueSurfaceMaterialLoadAlbedoOpacity with the fields and the tint taken from the core record, without thin-film thickness.
+void coreVisibilityLoadAlbedoOpacity(
+  CoreSurfaceMaterial core,
+  SurfaceInteraction surfaceInteraction,
+  out vec3 albedo,
+  out float opacity)
+{
+  const uint flags = core.flags;
+  const bool isHairCardMaterial = (flags & OPAQUE_SURFACE_MATERIAL_FLAG_IS_HAIR_CARD) != 0;
+  const float materialLodBias = isHairCardMaterial ? cb.hairCardMipBias : 0.0f;
+
+  vec4 albedoOpacitySample;
+  const bool albedoOpacityLoaded = surfaceMaterialInteractionTextureReadHelper(
+    uint16_t(core.albedoOpacityTextureIndex), uint16_t(core.samplerIndex), surfaceInteraction, albedoOpacitySample, materialLodBias);
+
+  const vec4 albedoOpacityConstant = core.albedoOpacityConstant;
+  albedo = albedoOpacityConstant.rgb;
+  opacity = albedoOpacityConstant.a;
+
+  if (albedoOpacityLoaded)
+  {
+    albedo = albedoOpacitySample.rgb;
+
+    if (core.hasAlbedoTint)
+    {
+      vec3 albedoTint = core.albedoTint;
+      if ((flags & OPAQUE_SURFACE_MATERIAL_FLAG_ALBEDO_TEXTURE_IS_SRGB) != 0)
+      {
+        albedoTint = gammaToLinear(albedoTint);
+      }
+      albedo *= albedoTint;
+    }
+
+    if ((flags & OPAQUE_SURFACE_MATERIAL_FLAG_ALPHA_IS_THIN_FILM_THICKNESS) != 0)
+    {
+      opacity = float(1.0f);
+    }
+    else
+    {
+      opacity = albedoOpacitySample.a;
+    }
+  }
+}
+
+// Returns the opacity opaqueSurfaceMaterialInteractionCreate gives this candidate, which is what handleVisibilityVertex uses.
+float coreVisibilityCalcOpacity(CoreSurfaceMaterial core, LegacyTextureOps ops, SurfaceInteraction surfaceInteraction)
+{
+  vec3 albedo;
+  float opacity;
+  coreVisibilityLoadAlbedoOpacity(core, surfaceInteraction, albedo, opacity);
+
+  // Only the flags are read, for the ignore-alpha flag.
+  MemoryPolymorphicSurfaceMaterial memory;
+  memory.data[0] = coreVisibilityZeroRow();
+  memory.data[1] = coreVisibilityZeroRow();
+  memory.data[2] = coreVisibilityZeroRow();
+  memory.data[3] = coreVisibilityZeroRow();
+  OpaqueSurfaceMaterial flagsOnly = reinterpret<OpaqueSurfaceMaterial>(memory);
+  flagsOnly.flags = uint16_t(core.flags);
+
+  float emissiveBlendOverrideInfluence = float(1.0f);
+  SurfaceInteraction opsSurfaceInteraction = surfaceInteraction;
+  opaqueSurfaceMaterialApplyTextureOperations(flagsOnly, coreVisibilityMaterialSurface(core, ops), opsSurfaceInteraction,
+    albedo, opacity, emissiveBlendOverrideInfluence);
+  return opacity;
+}
+
+vec3 handleVisibilityVertexCore<let VisibilityMode : uint>(Ray ray, RayHitInfo rayHitInfo, const bool usePreviousTLAS)
+{
+  RayInteraction rayInteraction = rayInteractionCreate(ray, rayHitInfo);
+
+  if (usePreviousTLAS)
+  {
+    // View model instances don't have an inter-frame mapping, assume they're transparent
+    if (rayHitInfo.customIndex & CUSTOM_INDEX_IS_VIEW_MODEL)
+    {
+      return vec3(1.0f);
+    }
+
+    // Map the surface index from the previous frame to the current frame
+    rayInteraction.surfaceIndex = surfaceMapping[rayInteraction.surfaceIndex];
+
+    if (rayInteraction.surfaceIndex == SURFACE_INDEX_INVALID)
+    {
+      return vec3(1.0f);
+    }
+  }
+
+  // Without translucent or subsurface handling only an opaque material attenuates, by 1 - opacity, as in handleVisibilityVertex.
+  if (rayInteraction.materialType != surfaceMaterialTypeOpaque)
+  {
+    return vec3(1.0f);
+  }
+
+  const uint surfaceIndex = uint(rayInteraction.surfaceIndex);
+  const CoreSurfaceMaterial core = coreSurfaceMaterialLoad(surfaceIndex);
+  Surface surface = coreVisibilityLoadSurfaceGeometry(surfaceIndex, usePreviousTLAS);
+
+  LegacyTextureOps ops = legacyTextureOpsCreate(0u, kCoreVisibilityDefaultTextureOps);
+#if SURFACE_LEGACY_MODULE
+  if (core.hasLegacy || core.hasTextureOps)
+  {
+    LegacySurface legacy;
+    [unroll]
+    for (uint i = 0; i < LEGACY_SURFACE_ROWS; ++i)
+    {
+      legacy.data[i] = coreMaterialRows[cb.legacySurfaceTable][surfaceIndex * LEGACY_SURFACE_ROWS + i];
+    }
+    coreVisibilityApplyLegacyRecord(surface, legacy);
+    ops = legacySurfaceGetTextureOps(legacy);
+  }
+#else
+  if (core.hasTextureOps)
+  {
+    // Only the TextureOps part, bytes 48-55 of the 80 B record.
+    const uint dwordIndex = surfaceIndex * (LEGACY_SURFACE_SIZE / 4) + (LEGACY_SURFACE_OFFSET_TFACTOR / 4);
+    ops = legacyTextureOpsCreate(
+      BUFFER_ARRAY(indices32, cb.legacySurfaceTable, dwordIndex),
+      BUFFER_ARRAY(indices32, cb.legacySurfaceTable, dwordIndex + 1));
+  }
+#endif
+
+  SurfaceInteraction surfaceInteraction = surfaceInteractionCreate<SurfaceIgnoreTangents>(surface, rayInteraction, ray, usePreviousTLAS);
+
+#if SURFACE_LEGACY_MODULE
+  if (isSurfaceClipped(surface, surfaceInteraction))
+  {
+    // Ignore parts of surfaces that are under clip planes
+    return vec3(1.0f);
+  }
+#endif
+
+  // Alpha-test reads use the coarse visibility mip. This does nothing when the option is off.
+  visibilityApplyCoarseAlphaFootprint(surfaceInteraction);
+
+  return vec3(1.0f - coreVisibilityCalcOpacity(core, ops, surfaceInteraction));
+}
