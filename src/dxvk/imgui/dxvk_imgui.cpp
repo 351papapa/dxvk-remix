@@ -4577,7 +4577,6 @@ namespace dxvk {
     const auto& style = ImGui::GetStyle();
     const float rowWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const float rightEdge = ImGui::GetCursorScreenPos().x + rowWidth;
-    const float removeWidth = ImGui::CalcTextSize("x").x + style.FramePadding.x * 2.0f;
     bool openEditor = false;
     if (entries.empty()) {
       ImGui::TextDisabled("No name rules");
@@ -4585,8 +4584,8 @@ namespace dxvk {
     for (size_t i = 0; i < entries.size(); ++i) {
       const auto& entry = entries[i];
       const float textWidth = ImGui::CalcTextSize(entry.data(), entry.data() + entry.size()).x + style.FramePadding.x * 2.0f;
-      const float width = std::min(std::max(1.0f, rowWidth - removeWidth - style.ItemInnerSpacing.x), textWidth);
-      if (i && ImGui::GetItemRectMax().x + style.ItemSpacing.x + width + removeWidth + style.ItemInnerSpacing.x <= rightEdge) {
+      const float width = std::min(std::max(1.0f, rowWidth), textWidth);
+      if (i && ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= rightEdge) {
         ImGui::SameLine();
       }
       ImGui::PushID(static_cast<int>(i));
@@ -4598,7 +4597,7 @@ namespace dxvk {
         ImVec2(upper.x - style.FramePadding.x, upper.y - style.FramePadding.y),
         entry.data(), entry.data() + entry.size(), nullptr, ImVec2(0.0f, 0.0f));
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s\nDouble-click to edit", entry.c_str());
+        ImGui::SetTooltip("%s\nDouble-click to edit or remove", entry.c_str());
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
           editor.m_selected = i;
           editor.m_original = option.get();
@@ -4608,18 +4607,8 @@ namespace dxvk {
           openEditor = true;
         }
       }
-      ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-      const bool remove = ImGui::Button("x##remove", ImVec2(removeWidth, ImGui::GetFrameHeight()));
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Remove this name rule");
-      }
       ImGui::EndGroup();
       ImGui::PopID();
-      if (remove) {
-        entries.erase(entries.begin() + i);
-        commit(entries);
-        break;
-      }
     }
     if (openEditor) {
       ImGui::OpenPopup("Edit name rule");
