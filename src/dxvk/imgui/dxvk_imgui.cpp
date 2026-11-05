@@ -23,6 +23,7 @@
 #include <cassert>
 #include <ctime>
 #include <tuple>
+#include <unordered_set>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -3413,13 +3414,13 @@ namespace dxvk {
       if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
         RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());
-        RemixGui::InputText("Window texture names", &WindowLightOptions::textureNamesObject());
+        drawNameRules("Window texture names", WindowLightOptions::textureNamesObject(), m_windowTextureEditor);
         RemixGui::SliderFloat("Lit share at night start", &WindowLightOptions::litRatioObject(), 0.0f, 1.0f);
         RemixGui::SliderFloat("Night start hour", &WindowLightOptions::startHourObject(), 0.0f, 24.0f);
         RemixGui::SliderFloat("Night end hour", &WindowLightOptions::endHourObject(), 0.0f, 24.0f);
         RemixGui::InputInt("Night seed", &WindowLightOptions::nightSeedObject());
         RemixGui::Checkbox("Enable street lamps", &WindowLightOptions::streetLampsEnabledObject());
-        RemixGui::InputText("Street lamp texture names", &WindowLightOptions::streetLampTextureNamesObject());
+        drawNameRules("Street lamp texture names", WindowLightOptions::streetLampTextureNamesObject(), m_streetLampTextureEditor);
         ImGui::Unindent();
       }
 
@@ -4513,6 +4514,154 @@ namespace dxvk {
     }
 
     ImGui::Unindent();
+  }
+
+  void ImGUI::drawNameRules(const char* label, RtxOption<std::string>& option, NameRuleEditor& editor) {
+    const auto parse = [](const std::string& text) {
+      std::vector<std::string> entries;
+      size_t begin = 0;
+      while (begin < text.size()) {
+        const size_t end = text.find_first_of(";\r\n", begin);
+        const auto entry = text.substr(begin, end == std::string::npos ? end : end - begin);
+        const size_t first = entry.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+          entries.push_back(entry.substr(first, entry.find_last_not_of(" \t") - first + 1));
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        begin = end + 1;
+      }
+      return entries;
+    };
+    const auto commit = [&](const std::vector<std::string>& entries) {
+      std::string serialized;
+      std::unordered_set<std::string> seen;
+      for (const auto& entry : entries) {
+        auto key = entry;
+        for (char& c : key) {
+          if (c >= 'A' && c <= 'Z') {
+            c += 'a' - 'A';
+          }
+        }
+        if (!seen.insert(key).second) {
+          continue;
+        }
+        if (!serialized.empty()) {
+          serialized += ';';
+        }
+        serialized += entry;
+      }
+      RemixGui::CheckRtxOptionPopups(&option);
+      option.setDeferred(serialized);
+    };
+    auto entries = parse(option.get());
+    ImGui::PushID(label);
+    {
+      RemixGui::RtxOptionUxWrapper wrapper(&option);
+      ImGui::TextUnformatted(label);
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputTextWithHint("##add", "Type a name fragment, then press Enter", editor.m_input.data(),
+        editor.m_input.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+      const auto added = parse(editor.m_input.data());
+      if (!added.empty()) {
+        entries.insert(entries.end(), added.begin(), added.end());
+        commit(entries);
+        editor.m_input.fill(0);
+        ImGui::ClearActiveID();
+        ImGui::SetKeyboardFocusHere(-1);
+      }
+    }
+
+    const auto& style = ImGui::GetStyle();
+    const float rowWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float rightEdge = ImGui::GetCursorScreenPos().x + rowWidth;
+    const float removeWidth = ImGui::CalcTextSize("x").x + style.FramePadding.x * 2.0f;
+    bool openEditor = false;
+    if (entries.empty()) {
+      ImGui::TextDisabled("No name rules");
+    }
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const auto& entry = entries[i];
+      const float textWidth = ImGui::CalcTextSize(entry.data(), entry.data() + entry.size()).x + style.FramePadding.x * 2.0f;
+      const float width = std::min(std::max(1.0f, rowWidth - removeWidth - style.ItemInnerSpacing.x), textWidth);
+      if (i && ImGui::GetItemRectMax().x + style.ItemSpacing.x + width + removeWidth + style.ItemInnerSpacing.x <= rightEdge) {
+        ImGui::SameLine();
+      }
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::BeginGroup();
+      ImGui::Button("##chip", ImVec2(width, ImGui::GetFrameHeight()));
+      const ImVec2 lower = ImGui::GetItemRectMin();
+      const ImVec2 upper = ImGui::GetItemRectMax();
+      ImGui::RenderTextClippedEx(ImGui::GetWindowDrawList(), ImVec2(lower.x + style.FramePadding.x, lower.y + style.FramePadding.y),
+        ImVec2(upper.x - style.FramePadding.x, upper.y - style.FramePadding.y),
+        entry.data(), entry.data() + entry.size(), nullptr, ImVec2(0.0f, 0.0f));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s\nDouble-click to edit", entry.c_str());
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          editor.m_selected = i;
+          editor.m_original = option.get();
+          editor.m_edit.assign(std::max(size_t(1024), entry.size() + 1), 0);
+          std::memcpy(editor.m_edit.data(), entry.data(), entry.size());
+          editor.m_focusEdit = true;
+          openEditor = true;
+        }
+      }
+      ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+      const bool remove = ImGui::Button("x##remove", ImVec2(removeWidth, ImGui::GetFrameHeight()));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Remove this name rule");
+      }
+      ImGui::EndGroup();
+      ImGui::PopID();
+      if (remove) {
+        entries.erase(entries.begin() + i);
+        commit(entries);
+        break;
+      }
+    }
+    if (openEditor) {
+      ImGui::OpenPopup("Edit name rule");
+    }
+    if (ImGui::BeginPopup("Edit name rule")) {
+      // A layer reset or config reload must not redirect an edit to a different rule.
+      if (editor.m_original != option.get() || editor.m_selected >= entries.size() || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+      } else {
+        ImGui::TextUnformatted("Edit name rule");
+        if (editor.m_focusEdit) {
+          ImGui::SetKeyboardFocusHere();
+          editor.m_focusEdit = false;
+        }
+        const bool enter = ImGui::InputText("##edit", editor.m_edit.data(), editor.m_edit.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+        const auto edited = parse(editor.m_edit.data());
+        const bool valid = edited.size() == 1;
+        if (!valid) {
+          ImGui::TextDisabled("Enter one non-empty name fragment.");
+        }
+        ImGui::BeginDisabled(!valid);
+        const bool save = ImGui::Button("Save");
+        ImGui::EndDisabled();
+        if (valid && (save || enter)) {
+          entries[editor.m_selected] = edited.front();
+          commit(entries);
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+          entries.erase(entries.begin() + editor.m_selected);
+          commit(entries);
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::PopID();
   }
 
   void ImGUI::showRenderingSettings(const Rc<DxvkContext>& ctx) {

@@ -1,5 +1,12 @@
 # Remix Plus changelog
 
+## 2026-11-05 — Window lighting name tags
+
+Window and street lamp texture names appear as individual tags. Press Enter to
+add a name fragment, double-click a tag to edit it, or click its x to remove it.
+Escape cancels an edit. Existing semicolon-separated configuration remains
+compatible; no options or defaults changed.
+
 ## 2026-11-05 — Reduce host memory retained by native D3D9 draws
 
 Native D3D9 draws now use 1 MiB staging pages that can be reused once all draw,

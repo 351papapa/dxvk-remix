@@ -24,8 +24,10 @@
 
 #include "imgui.h"
 
+#include <array>
 #include <chrono>
 #include <iterator>
+#include <vector>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -138,6 +140,17 @@ namespace dxvk {
       Ok,
       Error
     };
+
+    struct NameRuleEditor {
+      std::array<char, 1024> m_input{};
+      std::vector<char> m_edit;
+      std::string m_original;
+      size_t m_selected = 0;
+      bool m_focusEdit = false;
+    };
+    NameRuleEditor m_windowTextureEditor;
+    NameRuleEditor m_streetLampTextureEditor;
+    void drawNameRules(const char* label, RtxOption<std::string>& option, NameRuleEditor& editor);
 
     DxvkDevice*           m_device;
     
