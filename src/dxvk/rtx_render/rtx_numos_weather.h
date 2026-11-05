@@ -76,6 +76,9 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.weather", float, gameWeatherBlend, -1.0f, RtxOptionFlags::NoSave,
       "Set by the game integration: 0..1 = the game's own blend from rtx.weather.gameWeatherOutgoing to "
       "rtx.weather.gameWeather; negative = the runtime blends over the preset's transition time.");
+    RTX_OPTION_FLAG("rtx.weather", uint32_t, snapRequest, 0u, RtxOptionFlags::NoSave,
+      "Set by the game integration: each new non-zero value makes the next weather update snap to the target "
+      "instead of blending over the preset's transition time.");
     RTX_OPTION_FLAG("rtx.weather", std::string, legacyPresetFile, std::string(""), RtxOptionFlags::NoSave,
       "A weather preset file in the older single-file format ([name] sections with coverage, density, layer2... keys) "
       "to convert into preset files in rtx.weather.presetDirectory. Each section is converted once; a preset of the same "

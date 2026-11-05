@@ -661,6 +661,7 @@ namespace dxvk {
     bool hasCurrent = false;
     bool held = false;
     bool snap = false;  // the next change of target shows at once
+    uint32_t lastSnapRequest = 0;
     Preset heldPreset;
     std::string lastGameWeather, lastManualPreset, lastLegacyFile;
     numos::Settings tuneBaseline, tuneStart;  // the user's settings, and the look written over them
@@ -1275,6 +1276,11 @@ namespace dxvk {
   const numos::Settings& NumosWeather::update(const numos::Settings& base, float deltaSeconds) {
     ensureLoaded();
     State& s = *m_state;
+    const uint32_t snapRequestValue = snapRequest();
+    if (snapRequestValue != s.lastSnapRequest) {
+      s.lastSnapRequest = snapRequestValue;
+      s.snap = true;
+    }
     s.base = base;
     const auto volumetricBase = RtxGlobalVolumetrics::baseWeatherState();
     const auto volumetricFor = [&](const Preset* selected) {
@@ -1349,15 +1355,16 @@ namespace dxvk {
     // The game blends weathers itself: follow its blend factor exactly.
     const float gameBlend = gameWeatherBlend();
     if (previewPreset == nullptr && !s.held && gamePreset != nullptr && gameBlend >= 0.0f) {
+      const float blendFactor = s.snap ? 1.0f : std::clamp(gameBlend, 0.0f, 1.0f);
       numos::Settings outgoing = base;
       applyPreset(boundPreset(gameWeatherOutgoing()), outgoing);
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
-      blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
-      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
-      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), gameBlend);
-      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), gameBlend);
-      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), gameBlend);
+      blend(outgoing, incoming, blendFactor, s.current);
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), blendFactor);
+      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), blendFactor);
+      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), blendFactor);
+      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), blendFactor);
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
       s.snap = false;
@@ -1372,7 +1379,7 @@ namespace dxvk {
     const WaterWeatherState waterGoal = waterFor(target);
     const auto precipitationGoal = precipitationFor(target);
     const auto volumetricGoal = volumetricFor(target);
-    if (!s.hasCurrent || targetName != m_targetName) {
+    if (!s.hasCurrent || targetName != m_targetName || s.snap) {
       s.wetnessFrom = s.hasCurrent ? s.wetnessCurrent : wetnessGoal;
       s.waterFrom = s.hasCurrent ? s.waterCurrent : waterGoal;
       s.precipitationFrom = s.hasCurrent ? s.precipitationCurrent : precipitationGoal;
