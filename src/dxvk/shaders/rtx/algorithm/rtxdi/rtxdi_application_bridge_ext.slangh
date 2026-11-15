@@ -111,45 +111,82 @@ void applyVolumeLightSampleCloudShadow(inout RAB_LightSample lightSample, Decode
     return;
   }
 
-  const vec3 position = volumeInteraction.volumeInteraction.position;
-  lightSample.radiance *= skyProviderCloudShadow(position, normalize(lightSample.position - position));
+  vec3 position = volumeInteraction.volumeInteraction.position;
+  vec3 direction = normalize(lightSample.position - position);
+#if VOLUME_WATER_SURFACE_LIGHTING
+  if (lightSample.volumeVisibilityRay.w > 0.0f)
+  {
+    position = lightSample.position;
+    direction = lightSample.volumeVisibilityRay.xyz;
+  }
+#endif
+  lightSample.radiance *= skyProviderCloudShadow(position, direction);
 }
 #endif
 
 #if VOLUME_WATER_SURFACE_LIGHTING
+#include "rtx/algorithm/water_volume_refraction.slangh"
+
 void applyVolumeWaterSurface(inout RAB_LightSample lightSample, DecodedPolymorphicLight light, RAB_VolumeInteraction volumeInteraction)
 {
   lightSample.volumeVisibilityRay = float4(0.0f);
-  if (!cb.cameraWaterVolumeActive || !cb.cameraWaterSurfaceValid || light.polymorphicType != lightTypeDistant)
+  if (!cb.cameraWaterVolumeActive || !cb.cameraWaterSurfaceValid || !cb.isZUp
+      || light.polymorphicType != lightTypeDistant)
   {
     return;
   }
 
   const float3 position = volumeInteraction.volumeInteraction.position;
+  const float depth = cb.cameraWaterSurfaceHeight - position.z;
+  if (!all(isfinite(position)) || !isfinite(depth) || depth <= 0.0f)
+  {
+    return;
+  }
+  float refractiveIndex;
+  float baseReflectivity;
+  if (!waterVolumeCameraMaterial(refractiveIndex, baseReflectivity))
+  {
+    return;
+  }
   const float3 toLight = lightSample.position - position;
   const float sourceDistance = length(toLight);
   if (!isfinite(sourceDistance) || sourceDistance <= 0.0f)
   {
     return;
   }
-  const float3 direction = toLight / sourceDistance;
-  // The submitted water-height protocol uses world Z as its height axis.
-  if (direction.z <= 0.0001f)
+  const float3 airDirection = toLight / sourceDistance;
+  float3 waterDirection;
+  float solidAngleJacobian;
+  if (!waterRefractToSource(airDirection, refractiveIndex, waterDirection, solidAngleJacobian))
   {
+    lightSample.radiance = float3(0.0f);
+    lightSample.solidAnglePdf = 0.0f;
+    return;
+  }
+  const float waterDistance = depth / waterDirection.z;
+  const float3 waterPosition = position + waterDirection * waterDistance;
+  if (!isfinite(waterDistance) || !all(isfinite(waterPosition)))
+  {
+    lightSample.radiance = float3(0.0f);
+    lightSample.solidAnglePdf = 0.0f;
     return;
   }
 
-  if (!all(isfinite(position)) || !isfinite(cb.cameraWaterSurfaceHeight))
+  // Radiance scales by n^2 while the sampled solid angle contracts by its Jacobian.
+  const float transmission = refractiveIndex == 1.0f && baseReflectivity == 0.0f ? 1.0f
+    : 1.0f - evalTranslucentSchlickFresnel(baseReflectivity, airDirection.z);
+  lightSample.radiance *= transmission * refractiveIndex * refractiveIndex;
+  lightSample.solidAnglePdf *= solidAngleJacobian;
+  lightSample.volumeVisibilityRay = float4(airDirection, sourceDistance);
+  lightSample.position = waterPosition;
+
+  // The source center drives the caustic cookie; the random cone sample drives SH and visibility.
+  float3 centerDirection;
+  float centerJacobian;
+  if (waterRefractToSource(-lightSample.normal, refractiveIndex, centerDirection, centerJacobian))
   {
-    return;
+    lightSample.normal = -centerDirection;
   }
-  const float depth = max(cb.cameraWaterSurfaceHeight - position.z, 0.0f);
-  // Keep the virtual sample distinct from its froxel even at the surface.
-  const float positionScale = max(max(abs(position.x), abs(position.y)), abs(position.z));
-  const float minDistance = max(0.0001f, positionScale * 0.000001f);
-  const float waterDistance = clamp(depth / direction.z, minDistance, sourceDistance);
-  lightSample.volumeVisibilityRay = float4(direction, sourceDistance);
-  lightSample.position = position + direction * waterDistance;
 }
 #endif
 
@@ -181,11 +218,11 @@ RAB_LightSample RAB_GetLightSample(uint lightID, float2 lightUV, RAB_VolumeInter
   {
     lightSample.radiance *= cb.preExposureHistoryRatio;
   }
-#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
-  applyVolumeLightSampleCloudShadow(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
-#endif
 #if VOLUME_WATER_SURFACE_LIGHTING
   applyVolumeWaterSurface(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
+#endif
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+  applyVolumeLightSampleCloudShadow(lightSample, decodePolymorphicLight(RAB_GetMemoryPolymorphicLight(lightID, usePreviousLights)), volumeInteraction);
 #endif
   return lightSample;
 }
@@ -203,11 +240,11 @@ RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uin
 RAB_LightSample RAB_GetLightSampleWithTypeHint(uint lightID, float2 lightUV, uint lightType, RAB_VolumeInteraction volumeInteraction)
 {
   RAB_LightSample lightSample = RAB_GetLightSampleWithTypeHintBase(lightID, lightUV, lightType, volumeInteraction);
-#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
-  applyVolumeLightSampleCloudShadow(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
-#endif
 #if VOLUME_WATER_SURFACE_LIGHTING
   applyVolumeWaterSurface(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
+#endif
+#if VOLUME_LIGHT_SAMPLE_CLOUD_SHADOW
+  applyVolumeLightSampleCloudShadow(lightSample, RAB_GetDecodedPolymorphicLightWithTypeHint(lightID, lightType), volumeInteraction);
 #endif
   return lightSample;
 }

@@ -885,7 +885,7 @@ namespace dxvk::hud {
                                    "# Buffers:" ,
                                    "# Textures:" ,
                                    "# Active Replacement Textures:",
-                                   "# Instances/Surfaces:" ,
+                                   "# Resident Instances:" ,
                                    "# Surface Materials:" ,
                                    "# Surface Material Extensions:" ,
                                    "# Volume Materials:" ,

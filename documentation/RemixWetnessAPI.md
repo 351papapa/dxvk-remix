@@ -48,6 +48,15 @@ all zones. Bounds are open, matching the plugin's cull-zone semantics. Zones
 only filter shading when `respectNoRainZones` is enabled. The acceleration
 buffer is replaced on changes so an in-flight frame retains its own snapshot.
 
+In Material Options > Wetness / Rain, No-rain edge feather restores wet ground
+gradually over the chosen horizontal distance. No-rain corner radius extends
+the dry footprint outward by the chosen radius with rounded corners, so adjacent
+boxes still cover their common boundary. Feather distance starts at that rounded
+boundary. Overlapping zones use the closest footprint. Ground shading and wet
+ground contacts use these settings. Precipitation shelter testing and vertical
+bounds still use the supplied boxes. Both settings default to 0 meters and are
+independent of graphics and weather presets. They reuse the existing zone data.
+
 The optional global rain-ending roughness override defaults off. A stale `1`
 is limited to the greater of ten seconds and the configured transition time.
 Publish `0` when the transition ends or on load; normal material roughness is

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <sstream>
@@ -17,10 +18,15 @@
 #include "rtx_grass_placement.h"
 #include "../../util/util_env.h"
 #include "rtx_mod_usd.h"
+#include "rtx_fork_game_state.h"
+#include "rtx_numos_settings.h"
+#include "rtx_numos_weather.h"
 #include "rtx_scene_manager.h"
 #include "rtx_texture_manager.h"
+#include "rtx_utils.h"
 #include "../dxvk_device.h"
 #include "../dxvk_context.h"
+#include "../util/util_global_time.h"
 
 namespace dxvk {
 namespace {
@@ -139,6 +145,54 @@ namespace {
       triangles.push_back(tri);
     }
     return true;
+  }
+
+  struct GrassPushers {
+    std::array<Vector4, 16> positionRadius = {};
+    std::array<Vector4, 16> weights = {};
+    uint32_t count = 0;
+  };
+
+  void readGrassPushers(GrassPushers& pushers) {
+    pushers = {};
+
+    std::string packet;
+    if (!fork_game_state::GameStateStore::get().tryGet("__vegetation.pushers_v1", packet) || packet.empty()) {
+      return;
+    }
+
+    const char* cursor = packet.c_str();
+    char* end = nullptr;
+    const long declared = std::strtol(cursor, &end, 10);
+    if (end == cursor || declared <= 0) {
+      return;
+    }
+    cursor = end;
+
+    const uint32_t limit = std::min<uint32_t>(static_cast<uint32_t>(declared), 16u);
+    for (uint32_t i = 0; i < limit; ++i) {
+      float values[5] = {};
+      bool parsed = true;
+      for (float& value : values) {
+        while (*cursor && (*cursor == ',' || *cursor == ';' || *cursor == ' ' || *cursor == '\t')) {
+          ++cursor;
+        }
+        const char* begin = cursor;
+        value = std::strtof(cursor, &end);
+        if (end == begin || !std::isfinite(value)) {
+          parsed = false;
+          break;
+        }
+        cursor = end;
+      }
+      if (!parsed) {
+        break;
+      }
+
+      pushers.positionRadius[i] = Vector4(values[0], values[1], values[2], std::max(values[3], 0.0f));
+      pushers.weights[i] = Vector4(std::clamp(values[4], 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+      pushers.count = i + 1;
+    }
   }
 }
 
@@ -519,9 +573,43 @@ void GrassSystem::update(const Rc<DxvkContext>& ctx, SceneManager& scene) {
   GrassConstants constants {};
   constants.cameraRadius = { camera.x, camera.y, camera.z, r };
   constants.forwardFade = { m_horizontalForward.x, m_horizontalForward.y, m_horizontalForward.z, std::isfinite(fadeDistance()) ? std::clamp(fadeDistance(), 0.01f, 200.0f) : 5.0f };
-  constants.dimensions = { w, h, std::isfinite(groundOffset()) ? std::clamp(groundOffset(), -1.0f, 1.0f) : 0.0f, 0 };
+  const float windMultiplier = std::isfinite(windStrengthMultiplier())
+    ? std::clamp(windStrengthMultiplier(), 0.0f, 10.0f) : 1.0f;
+  constants.dimensions = {
+    w, h, std::isfinite(groundOffset()) ? std::clamp(groundOffset(), -1.0f, 1.0f) : 0.0f,
+    windMultiplier };
   constants.bounds = { m_boundWidth, m_boundHeight, 0, 0 };
   memcpy(constants.viewPlanes, viewPlanes.data(), sizeof(constants.viewPlanes));
+
+  const auto& sky = ctx->getCommonObjects()->metaNumosWeather().current();
+  const float windAngle = sky.cloudWindDirection * kDegreesToRadians;
+  const Vector3 windDirection =
+    SceneManager::calculateSceneRight() * std::cos(windAngle) + SceneManager::getSceneForward() * std::sin(windAngle);
+  const float reference = std::max(std::isfinite(windReference()) ? windReference() : 0.05f, 0.001f);
+  const float windStrength = std::clamp(
+    std::sqrt(std::max(sky.cloudWindSpeed / reference, 0.0f)), 0.0f, 2.0f);
+  const float timeSeconds = static_cast<float>(GlobalTime::get().absoluteTimeMs()) * 0.001f;
+  constants.windDirectionStrength = { windDirection.x, windDirection.y, windDirection.z, windStrength };
+  constants.windAnimation = {
+    timeSeconds,
+    std::isfinite(gustStrength()) ? std::clamp(gustStrength(), 0.0f, 2.0f) : 0.35f,
+    std::isfinite(gustFrequency()) ? std::clamp(gustFrequency(), 0.0f, 10.0f) : 0.04f,
+    std::isfinite(swayFrequency()) ? std::clamp(swayFrequency(), 0.0f, 10.0f) : 0.03f,
+  };
+
+  GrassPushers pushers;
+  readGrassPushers(pushers);
+  constants.windLimits = {
+    std::isfinite(windMaxRadians()) ? std::clamp(windMaxRadians(), 0.0f, 1.45f) : 0.45f,
+    std::isfinite(contactMaxRadians()) ? std::clamp(contactMaxRadians(), 0.0f, 1.45f) : 1.40f,
+    std::isfinite(contactRadius()) ? std::clamp(contactRadius(), 0.01f, 4.0f) : 0.25f,
+    static_cast<float>(pushers.count),
+  };
+  for (size_t i = 0; i < pushers.count; ++i) {
+    constants.pushers[i] = pushers.positionRadius[i];
+    constants.pusherWeights[i] = pushers.weights[i];
+  }
+
   constants.budget = budget;
   constants.frontRear = frontRearRange();
   constants.zUp = m_zUp;

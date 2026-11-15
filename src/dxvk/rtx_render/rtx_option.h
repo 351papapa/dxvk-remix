@@ -61,6 +61,8 @@ namespace dxvk {
   // after the new value is in place. Caches derived from option values (rtx.textureCategoryCache)
   // compare it to know when to rebuild.
   inline std::atomic<uint64_t> g_rtxOptionResolveGeneration { 0 };
+  // Changes to per-frame sky constants do not invalidate D3D9 draw preparation.
+  extern std::atomic<uint64_t> g_rtxD3D9OptionGeneration;
   // rtx.profile.detailedLogging ([PerfD3D9] optionMutexLocks): count global option mutex
   // acquisitions made by option reads. Synced once per frame by RtxPerfLog::syncGlobals.
   inline std::atomic<bool> g_rtxOptionCountLocks { false };

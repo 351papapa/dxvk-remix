@@ -35,6 +35,7 @@ namespace dxvk {
       NtscVhs,
       SunFlare,
       LocalStarbursts,
+      LocalCoronas,
       LensRain,
       LensEffects,
       SRGBDither,

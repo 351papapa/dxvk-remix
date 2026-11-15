@@ -1,9 +1,12 @@
 #include "rtx_numos_gpu.h"
+#include "rtx_numos_haze_lights.h"
 #include "rtx_context.h"
 #include "../../util/util_env.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
+#include <fstream>
 
 #include "../dxvk_device.h"
 #include "../dxvk_shader.h"
@@ -22,6 +25,44 @@ namespace dxvk {
     constexpr size_t kBufferTailPad = 256;
     constexpr size_t kConstantsRingBytes = 1 << 20;
     constexpr size_t kPlaceholderBufferBytes = 65536;
+    constexpr uint32_t kCloudSceneTlasSlot = 30;
+    static_assert(sizeof(numos::AerialPerspectiveLight) == 64, "NUMOS haze light layout changed");
+    static_assert(offsetof(numos::AerialPerspectiveLight, influenceRadius) == 12, "NUMOS haze reach offset changed");
+    static_assert(offsetof(numos::AerialPerspectiveLight, coneAxis) == 32, "NUMOS haze shaping offset changed");
+
+    std::vector<uint32_t> loadSidecarSpirv(const numos::PassInfo& info, const std::string& directory,
+                                             const char* suffix, uint32_t layoutVersion = 0) {
+      std::string path = directory + "/" + info.spirvFile;
+      path.replace(path.size() - 4, 4, suffix);
+      std::ifstream metadata(path.substr(0, path.size() - 4) + ".meta");
+      uint64_t sourceHash = 0;
+      uint64_t expectedHash = 0;
+      metadata >> std::hex >> sourceHash >> expectedHash;
+      uint32_t version = 0;
+      if (layoutVersion) {
+        metadata >> std::dec >> version;
+      }
+      if (!metadata || sourceHash != info.spirvHash || version != layoutVersion) {
+        return {};
+      }
+      std::ifstream file(path, std::ios::binary | std::ios::ate);
+      const std::streamoff length = file ? std::streamoff(file.tellg()) : 0;
+      if (length < 20 || length % 4 || length > 64 * 1024 * 1024) {
+        return {};
+      }
+      std::vector<uint32_t> words(size_t(length) / 4);
+      file.seekg(0);
+      file.read(reinterpret_cast<char*>(words.data()), length);
+      uint64_t hash = 14695981039346656037ull;
+      const auto* bytes = reinterpret_cast<const uint8_t*>(words.data());
+      for (size_t i = 0; i < size_t(length); ++i) {
+        hash = (hash ^ bytes[i]) * 1099511628211ull;
+      }
+      if (!file || words[0] != 0x07230203u || hash != expectedHash) {
+        return {};
+      }
+      return words;
+    }
 
     VkFormat toVkFormat(numos::Format format) {
       switch (format) {
@@ -142,7 +183,10 @@ namespace dxvk {
   NumosGpu::NumosGpu(DxvkDevice* device, std::string spirvDirectory)
     : m_device(device)
     , m_spirvDirectory(std::move(spirvDirectory))
-    , m_passes(numos::passCount()) {
+    , m_passes(numos::passCount())
+    , m_hazeWords(numos::passCount())
+    , m_hazeProbe(device)
+    , m_cloudProbe(device) {
     const VkDeviceSize align = device->properties().core.properties.limits.minUniformBufferOffsetAlignment;
     m_constantsAlign = std::max<size_t>(m_constantsAlign, size_t(align));
   }
@@ -152,11 +196,22 @@ namespace dxvk {
   void NumosGpu::beginFrame(const Rc<DxvkContext>& ctx, uint64_t frameId) {
     m_ctx = ctx;
     m_frameId = frameId;
+    m_hazeProbe.beginFrame(*ctx, frameId);
+    m_cloudProbe.beginFrame(*ctx, frameId);
     m_constantsOffset = 0;
     for (GpuHandle h : m_retiredConstants) {
+      m_hazeProbe.forgetBuffer(h);
       m_resources.erase(h);
     }
     m_retiredConstants.clear();
+  }
+
+  void NumosGpu::endFrame() {
+    if (m_ctx != nullptr) {
+      m_cloudProbe.endFrame(*m_ctx);
+    }
+    m_cloudProbeScene = nullptr;
+    m_ctx = nullptr;
   }
 
   GpuHandle NumosGpu::setExternalAccel(const Rc<DxvkAccelStructure>& accel) {
@@ -264,11 +319,14 @@ namespace dxvk {
     Resource r;
     r.kind = Resource::Kind::Buffer;
     r.buffer.desc = desc;
+    r.buffer.hazeLights = desc.debugName != nullptr && std::strcmp(desc.debugName, "Atmosphere AP Lights") == 0;
     r.buffer.buffer = m_device->createBuffer(info, memory, DxvkMemoryStats::Category::RTXBuffer, name.c_str());
     if (desc.usage != numos::BufferUsage::Readback) {
       m_ctx->clearBuffer(r.buffer.buffer, 0, info.size, 0);
     }
-    return add(std::move(r));
+    const GpuHandle handle = add(std::move(r));
+    m_hazeProbe.trackBuffer(handle, desc.debugName);
+    return handle;
   }
 
   GpuHandle NumosGpu::createSampler(const numos::SamplerDesc& desc) {
@@ -301,6 +359,7 @@ namespace dxvk {
   void NumosGpu::destroy(GpuHandle resource) {
     // DXVK keeps the object alive while recorded work still uses it; dropping the reference is enough.
     if (resource != 0 && resource != m_constantsHandle) {
+      m_hazeProbe.forgetBuffer(resource);
       m_resources.erase(resource);
     }
   }
@@ -325,8 +384,14 @@ namespace dxvk {
       return uploadConstants(data, size);
     }
     m_ctx->writeToBuffer(m_constants, offset, size, data);
+    m_hazeProbe.noteConstants(m_constantsHandle, offset, data, size);
+    m_cloudProbe.noteConstants(m_constantsHandle, offset, data, size);
     m_constantsOffset = offset + size;
     return { m_constantsHandle, offset, size };
+  }
+
+  void NumosGpu::setHazeSpotlightReach(float reachWorld) {
+    m_hazeSpotlightReachWorld = NumosHazeLights::positiveFinite(reachWorld);
   }
 
   void NumosGpu::updateBuffer(GpuHandle handle, size_t offset, size_t size, const void* data) {
@@ -334,6 +399,27 @@ namespace dxvk {
     if (dst == nullptr || size == 0) {
       return;
     }
+    const Resource* resource = find(handle);
+    if (m_hazeSpotlightReachWorld > 0.0f && resource != nullptr && resource->buffer.hazeLights) {
+      const bool valid = resource->buffer.desc.usage == numos::BufferUsage::Structured && data != nullptr && offset == 0 &&
+        size % sizeof(numos::AerialPerspectiveLight) == 0 && size <= 4096 * sizeof(numos::AerialPerspectiveLight) &&
+        size <= resource->buffer.desc.size;
+      if (valid) {
+        m_hazeUploadLights.resize(size / sizeof(numos::AerialPerspectiveLight));
+        std::memcpy(m_hazeUploadLights.data(), data, size);
+        for (numos::AerialPerspectiveLight& light : m_hazeUploadLights) {
+          // NUMOS uses a zero axis for unshaped lights, including its lightning flash.
+          if (light.coneAxis.x != 0.0f || light.coneAxis.y != 0.0f || light.coneAxis.z != 0.0f) {
+            light.influenceRadius = NumosHazeLights::cappedReach(light.influenceRadius, m_hazeSpotlightReachWorld);
+          }
+        }
+        data = m_hazeUploadLights.data();
+      } else if (!m_hazeUploadWarning) {
+        Logger::warn("[NUMOS] Haze light upload layout is incompatible; spotlight reach keeps the original light data.");
+        m_hazeUploadWarning = true;
+      }
+    }
+    m_hazeProbe.noteBuffer(handle, offset, data, size);
     if (offset % 4 != 0) {
       // vkCmdUpdateBuffer (writeToBuffer's small-write path) needs a 4-byte aligned offset; a buffer
       // copy has no alignment rule, so stage through the constants ring.
@@ -432,6 +518,34 @@ namespace dxvk {
     return v;
   }
 
+  void NumosGpu::prepareHazeShaders() {
+    if (m_hazeChecked) {
+      return;
+    }
+    m_hazeChecked = true;
+    if (env::getEnvVar("RTX_NUMOS_HAZE_REFERENCE") == "1") {
+      Logger::info("NUMOS: HAZE reference requested; all light-list passes use the library layout");
+      return;
+    }
+    constexpr numos::PassId passes[] = {
+      numos::PassId::aerial_perspective_light_cull,
+      numos::PassId::aerial_perspective_froxel_lighting,
+      numos::PassId::aerial_perspective_froxel_lighting_traced
+    };
+    std::vector<std::vector<uint32_t>> candidates(numos::passCount());
+    for (numos::PassId pass : passes) {
+      candidates[uint32_t(pass)] = loadSidecarSpirv(numos::passInfo(uint32_t(pass)), m_spirvDirectory, ".haze.spv", 1);
+      if (candidates[uint32_t(pass)].empty()) {
+        Logger::warn("NUMOS: missing or stale HAZE shader set; all light-list passes use the library layout");
+        return;
+      }
+    }
+    // Never combine a grouped-bitset writer with a legacy-only reader.
+    // The embedded composite accepts both formats, including this full-set fallback.
+    m_hazeWords = std::move(candidates);
+    Logger::info("NUMOS: HAZE complete grouped light lists ready (layout 1, three validated passes)");
+  }
+
   Rc<DxvkShader> NumosGpu::shaderFor(uint32_t pass) {
     Pass& p = m_passes[pass];
     if (p.loaded) {
@@ -439,12 +553,16 @@ namespace dxvk {
     }
     p.loaded = true;
     const numos::PassInfo& info = numos::passInfo(pass);
-    const std::vector<uint32_t> words = numos::loadPassSpirv(numos::PassId(pass), m_spirvDirectory);
+    prepareHazeShaders();
+    std::vector<uint32_t> words = numos::loadPassSpirv(numos::PassId(pass), m_spirvDirectory);
     if (words.empty()) {
       // loadPassSpirv logged why (through the NUMOS log callback).
       Logger::err(str::format("NUMOS: pass ", info.name, " has no valid SPIR-V in ", m_spirvDirectory));
       m_shaderLoadFailed = true;
       return nullptr;
+    }
+    if (!m_hazeWords[pass].empty()) {
+      words = std::move(m_hazeWords[pass]);
     }
     std::vector<DxvkResourceSlot> slots;
     slots.reserve(info.bindingCount);
@@ -458,6 +576,42 @@ namespace dxvk {
     p.shader->setDebugName(info.name);
     p.shader->generateShaderKey();
     m_device->registerShader(p.shader, true);
+    if (numos::PassId(pass) == numos::PassId::cloud_render ||
+        numos::PassId(pass) == numos::PassId::cloud_render_fast) {
+      const auto sceneWords = loadSidecarSpirv(info, m_spirvDirectory, ".scene.spv");
+      if (!sceneWords.empty()) {
+        slots.push_back({ kCloudSceneTlasSlot, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR });
+        p.sceneShader = new DxvkShader(VK_SHADER_STAGE_COMPUTE_BIT, uint32_t(slots.size()), slots.data(),
+          { 0u, 0u, 0u, info.pushConstantSize },
+          SpirvCodeBuffer(uint32_t(sceneWords.size()), sceneWords.data()),
+          DxvkShaderOptions(), DxvkShaderConstData());
+        p.sceneShader->setDebugName("NUMOS cloud scene visibility");
+        p.sceneShader->generateShaderKey();
+        m_device->registerShader(p.sceneShader, true);
+        Logger::info(str::format("NUMOS: scene visibility ready for ", info.name));
+        if (m_cloudProbe.enabled()) {
+          const auto probeWords = loadSidecarSpirv(info, m_spirvDirectory, ".scene-probe.spv", 1);
+          if (!probeWords.empty()) {
+            slots.push_back({ 31, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_IMAGE_VIEW_TYPE_MAX_ENUM,
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT });
+            p.sceneProbeShader = new DxvkShader(VK_SHADER_STAGE_COMPUTE_BIT, uint32_t(slots.size()), slots.data(),
+              { 0u, 0u, 0u, info.pushConstantSize },
+              SpirvCodeBuffer(uint32_t(probeWords.size()), probeWords.data()),
+              DxvkShaderOptions(), DxvkShaderConstData());
+            p.sceneProbeShader->setDebugName("NUMOS bounded cloud scene hit probe");
+            p.sceneProbeShader->generateShaderKey();
+            m_device->registerShader(p.sceneProbeShader, true);
+            Logger::info(str::format("NUMOS: cloud hit probe ABI 1 ready for ", info.name));
+          } else {
+            Logger::warn(str::format("NUMOS: missing or stale cloud hit probe for ", info.name,
+              "; production scene visibility retained"));
+          }
+        }
+      } else {
+        Logger::warn(str::format("NUMOS: missing or stale scene visibility shader for ", info.name,
+          "; clouds use the unshadowed library pass"));
+      }
+    }
     return p.shader;
   }
 
@@ -557,7 +711,34 @@ namespace dxvk {
       }
     }
 
-    m_ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, shader);
+    const Resource* scene = find(kExternalAccel);
+    const Rc<DxvkShader>& sceneShader = m_passes[desc.pass].sceneShader;
+    const bool traceCloudScene = sceneShader != nullptr && scene != nullptr && scene->accel != nullptr;
+    if (traceCloudScene) {
+      m_ctx->bindAccelerationStructure(kCloudSceneTlasSlot, scene->accel);
+    }
+    Rc<DxvkBuffer> cloudProbeBuffer;
+    const Rc<DxvkShader>& probeShader = m_passes[desc.pass].sceneProbeShader;
+    if (traceCloudScene && probeShader != nullptr && m_cloudProbeScene != nullptr) {
+      Rc<DxvkBuffer> args, camera;
+      Rc<DxvkImage> cloudOutput;
+      for (uint32_t i = 0; i < desc.bindingCount; ++i) {
+        const auto& binding = desc.bindings[i];
+        if (binding.slot == 0) { args = buffer(binding.resource); }
+        if (binding.slot == 17) { camera = buffer(binding.resource); }
+        if (binding.slot == 6) { cloudOutput = image(binding.resource); }
+      }
+      if (cloudOutput != nullptr) {
+        const auto extent = cloudOutput->info().extent;
+        cloudProbeBuffer = m_cloudProbe.beforeCloudDispatch(*m_ctx, desc, args, camera,
+          *m_cloudProbeScene, extent.width, extent.height);
+      }
+    }
+    if (cloudProbeBuffer != nullptr) {
+      m_ctx->bindResourceBuffer(31, DxvkBufferSlice(cloudProbeBuffer, 0, 33024));
+    }
+    m_ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT,
+      cloudProbeBuffer != nullptr ? probeShader : (traceCloudScene ? sceneShader : shader));
     if (info.pushConstantSize > 0) {
       // The RTX bank, as every RTX pass uses: the D3D9 frontend's bank holds its render state.
       m_ctx->setPushConstantBank(DxvkPushConstantBank::RTX);
@@ -569,6 +750,16 @@ namespace dxvk {
       m_ctx->pushConstants(0, size, push);
     }
     m_ctx->dispatch(desc.groupsX, desc.groupsY, desc.groupsZ);
+    if (numos::PassId(desc.pass) == numos::PassId::aerial_perspective_light_cull) {
+      Rc<DxvkBuffer> args, lights, clusters;
+      for (uint32_t i = 0; i < count; ++i) {
+        const auto& b = desc.bindings[i];
+        if (b.slot == 0) { args = buffer(b.resource); }
+        if (b.slot == 2) { lights = buffer(b.resource); }
+        if (b.slot == 3) { clusters = buffer(b.resource); }
+      }
+      m_hazeProbe.afterCull(*m_ctx, desc, args, lights, clusters);
+    }
     static const bool tracePasses = env::getEnvVar("RTX_NUMOS_PASS_TIMINGS") == "1";
     if (tracePasses) {
       // beginFrame receives the sky provider's RtxContext. Pass names have static

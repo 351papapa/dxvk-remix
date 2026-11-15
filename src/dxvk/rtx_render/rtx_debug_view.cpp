@@ -103,6 +103,23 @@ namespace dxvk {
                                               "Red: the cloud's weight in the motion vector\n"
                                               "Green: cloud opacity\n"
                                               "Blue: the depth is the cloud's"},
+        {DEBUG_VIEW_CLOUD_COMPOSITE_CHANGE, "Cloud Composite Change",
+                                              "Signed radiance added by the camera cloud composite, including foreground coverage.\n"
+                                              "Positive values brighten the pixel; negative values are cloud extinction.\n"
+                                              "This is before aerial perspective and tone mapping. Set a negative display minimum to see extinction."},
+        {DEBUG_VIEW_AERIAL_COMPOSITE_CHANGE, "Aerial Perspective Composite Change",
+                                              "Signed radiance added by camera aerial perspective, including foreground and alpha-blend layers.\n"
+                                              "Positive values brighten the pixel; negative values are air extinction.\n"
+                                              "This excludes cloud lighting and the sun/moon disks."},
+        {DEBUG_VIEW_SKY_DISK_COMPOSITE_CHANGE, "Sky Disk Composite Change",
+                                              "Radiance added by visible sun and moon disks, before clouds and aerial perspective."},
+        {DEBUG_VIEW_SKY_SURFACE_CLASSIFICATION, "Sky Surface Classification",
+                                              "Red: primary sky miss. Green: alpha-blend coverage. Blue: separate foreground layer.\n"
+                                              "White: a reflection or refraction replaced the primary path.\n"
+                                              "Ordinary opaque and alpha-tested surface hits are black."},
+        {DEBUG_VIEW_BEFORE_SKY_COMPOSITE, "Before Sky Composite",
+                                              "Surface, shared and alpha-blend radiance before camera clouds, sky disks and aerial perspective.\n"
+                                              "Native volumetrics and path-traced sky lighting are already present."},
         {DEBUG_VIEW_TRIANGLE_NORMAL, "Triangle Normal"},
         {DEBUG_VIEW_INTERPOLATED_VERTEX_NORMAL, "Interpolated Vertex Normal"},
         {DEBUG_VIEW_GEOMETRY_NORMAL, "Geometry Normal"},
@@ -227,6 +244,8 @@ namespace dxvk {
         {DEBUG_VIEW_SHARC_TERMINATION_BOUNCE, "SHARC Termination Bounce"},
         {DEBUG_VIEW_SHARC_GRID_CELLS, "SHARC Grid Cells"},
         {DEBUG_VIEW_SHARC_CELL_AGE, "SHARC Cell Age"},
+        {DEBUG_VIEW_RASTER_FIRST_HIT_COVERAGE, "Raster First Hit Coverage (green raster, red rejected, blue traced)"},
+        {DEBUG_VIEW_RASTER_FIRST_HIT_VALIDATION, "Raster First Hit vs Camera Ray (gray same, yellow other surface, red nearer ray hit, blue raster only)"},
 
         {DEBUG_VIEW_RTXDI_GRADIENTS, "RTXDI Gradients"},
         {DEBUG_VIEW_RTXDI_CONFIDENCE, "RTXDI Confidence"},
@@ -1312,7 +1331,7 @@ namespace dxvk {
 
 
     // Todo: Add cases for secondary denoiser.
-    if (RtxOptions::denoiseDirectAndIndirectLightingSeparately()) {
+    if (RtxOptions::resolvedDenoiseDirectAndIndirectLightingSeparately()) {
       switch (debugViewIdx()) {
       case DEBUG_VIEW_DENOISED_PRIMARY_DIRECT_DIFFUSE_RADIANCE:
       case DEBUG_VIEW_DENOISED_PRIMARY_DIRECT_SPECULAR_RADIANCE:
@@ -1437,7 +1456,7 @@ namespace dxvk {
 
     // NRD Validation Layer bindings
     {
-      DxvkDenoise& denoiser0 = RtxOptions::denoiseDirectAndIndirectLightingSeparately() 
+      DxvkDenoise& denoiser0 = RtxOptions::resolvedDenoiseDirectAndIndirectLightingSeparately()
         ? ctx->getCommonObjects()->metaPrimaryDirectLightDenoiser() 
         : ctx->getCommonObjects()->metaPrimaryCombinedLightDenoiser();
       DxvkDenoise& denoiser1 = ctx->getCommonObjects()->metaPrimaryIndirectLightDenoiser();

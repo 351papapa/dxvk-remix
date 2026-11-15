@@ -29,7 +29,7 @@ float waterVolumeCausticTransmission(uint lightIndex, LightSample lightSample,
   if (!all(isfinite(centerDirection)) || !isfinite(centerLengthSquared) || centerLengthSquared <= 0.00000001f) {
     return 1.0f;
   }
-  // The cookie uses the source center. Native sample and visibility rays stay intact.
+  // The water-volume wrapper refracts the source center with the same material as its sampled ray.
   const float3 direction = normalize(centerDirection);
   float3 waterPosition;
   float depth;

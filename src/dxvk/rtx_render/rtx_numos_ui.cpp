@@ -21,6 +21,8 @@
 #include "rtx_options.h"
 #include "rtx_numos.h"
 #include "rtx_numos_gpu.h"
+#include "rtx_numos_haze_lights.h"
+#include "rtx_numos_night.h"
 #include "rtx_numos_settings.h"
 #include "rtx_numos_weather.h"
 #include "rtx_precipitation.h"
@@ -43,6 +45,7 @@ namespace dxvk {
     const NumosWeather::Preset* g_weatherPreset = nullptr;
     const numos::Settings* g_shownSettings = nullptr;
     const numos::FrameOutputs* g_numosOutputs = nullptr;  // this frame's, or null while NUMOS is off
+    NumosNightAppearanceState g_shownNightAppearance;
 
     // Opens the Weather Presets window (defined with the window below).
     void openPresetWindow();
@@ -52,6 +55,7 @@ namespace dxvk {
       g_weatherPreset = weather.find(weather.activePreset());
       g_shownSettings = &weather.current();
       g_numosOutputs = ctx->getCommonObjects()->metaNumos().outputs();
+      g_shownNightAppearance = weather.nightAppearanceState();
     }
 
     // ------------------------------------------------------------------------------------------
@@ -549,6 +553,30 @@ namespace dxvk {
     // Haze
     // ------------------------------------------------------------------------------------------
 
+    void showHazeLightRangeControls() {
+      RemixGui::DragFloat("Haze Light Camera Distance", &NumosHazeLights::hazeLightDistanceMetersObject(),
+                          1.0f, 0.0f, 100000.0f, "%.1f m", kClamp);
+      RemixGui::SetTooltipToLastWidgetOnHover(
+        "Only lights whose centers are within this distance of the rendered camera illuminate the haze. "
+        "0 = unlimited. Distances use the measured world scale, independently of Haze World Scale. "
+        "Ordinary surface lighting is unchanged.");
+      ImGui::BeginDisabled(!(NumosHazeLights::hazeLightDistanceMeters() > 0.0f));
+      RemixGui::DragFloat("Haze Light Camera Fade", &NumosHazeLights::hazeLightFadeMetersObject(),
+                          1.0f, 0.0f, 100000.0f, "%.1f m", kClamp);
+      RemixGui::SetTooltipToLastWidgetOnHover(
+        "Width of the smooth fade inside the camera-distance limit. 0 = automatic, over the last 20 percent. "
+        "A width larger than the distance fades over the whole range. Fading also reduces the light's "
+        "cutoff-derived haze reach. It does not dim ordinary surface lighting.");
+      ImGui::EndDisabled();
+      RemixGui::DragFloat("Spotlight Shaft Reach", &NumosHazeLights::hazeSpotlightReachMetersObject(),
+                          1.0f, 0.0f, 100000.0f, "%.1f m", kClamp);
+      RemixGui::SetTooltipToLastWidgetOnHover(
+        "Maximum distance from a spotlight source to its haze illumination, in measured world meters. "
+        "0 = unlimited. This caps the influence sphere and does not extend shorter lights. Unshaped lights, "
+        "lightning and surface lighting are unchanged. Local Light Range Window smooths the range boundary "
+        "but also dims the shaft along its length; it is not enabled automatically.");
+    }
+
     void showHazeTab() {
       ImGui::TextWrapped("Aerial perspective adds haze and depth to distant terrain, buildings, and clouds.");
       setting("aerialPerspective", "Enable Distance Haze");
@@ -583,6 +611,7 @@ namespace dxvk {
         setting("aerialPerspectiveLocalLightShadows", "Local Light Shadows");
         setting("aerialPerspectiveLocalLightCutoff", "Local Light Cutoff", 0.0005f, 0.0f, 1.0f, "%.4f");
         setting("aerialPerspectiveLocalLightMaxCount", "Local Light Budget", 1.0f, 0.0f, 4096.0f);
+        showHazeLightRangeControls();
         ImGui::EndDisabled();
         ImGui::TreePop();
       }
@@ -627,6 +656,44 @@ namespace dxvk {
       ImGui::TreePop();
     }
 
+    template <typename T, typename Parameter, size_t N>
+    bool nightWeatherOverride(T NumosNightAppearanceState::* member, const Parameter (&parameters)[N],
+                              const std::array<std::optional<T>, N>& fields) {
+      for (size_t i = 0; i < N; ++i) {
+        if (parameters[i].member == member) {
+          return fields[i].has_value();
+        }
+      }
+      return false;
+    }
+
+    void nightAppearanceFloat(const char* label, RtxOption<float>& option, float NumosNightAppearanceState::* member,
+                              float step, float low, float high, const char* format) {
+      if (g_weatherPreset != nullptr && nightWeatherOverride(member, kNumosNightWeatherFloats, g_weatherPreset->nightAppearance.floats)) {
+        float shown = g_shownNightAppearance.*member;
+        ImGui::BeginDisabled();
+        ImGui::DragFloat(label, &shown, step, low, high, format, kClamp);
+        ImGui::EndDisabled();
+        weatherTag();
+      } else if (member == &NumosNightAppearanceState::milkyWayBrightness) {
+        RemixGui::SliderFloat(label, &option, low, high, format, kClamp | ImGuiSliderFlags_Logarithmic);
+      } else {
+        RemixGui::DragFloat(label, &option, step, low, high, format, kClamp);
+      }
+    }
+
+    void nightAppearanceColor(const char* label, RtxOption<Vector3>& option, Vector3 NumosNightAppearanceState::* member) {
+      if (g_weatherPreset != nullptr && nightWeatherOverride(member, kNumosNightWeatherColors, g_weatherPreset->nightAppearance.colors)) {
+        Vector3 shown = g_shownNightAppearance.*member;
+        ImGui::BeginDisabled();
+        ImGui::ColorEdit3(label, shown.data);
+        ImGui::EndDisabled();
+        weatherTag();
+      } else {
+        RemixGui::ColorEdit3(label, &option);
+      }
+    }
+
     void showNightTab() {
       ImGui::TextWrapped("The night is drawn at its physical brightness, times the Night Gain below. How bright it looks "
                          "is otherwise the exposure's job (auto-exposure limits and compensation in the tonemapping settings).");
@@ -637,7 +704,37 @@ namespace dxvk {
         setting("starScintillation", "Twinkle", 0.01f, 0.0f, 4.0f, "%.2f");
         ImGui::TreePop();
       }
+      if (ImGui::TreeNode("Night Sky Appearance")) {
+        RemixGui::Checkbox("Enable Night Sky Appearance", &NumosNightAppearance::nightAppearanceObject());
+        ImGui::BeginDisabled(!NumosNightAppearance::nightAppearance());
+        nightAppearanceFloat("Star Brightness", NumosNightAppearance::starBrightnessObject(), &NumosNightAppearanceState::starBrightness, 0.1f, 0.0f, 64.0f, "%.2f");
+        nightAppearanceFloat("Star Magnitude Limit", NumosNightAppearance::starMagnitudeLimitObject(), &NumosNightAppearanceState::starMagnitudeLimit, 0.05f, -2.0f, 7.5f, "%.2f");
+        bool legacy = NumosNightAppearance::legacyMilkyWay();
+        if (g_weatherPreset != nullptr && g_weatherPreset->nightAppearance.legacyMilkyWay.has_value()) {
+          legacy = g_shownNightAppearance.legacyMilkyWay;
+          ImGui::BeginDisabled();
+          ImGui::Checkbox("Legacy Procedural Milky Way", &legacy);
+          ImGui::EndDisabled();
+          weatherTag();
+        } else {
+          RemixGui::Checkbox("Legacy Procedural Milky Way", &NumosNightAppearance::legacyMilkyWayObject());
+          legacy = NumosNightAppearance::legacyMilkyWay();
+        }
+        if (legacy) {
+          nightAppearanceFloat("Legacy Milky Way Brightness", NumosNightAppearance::legacyMilkyWayBrightnessObject(), &NumosNightAppearanceState::legacyMilkyWayBrightness, 0.001f, 0.0f, 1.0f, "%.3f");
+          nightAppearanceColor("Legacy Milky Way Outer Color", NumosNightAppearance::legacyMilkyWayOuterColorObject(), &NumosNightAppearanceState::legacyMilkyWayOuterColor);
+          nightAppearanceColor("Legacy Milky Way Core Color", NumosNightAppearance::legacyMilkyWayCoreColorObject(), &NumosNightAppearanceState::legacyMilkyWayCoreColor);
+          nightAppearanceFloat("Legacy Milky Way Dust", NumosNightAppearance::legacyMilkyWayDustAmountObject(), &NumosNightAppearanceState::legacyMilkyWayDustAmount, 0.01f, 0.0f, 1.0f, "%.2f");
+        } else {
+          nightAppearanceFloat("Milky Way Brightness", NumosNightAppearance::milkyWayBrightnessObject(), &NumosNightAppearanceState::milkyWayBrightness, 0.0f, 0.0f, 8192.0f, "%.1f");
+        }
+        nightAppearanceColor("Night Sky Color", NumosNightAppearance::nightSkyColorObject(), &NumosNightAppearanceState::nightSkyColor);
+        nightAppearanceFloat("Night Sky Brightness", NumosNightAppearance::nightSkyBrightnessObject(), &NumosNightAppearanceState::nightSkyBrightness, 0.00005f, 0.0f, 0.05f, "%.5f");
+        ImGui::EndDisabled();
+        ImGui::TreePop();
+      }
       if (ImGui::TreeNode("Moon")) {
+        RemixGui::DragFloat("Moon Disk Brightness", &NumosNightAppearance::moonDiskBrightnessObject(), 0.001f, 0.0f, 2.0f, "%.3f", kClamp);
         setting("realMoonEnabled", "Earth's Moon");
         setting("realMoonAngularDiameter", "Moon Size", 0.01f, 0.05f, 20.0f, "%.3f deg");
         ImGui::TextDisabled("Its place and phase follow the date: Sky > Day / night cycle > Season & location.");
@@ -889,6 +986,12 @@ namespace dxvk {
     userSetting("aerialPerspectiveLocalLights", "Light Glow in Haze",
                 "Lets lamps, fires, muzzle flashes and other lights glow in the nearby haze. It costs more GPU time "
                 "where many lights are close together on screen.");
+    ImGui::BeginDisabled(!boolValue("aerialPerspectiveLocalLights"));
+    showHazeLightRangeControls();
+    userSetting("aerialPerspectiveLocalLightWindow", "Local Light Range Window",
+                "Fades local-light haze to zero at each light's maximum reach. This smooths the end of a capped "
+                "shaft and also dims the light along its length.");
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
   }
 
@@ -1478,6 +1581,57 @@ namespace dxvk {
 
       if (ImGui::CollapsingHeader("Weathers", ImGuiTreeNodeFlags_DefaultOpen)) {
         presetWeathers(weather, p, window);
+      }
+
+      if (ImGui::CollapsingHeader("Night sky appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("Unset fields inherit the global night sky. Enable Night Sky Appearance in the Night tab.");
+        const auto shown = weather.nightAppearanceState();
+        ImGui::PushID("NightSkyAppearance");
+        auto& legacy = p.nightAppearance.legacyMilkyWay;
+        const char* modes[] = { "Inherit global", "Enabled", "Disabled" };
+        int mode = legacy.has_value() ? (*legacy ? 1 : 2) : 0;
+        if (ImGui::Combo("Legacy Procedural Milky Way", &mode, modes, 3)) {
+          legacy = mode == 0 ? std::nullopt : std::optional<bool>(mode == 1);
+          p.dirty = true;
+        }
+        for (size_t i = 0; i < p.nightAppearance.floats.size(); ++i) {
+          const auto& parameter = kNumosNightWeatherFloats[i];
+          auto& value = p.nightAppearance.floats[i];
+          ImGui::PushID(parameter.name);
+          bool enabled = value.has_value();
+          if (ImGui::Checkbox(parameter.label, &enabled)) {
+            value = enabled ? std::optional<float>(shown.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(140.0f);
+            const float step = (parameter.maximum - parameter.minimum) * 0.001f;
+            if (ImGui::DragFloat("##value", &*value, step, parameter.minimum, parameter.maximum, "%.4g", kClamp)) {
+              p.dirty = true;
+            }
+          }
+          ImGui::PopID();
+        }
+        for (size_t i = 0; i < p.nightAppearance.colors.size(); ++i) {
+          const auto& parameter = kNumosNightWeatherColors[i];
+          auto& value = p.nightAppearance.colors[i];
+          ImGui::PushID(parameter.name);
+          bool enabled = value.has_value();
+          if (ImGui::Checkbox(parameter.label, &enabled)) {
+            value = enabled ? std::optional<Vector3>(shown.*parameter.member) : std::nullopt;
+            p.dirty = true;
+          }
+          if (enabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::ColorEdit3("##value", value->data)) {
+              p.dirty = true;
+            }
+          }
+          ImGui::PopID();
+        }
+        ImGui::PopID();
       }
 
       if (ImGui::CollapsingHeader("Ocean wave weather")) {

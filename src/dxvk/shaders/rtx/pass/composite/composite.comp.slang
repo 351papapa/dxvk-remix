@@ -30,6 +30,9 @@
 //!variant composite_sky_provider.comp
 //!>       COMPOSITE_SKY_PROVIDER=1
 
+//!variant composite_sky_provider_night_appearance.comp
+//!>       COMPOSITE_SKY_PROVIDER=1 COMPOSITE_NIGHT_APPEARANCE=1
+
 //!end-variants
 
 #include "rtx/pass/composite/composite_bindings.slangh"
@@ -53,7 +56,13 @@
 #include "rtx/algorithm/accumulate.slangh"
 #include "rtx/pass/sparse_rendering/sparse_rendering.slangh"
 #include "rtx/pass/sparse_rendering/compact_active_pixels.slangh"
+// The host include overlay reads both grouped HAZE bitsets and legacy light indices.
 #include "numos/host/numos_host.slangh"
+#ifdef COMPOSITE_NIGHT_APPEARANCE
+#include "rtx/pass/composite/numos_night_appearance.slangh"
+#endif
+// Fail compilation if the generated overlay is missing or lost include precedence.
+static const uint kNumosHazeLayoutMarker = kApHazeBitsetMarker;
 
 static const bool kSkyProvider = COMPOSITE_SKY_PROVIDER != 0;
 
@@ -486,6 +495,87 @@ vec3 integrateVolumetricTransmittance(
   return accumulatedTransmittance;
 }
 
+#if COMPOSITE_SKY_PROVIDER
+struct VolumeCloudLayer
+{
+  float distance;
+  float opacity;
+};
+
+VolumeCloudLayer volumeCloudLayer(vec3 cloud, bool depthTest, float surfaceKm)
+{
+  VolumeCloudLayer layer;
+  layer.distance = 0.0f;
+  layer.opacity = 0.0f;
+  if (cloud.z <= 0.0f || cloud.x < 0.0f || cloud.y < cloud.x || !all(isfinite(cloud)))
+  {
+    return layer;
+  }
+
+  // Treat the cloud as a layer at its opacity-weighted depth. For a surface inside
+  // the cloud, use the centroid of the visible part's exponential extinction profile.
+  const float visibility = depthTest ? numosCloudDepthVisibility(cloud.x, cloud.y, surfaceKm, cloud.z) : 1.0f;
+  layer.opacity = cloud.z * visibility;
+  float depthKm = cloud.y;
+  if (visibility > 0.0f && visibility < 1.0f)
+  {
+    const float opacity = layer.opacity;
+    const float tau = -log(max(1.0f - opacity, 1e-6f));
+    const float mean = opacity < 0.02f ? 0.5f - opacity / 12.0f : 1.0f / tau - (1.0f - opacity) / opacity;
+    depthKm = min(depthKm, lerp(cloud.x, surfaceKm, mean));
+  }
+  layer.distance = numosKmToWorld(depthKm, skyArgs);
+  return layer;
+}
+
+// The cloud's premultiplied composite multiplies the volume's full integral by
+// cloud transmittance. Restore only the share lost from the camera-to-cloud segment.
+vec3 cloudVolumeCorrection(
+  RNG randomState,
+  RNG froxelRandomState,
+  uint2 pixelCoordinate,
+  vec2 volumeUV,
+  vec3 cameraPosition,
+  vec3 viewDirection,
+  WaterViewSegment segment,
+  VolumeCloudLayer cloud,
+  vec3 totalScatter)
+{
+  if (cloud.opacity <= 0.0f || cloud.distance <= 0.0f)
+  {
+    return vec3(0.0f);
+  }
+
+  // Match the native march's end, including its surface depth bias. Outside the
+  // froxel grid the SDK only accumulates extinction, so far clouds need no extra march.
+  const float gridEnd = cb.volumeArgs.froxelMaxDistance;
+  const float depthBias = gridEnd / cb.volumeArgs.froxelDepthSlices * cb.volumeArgs.depthOffset;
+  const float segmentEnd = segment.primaryMiss ? gridEnd : min(segment.hitDistance - depthBias, gridEnd);
+  if (cloud.distance >= segmentEnd)
+  {
+    return totalScatter * cloud.opacity;
+  }
+
+  // Reuse both sequences so the full and truncated integrals have correlated jitter.
+  // This is a medium depth, so do not offset it as if it were an opaque hit.
+  const RNG savedFroxelRandomState = volumeSamplingRng;
+  volumeSamplingRng = froxelRandomState;
+  VolumeArgs volumeArgs = cb.volumeArgs;
+  volumeArgs.depthOffset = 0.0f;
+  vec3 frontScatter = vec3(0.0f);
+  vec3 transmittance = vec3(1.0f);
+  integrateVolumetricNEE(
+    randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
+    volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, false, cameraPosition, cloud.distance, viewDirection,
+    frontScatter, transmittance);
+  volumeSamplingRng = savedFroxelRandomState;
+
+  // The independently spaced integrals need not be monotonic for every frame.
+  // Bound the retained share so no channel gains more than the original scatter.
+  return min(max(frontScatter, vec3(0.0f)), max(totalScatter, vec3(0.0f))) * cloud.opacity;
+}
+#endif
+
 void applyVolumetricLighting(
   uint2 pixelCoordinate,
   inout RNG randomState,
@@ -493,11 +583,17 @@ void applyVolumetricLighting(
   bool pixelIsActive,
   bool primaryMiss,
   float viewDistance,
-  float radianceScale,
   float volumetricRadianceScale,
   vec3 remodulatedTotalSecondaryRadiance,
   vec3 sharedRadiance,
-  out vec3 volumetricPreintegratedRadiance,
+#if COMPOSITE_SKY_PROVIDER
+  bool performedPSR,
+  float psrSurfaceKm,
+  out vec3 volumeCloudRestore,
+  out vec3 alphaVolumeCloudRestore,
+  out vec3 nativeVolumeScatter,
+  out vec3 nativeAlphaVolumeScatter,
+#endif
   out vec3 volumeAttenuation,
   out vec3 controlMaskVolumeAttenuation,
   out vec3 alphaBlendOutput,
@@ -519,7 +615,7 @@ void applyVolumetricLighting(
 
   // Calculate volumetric radiance and attenuation if volumetric lighting is enabled
 
-  volumetricPreintegratedRadiance = vec3(0);
+  vec3 volumetricPreintegratedRadiance = vec3(0);
   volumeAttenuation = vec3(1);
   controlMaskVolumeAttenuation = vec3(1);
   alphaBlendOutput = vec3(0);
@@ -535,18 +631,41 @@ void applyVolumetricLighting(
   const bool fullRateVolumetrics = primaryMiss
     ? !bool(cb.sparseRenderingArgs.enableSparseVolumetricsPrimaryMiss)
     : !bool(cb.sparseRenderingArgs.enableSparseVolumetricsPrimaryHit);
+  const vec3 cameraPosition = cameraGetWorldPosition(cb.camera);
+  vec2 volumeUV = cameraPixelCoordinateToScreenUV(cb.camera, pixelCoordinate);
+  volumeUV.x /= cb.volumeArgs.numFroxelVolumes;
   const WaterViewSegment viewSegment = waterViewSegmentLength(
-    primaryMiss, viewDistance, cameraGetWorldPosition(cb.camera), primaryRayDirections.worldDirection);
+    primaryMiss, viewDistance, cameraPosition, primaryRayDirections.worldDirection);
+#if COMPOSITE_SKY_PROVIDER
+  volumeCloudRestore = vec3(0.0f);
+  alphaVolumeCloudRestore = vec3(0.0f);
+  nativeAlphaVolumeScatter = vec3(0.0f);
+  vec3 cloud = vec3(-1.0f, 0.0f, 0.0f);
+  if (cb.volumeArgs.enable && cb.skyProviderActive != 0 && cb.skyCloudsValid != 0 &&
+      skyArgs.cloudRenderRTEnable != 0u && (!performedPSR || psrSurfaceKm > 0.0f))
+  {
+    const float opacity = saturate(1.0f - SkyCloudRender.Load(int3(pixelCoordinate, 0)).a);
+    cloud = vec3(SkyCloudDepth.Load(int3(pixelCoordinate, 0)).xy, opacity);
+  }
+#endif
   if (pixelIsActive || fullRateVolumetrics)
   {
-    vec2 volumeUV = cameraPixelCoordinateToScreenUV(cb.camera, pixelCoordinate);
-    volumeUV.x /= cb.volumeArgs.numFroxelVolumes;
     if (!viewSegment.empty)
     {
+#if COMPOSITE_SKY_PROVIDER
+      const RNG viewRandomState = randomState;
+      const RNG viewFroxelRandomState = volumeSamplingRng;
+#endif
       integrateVolumetricNEE(
         randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
-        cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, viewSegment.primaryMiss, cameraGetWorldPosition(cb.camera), viewSegment.hitDistance, primaryRayDirections.worldDirection,
+        cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, viewSegment.primaryMiss, cameraPosition, viewSegment.hitDistance, primaryRayDirections.worldDirection,
         volumetricPreintegratedRadiance, volumeAttenuation);
+#if COMPOSITE_SKY_PROVIDER
+      const VolumeCloudLayer layer = volumeCloudLayer(cloud, performedPSR, psrSurfaceKm);
+      volumeCloudRestore = cloudVolumeCorrection(viewRandomState, viewFroxelRandomState,
+        pixelCoordinate, volumeUV, cameraPosition, primaryRayDirections.worldDirection, viewSegment, layer,
+        volumetricPreintegratedRadiance) * volumetricRadianceScale;
+#endif
     }
     controlMaskVolumeAttenuation = volumeAttenuation;
   }
@@ -563,7 +682,7 @@ void applyVolumetricLighting(
         cb.volumeArgs,
         cb.timeSinceStartMS,
         viewSegment.primaryMiss,
-        cameraGetWorldPosition(cb.camera),
+        cameraPosition,
         viewSegment.hitDistance,
         primaryRayDirections.worldDirection);
       controlMaskVolumeAttenuation = transmittance;
@@ -579,7 +698,6 @@ void applyVolumetricLighting(
   if (cb.enableStochasticAlphaBlend)
   {    
     AlphaBlendSurface surface = AlphaBlendSurface.createFromPacked(AlphaBlendGBuffer[pixelCoordinate], cb.alphaBlendSurfacePackMult);
-    vec3 cameraPosition = cameraGetWorldPosition(cb.camera);
 
     // composite_alpha_blend only writes the radiance where the surface is valid.
     vec4 centerLight = vec4(0.0f);
@@ -644,24 +762,40 @@ void applyVolumetricLighting(
 
       if (cb.volumeArgs.enable)
       {
-        float alphaBlendSurfaceLinearViewZ = surface.hitT * primaryRayDirections.viewDirection.z;
-
-        vec2 volumeUV = cameraPixelCoordinateToScreenUV(cb.camera, pixelCoordinate);
-        volumeUV.x /= cb.volumeArgs.numFroxelVolumes;
-        
         vec3 alphaVolumetricPreintegratedRadiance = vec3(0.0f, 0.0f, 0.0f);
+#if COMPOSITE_SKY_PROVIDER
+        float alphaCloudOpacity = 0.0f;
+#endif
         const WaterViewSegment alphaSegment = waterViewSegmentLength(
           false, surface.hitT, cameraPosition, primaryRayDirections.worldDirection);
         if (!alphaSegment.empty)
         {
+#if COMPOSITE_SKY_PROVIDER
+          const RNG alphaRandomState = randomState;
+          const RNG alphaFroxelRandomState = volumeSamplingRng;
+#endif
           integrateVolumetricNEE(
             randomState, VolumeFilteredRadianceAge, VolumeFilteredRadianceY, VolumeFilteredRadianceCoCg,
             cb.volumeArgs, cb.timeSinceStartMS, pixelCoordinate, volumeUV, alphaSegment.primaryMiss, cameraPosition, alphaSegment.hitDistance, primaryRayDirections.worldDirection,
             alphaVolumetricPreintegratedRadiance, alphaVolumeAttenuation);
+#if COMPOSITE_SKY_PROVIDER
+          if (!performedPSR)
+          {
+            const VolumeCloudLayer layer = volumeCloudLayer(cloud, true, numosWorldToKm(surface.hitT, skyArgs));
+            alphaCloudOpacity = layer.opacity;
+            alphaVolumeCloudRestore = cloudVolumeCorrection(alphaRandomState, alphaFroxelRandomState,
+              pixelCoordinate, volumeUV, cameraPosition, primaryRayDirections.worldDirection, alphaSegment, layer,
+              alphaVolumetricPreintegratedRadiance) * (1.0f - backgroundAlpha);
+          }
+#endif
         }
 
         alphaBlendOutput *= alphaVolumeAttenuation * (1 - backgroundAlpha);
-        alphaBlendOutput += alphaVolumetricPreintegratedRadiance * (1 - backgroundAlpha);
+        const vec3 coveredVolumeScatter = alphaVolumetricPreintegratedRadiance * (1.0f - backgroundAlpha);
+        alphaBlendOutput += coveredVolumeScatter;
+#if COMPOSITE_SKY_PROVIDER
+        nativeAlphaVolumeScatter = coveredVolumeScatter * (1.0f - alphaCloudOpacity) + alphaVolumeCloudRestore;
+#endif
       }
       else
       {
@@ -686,6 +820,9 @@ void applyVolumetricLighting(
   }
 
   radianceOutput = volumetricPreintegratedRadiance * volumetricRadianceScale;
+#if COMPOSITE_SKY_PROVIDER
+  nativeVolumeScatter = radianceOutput;
+#endif
   radianceOutput += remodulatedTotalSecondaryRadiance * volumeAttenuation;
 }
 
@@ -743,11 +880,23 @@ void applyAerialPerspective(
   {
     return;
   }
+  // Haze starts at the native handoff in ray-distance world units. A homogeneous
+  // native far tail attenuates the background but lies behind this in-scatter.
+  vec3 hazeVolumeAttenuation = volumeAttenuation;
+  if (cb.volumeArgs.enable && !cb.volumeArgs.enableNoiseFieldDensity && cb.skyHostSkyOverride == 0 &&
+      skyArgs.apFroxelSizeX != 0u && skyArgs.apStartDistance > 0.0f &&
+      (primaryMiss || viewDistance > skyArgs.apStartDistance))
+  {
+    const vec2 screenUV = cameraPixelCoordinateToScreenUV(cb.camera, ivec2(pixelCoordinate));
+    const vec3 direction = cameraScreenUVToDirection(cb.camera, screenUV, false).worldDirection;
+    hazeVolumeAttenuation = calcVolumetricAttenuation(cb.volumeArgs, none, false,
+      skyArgs.apStartDistance, cameraGetWorldPosition(cb.camera), direction);
+  }
   const float scale = cb.skyRadianceScale;
   radianceOutput *= scale;
   numosApplyAerialPerspective(cb.camera, skyArgs, cb.skyHostSkyOverride != 0,
     SkyApNearScatter, SkyApFarScatter, SkyApFarTransmittance, SkyApFroxelAux, SkyApLights, SkyApLightClusters,
-    SkyApSampler, pixelCoordinate, primaryMiss, viewDistance, volumeAttenuation, radianceThroughput,
+    SkyApSampler, pixelCoordinate, primaryMiss, viewDistance, hazeVolumeAttenuation, radianceThroughput,
     cloudOverPixel, radianceOutput);
   radianceOutput /= scale;
 #endif
@@ -766,7 +915,14 @@ void applySkyDisks(bool primaryMiss, bool performedPSR, vec3 directionWorld, vec
   {
     return;
   }
-  radianceOutput += numosSkyDisks(directionWorld, skyArgs, skyArgs.isZUp != 0u) * radianceThroughput / cb.skyRadianceScale;
+  // Scale the visible disk before NUMOS clamps it. Its coverage and scene lighting use the original args.
+  AtmosphereArgs diskArgs = skyArgs;
+  if (cb.moonDiskBrightness != 1.0f) {
+    [unroll] for (uint i = 0u; i < MAX_MOONS; ++i) {
+      diskArgs.moons[i].illuminance *= cb.moonDiskBrightness;
+    }
+  }
+  radianceOutput += numosSkyDisks(directionWorld, diskArgs, diskArgs.isZUp != 0u) * radianceThroughput / cb.skyRadianceScale;
 #endif
 }
 
@@ -796,7 +952,7 @@ void applyCloudComposite(
 {
   cloudOverPixel = vec4(0.0f);
 #if COMPOSITE_SKY_PROVIDER
-  if (cb.skyProviderActive == 0 || cb.skyCloudsValid == 0)
+  if (cb.skyProviderActive == 0 || cb.skyCloudsValid == 0 || skyArgs.cloudRenderRTEnable == 0u)
   {
     return;
   }
@@ -996,7 +1152,6 @@ vec4 compositeResult(
   vec3 remodulatedTotalPrimaryRadiance;
   vec3 remodulatedTotalSecondaryRadiance;
 
-  vec3 volumetricPreintegratedRadiance;
   vec3 volumeAttenuation;
   vec3 controlMaskVolumeAttenuation;
   vec3 alphaBlendOutput;
@@ -1045,11 +1200,32 @@ vec4 compositeResult(
     sharedRadiance,
     remodulatedTotalPrimaryRadiance, remodulatedTotalSecondaryRadiance);
 
+  // Shared radiance also contains transparent foreground emission, which must not
+  // receive the background's atmospheric extinction. On a PSR ray this buffer
+  // instead holds the distance to the reflector or refractor.
+#if COMPOSITE_SKY_PROVIDER
+  const vec4 foreground = AtmosphereForeground[pixelCoordinate];
+  vec3 volumeCloudRestore;
+  vec3 alphaVolumeCloudRestore;
+  vec3 nativeVolumeScatter;
+  vec3 nativeAlphaVolumeScatter;
+#else
+  const vec4 foreground = vec4(0.0f);
+#endif
+  const bool performedPSR = geometryFlags.performedAnyPSR();
+  const bool psrAerialSurface = kSkyProvider && performedPSR &&
+                                foreground.w > 0.0f && cb.skyProviderActive != 0;
+  const float psrSurfaceDistance = psrAerialSurface ? numosKmToWorld(foreground.w, skyArgs) : 0.0f;
+
   // Calculate volumetric lighting
   applyVolumetricLighting(
     pixelCoordinate, randomState, primaryRayDirections, pixelIsActive, primaryMiss, viewDistance,
-    radianceScale, volumetricRadianceScale, remodulatedTotalSecondaryRadiance, sharedRadiance,
-    volumetricPreintegratedRadiance, volumeAttenuation, controlMaskVolumeAttenuation,
+    volumetricRadianceScale, remodulatedTotalSecondaryRadiance, sharedRadiance,
+#if COMPOSITE_SKY_PROVIDER
+    performedPSR, psrAerialSurface ? foreground.w : 0.0f, volumeCloudRestore, alphaVolumeCloudRestore,
+    nativeVolumeScatter, nativeAlphaVolumeScatter,
+#endif
+    volumeAttenuation, controlMaskVolumeAttenuation,
     alphaBlendOutput, backgroundAlpha, radianceOutput,
     alphaBlendSurfaceValid, alphaBlendHitDistance, alphaVolumeAttenuation);
 
@@ -1058,17 +1234,18 @@ vec4 compositeResult(
   // while accumulating already), so it can be added in here without issue.
   radianceOutput += remodulatedTotalPrimaryRadiance * volumeAttenuation;
 
-  // Shared radiance also contains transparent foreground emission, which must not
-  // receive the background's atmospheric extinction.
-  // Without a sky provider the split only moves radiance between two sums, so the base variant skips it.
-#if COMPOSITE_SKY_PROVIDER
-  const vec4 foreground = AtmosphereForeground[pixelCoordinate];
-#else
-  const vec4 foreground = vec4(0.0f);
-#endif
-  const bool separateForeground = foreground.w > 0.0f && !geometryFlags.performedAnyPSR();
+  const bool separateForeground = foreground.w > 0.0f && !performedPSR;
   vec3 foregroundRadiance = separateForeground ? min(max(foreground.rgb, vec3(0.0f)), max(sharedRadiance, vec3(0.0f))) : vec3(0.0f);
   radianceOutput += sharedRadiance - foregroundRadiance;
+  if (cb.debugViewIdx == DEBUG_VIEW_BEFORE_SKY_COMPOSITE) {
+    storeInDebugView(pixelCoordinate, (radianceOutput + foregroundRadiance) * backgroundAlpha + alphaBlendOutput);
+  }
+  if (cb.debugViewIdx == DEBUG_VIEW_SKY_SURFACE_CLASSIFICATION) {
+    storeInDebugView(pixelCoordinate, performedPSR ? vec3(1.0f)
+      : vec3(primaryMiss ? 1.0f : 0.0f, 1.0f - backgroundAlpha, separateForeground ? 1.0f : 0.0f));
+  }
+  const bool diagnoseAir = cb.debugViewIdx == DEBUG_VIEW_AERIAL_COMPOSITE_CHANGE;
+  const vec3 foregroundBeforeAir = diagnoseAir ? foregroundRadiance : vec3(0.0f);
   if (separateForeground) {
     const float foregroundDistance = numosKmToWorld(foreground.w, skyArgs);
     const vec3 foregroundVolumeAttenuation = calcVolumetricAttenuation(cb.volumeArgs, none, false,
@@ -1076,6 +1253,7 @@ vec4 compositeResult(
     applyAerialPerspective(pixelCoordinate, false, foregroundDistance, foregroundVolumeAttenuation,
       saturate(vec3(1.0f) - primaryAttenuation), vec4(0.0f), foregroundRadiance);
   }
+  const vec3 foregroundAirChange = diagnoseAir ? (foregroundRadiance - foregroundBeforeAir) * backgroundAlpha : vec3(0.0f);
   vec3 foregroundLayer = vec3(0.0f);
   if (trackSkyLayer && separateForeground) {
     const float foregroundDistance = numosKmToWorld(foreground.w, skyArgs);
@@ -1086,27 +1264,58 @@ vec4 compositeResult(
   }
 
   // The sun and moon disks, behind the clouds.
-  applySkyDisks(primaryMiss, geometryFlags.performedAnyPSR(), primaryRayDirections.worldDirection, primaryAttenuation,
+  const bool diagnoseDisks = cb.debugViewIdx == DEBUG_VIEW_SKY_DISK_COMPOSITE_CHANGE;
+  const vec3 beforeDisks = diagnoseDisks ? radianceOutput : vec3(0.0f);
+  applySkyDisks(primaryMiss, performedPSR, primaryRayDirections.worldDirection, primaryAttenuation,
                 radianceOutput);
+  if (diagnoseDisks) {
+    storeInDebugView(pixelCoordinate, (radianceOutput - beforeDisks) * backgroundAlpha);
+  }
 
-  const bool psrAerialSurface = kSkyProvider &&
-                                geometryFlags.performedAnyPSR() &&
-                                foreground.w > 0.0f &&
-                                cb.skyProviderActive != 0;
-  const float psrSurfaceDistance = psrAerialSurface ? numosKmToWorld(foreground.w, skyArgs) : 0.0f;
+#ifdef COMPOSITE_NIGHT_APPEARANCE
+  if (cb.skyProviderActive && !cb.skyHostSkyOverride && !cb.skyCameraInMedium && primaryMiss && !performedPSR) {
+    const vec3 adjustment = numosNightAppearanceAdjustment(primaryRayDirections.worldDirection, primaryAttenuation);
+    if (any(adjustment != vec3(0.0f))) {
+      radianceOutput = max(radianceOutput + adjustment, vec3(0.0f));
+    }
+  }
+#endif
 
   // Clouds (NUMOS), before the aerial perspective: radianceOutput is the denoised surface radiance,
   // or on a sky pixel the cloudless sky the geometry resolver wrote (plus volumetrics). PSR pixels
   // receive path-traced clouds, plus screen clouds whose depth is in front of the PSR surface.
+  const bool diagnoseCloud = cb.debugViewIdx == DEBUG_VIEW_CLOUD_COMPOSITE_CHANGE;
+  const vec3 beforeCloud = diagnoseCloud ? (radianceOutput + foregroundRadiance) * backgroundAlpha + alphaBlendOutput : vec3(0.0f);
   vec4 cloudOverPixel;
   applyCloudComposite(
     pixelCoordinate, primaryMiss, viewDistance, backgroundAlpha, primaryAttenuation,
     radianceOutput, alphaBlendOutput, alphaBlendSurfaceValid, alphaBlendHitDistance,
     foregroundRadiance, separateForeground ? foreground.w : 0.0f,
     psrSurfaceDistance,
-    geometryFlags.performedAnyPSR(), cloudOverPixel);
-  // The cloud's opacity over the opaque result. It is 0 at PSR pixels, whose clouds come from path tracing.
+    performedPSR, cloudOverPixel);
+#if COMPOSITE_SKY_PROVIDER
+  radianceOutput += volumeCloudRestore;
+  alphaBlendOutput += alphaVolumeCloudRestore;
+#endif
+  // The cloud's opacity after depth testing over the opaque result.
   cloudCoverage = cloudOverPixel.a;
+  if (diagnoseCloud) {
+    storeInDebugView(pixelCoordinate, (radianceOutput + foregroundRadiance) * backgroundAlpha + alphaBlendOutput - beforeCloud);
+  }
+  const vec3 beforeAir = diagnoseAir ? (radianceOutput + foregroundRadiance) * backgroundAlpha + alphaBlendOutput : vec3(0.0f);
+#if COMPOSITE_SKY_PROVIDER
+  // Native scatter sits in front of the NUMOS handoff. Keep the share that
+  // survived cloud transmittance outside the aerial perspective composite.
+  const bool separateNativeScatter = cb.volumeArgs.enable && cb.skyProviderActive != 0 &&
+    cb.skyCameraInMedium == 0 && cb.skyHostSkyOverride == 0 && skyArgs.apFroxelSizeX != 0u &&
+    (skyArgs.apDebugView == kApDebugViewOff || skyArgs.apDebugView == kApDebugViewNoSunOrSky);
+  if (separateNativeScatter)
+  {
+    nativeVolumeScatter = nativeVolumeScatter * (1.0f - cloudCoverage) + volumeCloudRestore;
+    radianceOutput -= nativeVolumeScatter;
+    alphaBlendOutput -= nativeAlphaVolumeScatter;
+  }
+#endif
   vec3 radianceLayer = vec3(0.0f);
   vec3 alphaBlendLayer = vec3(0.0f);
   if (trackSkyLayer) {
@@ -1116,7 +1325,7 @@ vec4 compositeResult(
       radianceLayer, alphaBlendLayer, alphaBlendSurfaceValid, alphaBlendHitDistance,
       foregroundLayer, separateForeground ? foreground.w : 0.0f,
       psrSurfaceDistance,
-      geometryFlags.performedAnyPSR(), layerCloudOverPixel);
+      performedPSR, layerCloudOverPixel);
   }
 
   // A PSR pixel (water, glass, mirrors) sums up to two replaced paths and shared radiance,
@@ -1192,8 +1401,18 @@ vec4 compositeResult(
     }
   }
 
+#if COMPOSITE_SKY_PROVIDER
+  if (separateNativeScatter)
+  {
+    radianceOutput += nativeVolumeScatter;
+    alphaBlendOutput += nativeAlphaVolumeScatter;
+  }
+#endif
   radianceOutput += foregroundRadiance;
   radianceLayer += foregroundLayer;
+  if (diagnoseAir) {
+    storeInDebugView(pixelCoordinate, radianceOutput * backgroundAlpha + alphaBlendOutput - beforeAir + foregroundAirChange);
+  }
 
   // Add sky radiance
   applySkyContribution(pixelCoordinate, primaryRayDirections, primaryMiss, radianceScale, volumeAttenuation, radianceOutput);

@@ -91,8 +91,8 @@ struct WetnessArgs {
   float rainMapTraceTop = 0.0f;
   float rainMapTraceBottom = 0.0f;
   float worldGroundMinRoughness = 0.0f;
-  uint pad0 = 0;
-  uint pad1 = 0;
+  float noRainZoneFeatherMeters = 0.0f;
+  float noRainZoneCornerRadiusMeters = 0.0f;
   uint pad2 = 0;
 };
 
@@ -119,6 +119,10 @@ struct WetnessOptions {
 
   RTX_OPTION("rtx.wetness", bool, enabled, false, "Master switch for the wetness/rain surface system. Off: no wet sheen, puddles, road ripples, vehicle droplets or streaks, and the rain-ending roughness override stops being applied. Weather and rain particles are unaffected.");
   RTX_OPTION("rtx.wetness", bool, respectNoRainZones, false, "Disable wetness inside no-rain cullzones. DFF enable rules override this restriction; rain is still required.");
+  RTX_OPTION_ARGS("rtx.wetness", float, noRainZoneFeatherMeters, 0.0f, "Horizontal meters over which wet ground and puddles return beyond no-rain zones. 0 keeps a hard edge.",
+                  args.minValue = 0.0f, args.maxValue = 100.0f);
+  RTX_OPTION_ARGS("rtx.wetness", float, noRainZoneCornerRadiusMeters, 0.0f, "Meters to expand the dry ground footprint of each no-rain zone, rounding its outer corners. 0 keeps the original dry footprint.",
+                  args.minValue = 0.0f, args.maxValue = 100.0f);
   RTX_OPTION("rtx.wetness", bool, nonRoadRoughnessOnly, false, "In road-only mode, allow rain-driven roughness on non-road world surfaces without puddles or ripples. Respects cullzones and DFF disable rules; DFF enable rules retain full wetness.");
   RTX_OPTION("rtx.wetness", bool, roadOnly, false, "Restrict world wetness to road-flagged models. Vehicles are unaffected.");
   RTX_OPTION("rtx.wetness", std::string, forceEnableDff, "", "DFF name substrings separated by semicolons. Overrides road and no-rain zone filtering; still requires rain.");
@@ -182,6 +186,8 @@ public:
     args.roadOnly = roadOnly();
     args.nonRoadRoughnessOnly = nonRoadRoughnessOnly();
     args.respectNoRainZones = respectNoRainZones();
+    args.noRainZoneFeatherMeters = noRainZoneFeatherMeters();
+    args.noRainZoneCornerRadiusMeters = noRainZoneCornerRadiusMeters();
     args.rainEndRoughness = rainEndRoughness();
     args.puddleCellSize = puddleCellSize();
     args.puddleCoverage = puddleCoverage();
@@ -231,6 +237,8 @@ public:
     const auto finite = [](float value, float fallback, float low, float high) {
       return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
     };
+    args.noRainZoneFeatherMeters = finite(args.noRainZoneFeatherMeters, 0.0f, 0.0f, 100.0f);
+    args.noRainZoneCornerRadiusMeters = finite(args.noRainZoneCornerRadiusMeters, 0.0f, 0.0f, 100.0f);
     args.puddleCellSize = finite(args.puddleCellSize, 2.8f, 0.01f, 1000.0f);
     args.puddleCoverage = finite(args.puddleCoverage, 0.7f, 0.0f, 1.0f);
     args.puddleMicroAmplitude = finite(args.puddleMicroAmplitude, 0.03f, 0.0001f, 1.0f);

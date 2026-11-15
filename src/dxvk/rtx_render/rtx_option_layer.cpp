@@ -25,10 +25,24 @@
 #include "../util/util_env.h"
 #include "../util/log/log.h"
 
+#include <filesystem>
 #include <iomanip>
 #include <sstream>
 
 namespace {
+  std::string resolveDefaultConfigPath(const char* fileName) {
+    std::error_code error;
+    if (!dxvk::env::isRemixBridgeActive() || std::filesystem::is_regular_file(fileName, error)) {
+      return fileName;
+    }
+
+    const auto gameExecutable = std::filesystem::u8path(dxvk::env::getExePath());
+    if (!gameExecutable.is_absolute()) {
+      return fileName;
+    }
+    return (gameExecutable.parent_path() / fileName).u8string();
+  }
+
   // Helper to split comma-separated paths into a vector
   std::vector<std::string> splitPaths(const std::string& paths) {
     std::vector<std::string> result;
@@ -579,8 +593,7 @@ namespace dxvk {
       return splitPaths(envVarPath);
     }
     
-    // Default: use the file name in current directory
-    return { defaultFileName };
+    return { resolveDefaultConfigPath(defaultFileName) };
   }
 
   std::vector<RtxOptionLayer*> RtxOptionLayer::createLayersFromEnvVar(
@@ -689,7 +702,8 @@ namespace dxvk {
 
     // 6. user.conf (user settings layer) - highest priority for end-user changes (not included in merged config)
     // User layer is designated for UserSetting options only; other options are miscategorized here.
-    s_userLayer = RtxOptionManager::acquireLayer(kRtxOptionUserConfFileName, kRtxOptionLayerUserKey, 1.0f, 0.1f, true, nullptr);
+    s_userLayer = RtxOptionManager::acquireLayer(resolveDefaultConfigPath(kRtxOptionUserConfFileName),
+        kRtxOptionLayerUserKey, 1.0f, 0.1f, true, nullptr);
     if (s_userLayer) {
       s_userLayer->setCategoryFlags(RtxOptionFlags::UserSetting);
     }

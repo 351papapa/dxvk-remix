@@ -39,6 +39,7 @@ namespace dxvk {
         "rtx.atmosphere.fogVisibilityMeters",
         "rtx.atmosphere.aerialPerspectiveSceneShadow",
         "rtx.atmosphere.aerialPerspectiveLocalLights",
+        "rtx.atmosphere.aerialPerspectiveLocalLightWindow",
         "rtx.atmosphere.cloudEnabled",
         "rtx.atmosphere.cloudCoverageMean",
         "rtx.atmosphere.cloudDensity",

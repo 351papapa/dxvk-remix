@@ -85,6 +85,24 @@ namespace dxvk {
   LightManager::~LightManager() {
   }
 
+  void LightManager::endFrame() {
+    if (m_pendingExternalLightMutations.empty()) {
+      return;
+    }
+    const bool lockWasHeld = m_lightDebugUILock.owns_lock();
+    if (!lockWasHeld) {
+      m_lightDebugUILock.lock();
+    }
+    // End-frame callers have finished using the linearized pointer snapshot.
+    m_linearizedLights.clear();
+    fork_hooks::flushPendingLightMutations(*this);
+    m_externalActiveDomeLight = nullptr;
+    m_externalActiveLightList.clear();
+    if (!lockWasHeld) {
+      m_lightDebugUILock.unlock();
+    }
+  }
+
   void LightManager::clear() {
     if (!m_lightDebugUILock.owns_lock()) {
       m_lightDebugUILock.lock();
@@ -242,6 +260,13 @@ namespace dxvk {
     ScopedCpuProfileZone();
     // Ensure external light updates/removals are applied before we linearize and draw UI
     fork_hooks::flushPendingLightMutations(*this);
+
+    // An unsubmitted external light has no slot in the current upload.
+    for (auto& [handle, light] : m_externalLights) {
+      if (m_externalActiveLightList.find(handle) == m_externalActiveLightList.end()) {
+        light.setBufferIdx(kNewLightIdx);
+      }
+    }
     // Note: Early outing in this function (via returns) should be done carefully (or not at all ideally) as it may skip important
     // logic such as swapping the current/previous frame light buffer, updating light count information or allocating/updating the
     // light buffer which may cause issues in some cases (or rather already has, which is why this warning exists).
@@ -480,12 +505,14 @@ namespace dxvk {
         uint32_t newBufferIdx = range.offset + range.count;
         ++range.count;
 
-        // RTXDI needs a mapping from previous light idx to current (to deal with light list reordering)
-        if (light.getBufferIdx() != kNewLightIdx)
-          m_lightMappingData[m_currentActiveLightCount + light.getBufferIdx()] = (uint16_t)newBufferIdx;
+        // Only slots in the immediately previous upload can seed temporal reuse.
+        const uint16_t previousBufferIdx = light.getBufferIdx() < previousLightActiveCount
+          ? light.getBufferIdx() : kNewLightIdx;
+        if (previousBufferIdx != kNewLightIdx) {
+          m_lightMappingData[m_currentActiveLightCount + previousBufferIdx] = (uint16_t)newBufferIdx;
+        }
 
-        // Also a mapping from current light idx to previous (for unbiased resampling)
-        m_lightMappingData[newBufferIdx] = light.getBufferIdx();
+        m_lightMappingData[newBufferIdx] = previousBufferIdx;
 
         // Record this light's stable identity indexed by its current buffer position (section A).
         // This lets a reservoir recover the light after renumbering, regardless of its age or
@@ -867,20 +894,9 @@ namespace dxvk {
   }
 
   void LightManager::addExternalLight(remixapi_LightHandle handle, const RtLight& rtlight) {
-    auto found = m_externalLights.find(handle);
-    if (found != m_externalLights.end()) {
-      // The host's update is the light's state, so there is no static-light sleep.
-      RtLight& light = found->second;
-      const uint16_t bufferIdx = light.getBufferIdx();
-      const uint32_t stableIdentity = light.getStableIdentity();
-      light = rtlight;
-      light.setBufferIdx(bufferIdx);
-      light.setStableIdentity(stableIdentity);
-      light.setFrameLastTouched(m_device->getCurrentFrameId());
-      return;
-    }
-    // New light - copy it and set initial frame
-    fork_hooks::setExternalLightEmplace(*this, handle, rtlight);
+    m_pendingExternalAnalyticLights.push_back(rtlight);
+    m_pendingExternalLightMutations.push_back({ ExternalLightMutationType::AddAnalytic, handle,
+      m_pendingExternalAnalyticLights.size() - 1 });
   }
 
   void LightManager::removeExternalLight(remixapi_LightHandle handle) {
@@ -922,19 +938,13 @@ namespace dxvk {
   }
 
   void LightManager::addExternalDomeLight(remixapi_LightHandle handle, const DomeLight& domeLight) {
-    auto found = m_externalDomeLights.find(handle);
-    if (found != m_externalDomeLights.end()) {
-      // TODO: warn the user about id collision,
-      //       or just overwriting existing one is fine?
-      found->second = domeLight;
-    } else {
-      m_externalDomeLights.emplace(handle, domeLight);
-    }
+    m_pendingExternalDomeLights.push_back(domeLight);
+    m_pendingExternalLightMutations.push_back({ ExternalLightMutationType::AddDome, handle,
+      m_pendingExternalDomeLights.size() - 1 });
   }
 
   void LightManager::addExternalLightInstance(remixapi_LightHandle enabledLight) {
-    // Queue activation to be applied at frame start
-    m_pendingExternalActiveLights.insert(enabledLight);
+    m_pendingExternalLightMutations.push_back({ ExternalLightMutationType::Activate, enabledLight });
   }
 
   void LightManager::registerPersistentExternalLight(remixapi_LightHandle handle) {

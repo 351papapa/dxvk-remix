@@ -784,6 +784,9 @@ independently of the typed C API.
 
 | Namespace | Channel | Reference |
 | :-- | :-- | :-- |
+| `__remix.localCoronas.*` | `SetGameValue`, `GetGameValue` | [Local corona cores](../documentation/LocalCoronaCores.md) |
+| `__lensDrops.*`, `rtx.lensRain.game*`, `rtx.lensRain.bloodAbsorption` | `SetGameValue`, `GetGameValue`, `SetConfigVariable` | [Native screen droplets](../documentation/RemixLensDropsAPI.md) |
+| `__vegetation.pushers_v1`, `rtx.grass.*` | `SetGameValue`, `SetConfigVariable` | [`RemixVegetationAPI.md`](../documentation/RemixVegetationAPI.md) |
 | `__postfx.tint_v1` | `SetGameValue`, external shader frame buffer | [`RemixPostFxAPI.md`](../documentation/RemixPostFxAPI.md) |
 | `__window.*`, `rtx.windowLight.*` | `SetGameValue`, `SetConfigVariable` | [`RemixWindowLighting.md`](../documentation/RemixWindowLighting.md) |
 | `__wetness.*`, `rtx.wetness.*` | `SetGameValue`, `SetConfigVariable`, weather preset files | [`RemixWetnessAPI.md`](../documentation/RemixWetnessAPI.md) |

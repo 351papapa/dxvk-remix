@@ -13,6 +13,7 @@
 
 #include "rtx_context.h"
 #include "rtx_numos_gpu.h"
+#include "rtx_numos_haze_lights.h"
 #include "rtx_numos_settings.h"
 #include "rtx_numos_weather.h"
 #include "rtx_options.h"
@@ -135,6 +136,11 @@ namespace dxvk {
   }
 
   void RtxNumos::gatherLocalLights(RtxContext& ctx) {
+    const float unitsPerMeter = NumosHazeLights::resolveUnitsPerMeter(
+      m_impl->renderer.settings().unitsPerMeter, RtxOptions::getMeterToWorldUnitScale());
+    const float cameraRange = NumosHazeLights::worldDistance(NumosHazeLights::hazeLightDistanceMeters(), unitsPerMeter);
+    const float cameraFade = NumosHazeLights::worldDistance(NumosHazeLights::hazeLightFadeMeters(), unitsPerMeter);
+    const numos::Vector3 cameraPosition = toNumos(ctx.getSceneManager().getCamera().getPosition(/*freecam=*/true));
     m_impl->localLights.clear();
     for (const RtLight* light : ctx.getSceneManager().getLightManager().getLinearizedLights()) {
       if (light == nullptr || std::find(std::begin(m_impl->lights), std::end(m_impl->lights), light) != std::end(m_impl->lights)) {
@@ -184,6 +190,18 @@ namespace dxvk {
       default:
         // Distant lights light the air through NUMOS's own sun and sky terms.
         continue;
+      }
+      if (cameraRange > 0.0f) {
+        const numos::Vector3 relative = l.position - cameraPosition;
+        const float distance = std::hypot(relative.x, relative.y, relative.z);
+        const float weight = NumosHazeLights::cameraWeight(distance, cameraRange, cameraFade);
+        if (weight == 0.0f) {
+          continue;
+        }
+        if (weight < 1.0f) {
+          // NUMOS derives its cutoff reach from this faded radiance before ranking the light.
+          l.radiance = l.radiance * weight;
+        }
       }
       // The host calibration (rtx_host_calibration.h), as the light buffer carries it: NUMOS's lamp glow and
       // the scene's light agree.
@@ -277,6 +295,10 @@ namespace dxvk {
 
     in.zUp = RtxOptions::zUp();
     in.hostUnitsPerMeter = RtxOptions::getMeterToWorldUnitScale();
+    const float hazeUnitsPerMeter = NumosHazeLights::resolveUnitsPerMeter(
+      m_impl->renderer.settings().unitsPerMeter, in.hostUnitsPerMeter);
+    m_impl->gpu.setHazeSpotlightReach(NumosHazeLights::worldDistance(
+      NumosHazeLights::hazeSpotlightReachMeters(), hazeUnitsPerMeter));
     in.hasWorldOrigin = WorldOrigin::enable() && cameraManager.hasWorldOrigin();
     in.worldOrigin = in.hasWorldOrigin ? toNumos(cameraManager.getWorldOrigin()) : numos::Vector3();
 
@@ -376,6 +398,7 @@ namespace dxvk {
       return;
     }
     const numos::GpuHandle linearViewZ = m_impl->gpu.setExternalView(kLinearViewZView, rtOutput.m_primaryLinearViewZ.view);
+    m_impl->gpu.setCloudProbeScene(&ctx.getSceneManager());
     m_impl->renderer.dispatchPostDepth(m_impl->gpu, linearViewZ, m_missLinearViewZ);
     m_postDepthDone = true;
     // NUMOS republishes its args after the cloud pass (whether it ran, its history state): the

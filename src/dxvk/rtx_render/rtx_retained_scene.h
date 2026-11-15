@@ -104,6 +104,18 @@ namespace dxvk {
     // True from the first describe of handle to its destroy.
     bool contains(uint64_t handle) const { return m_entries.find(handle) != m_entries.end(); }
 
+    // A direct frontend draw of its original mesh, without a replacement, service stamp or merged pass.
+    bool isPlainFrontendInstance(const RtInstance& instance) const {
+      const auto found = m_entries.find(instance.getSceneOwnedHandle());
+      if (found == m_entries.end()) {
+        return false;
+      }
+      const Entry& entry = found->second;
+      return entry.lane == Lane::Direct && entry.built && entry.desc.frontendResolved &&
+        !entry.expansion && !entry.replacement && !entry.stamped && !entry.mergedPass &&
+        entry.subs.size() == 1 && entry.subs.front().instance == &instance;
+    }
+
     // The instance a direct entry built for a submesh, for the graph instances of scene-owned objects (ScenePrimOwner).
     // Returns null while the entry is not built on the direct lane, or when the submesh has no instance (an ignored
     // material).

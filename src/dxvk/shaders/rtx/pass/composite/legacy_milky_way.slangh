@@ -1,0 +1,79 @@
+/*
+ * Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+// Procedural galactic band and noise adapted from Kim2091's original Remix Plus sky.
+
+#pragma once
+
+float legacyMilkyWayPerlin(vec3 p) {
+  const vec3 cell = floor(p);
+  const vec3 offset = p - cell;
+  const vec3 fade = offset * offset * (3.0f - 2.0f * offset);
+
+  const float n000 = dot(perlinGradient3D(cell), offset);
+  const float n100 = dot(perlinGradient3D(cell + vec3(1, 0, 0)), offset - vec3(1, 0, 0));
+  const float n010 = dot(perlinGradient3D(cell + vec3(0, 1, 0)), offset - vec3(0, 1, 0));
+  const float n110 = dot(perlinGradient3D(cell + vec3(1, 1, 0)), offset - vec3(1, 1, 0));
+  const float n001 = dot(perlinGradient3D(cell + vec3(0, 0, 1)), offset - vec3(0, 0, 1));
+  const float n101 = dot(perlinGradient3D(cell + vec3(1, 0, 1)), offset - vec3(1, 0, 1));
+  const float n011 = dot(perlinGradient3D(cell + vec3(0, 1, 1)), offset - vec3(0, 1, 1));
+  const float n111 = dot(perlinGradient3D(cell + vec3(1, 1, 1)), offset - vec3(1, 1, 1));
+
+  const float nearZ = mix(mix(n000, n100, fade.x), mix(n010, n110, fade.x), fade.y);
+  const float farZ = mix(mix(n001, n101, fade.x), mix(n011, n111, fade.x), fade.y);
+  return mix(nearZ, farZ, fade.z);
+}
+
+float legacyMilkyWayFbm(vec3 p, int octaves, float seed) {
+  float value = 0.0f;
+  float amplitude = 0.5f;
+  for (int i = 0; i < octaves; ++i) {
+    const float seedOffset = seed + float(i) * 17.31f;
+    const vec3 octaveOffset = seedOffset * vec3(1.7f, 2.3f, 3.1f);
+    value += amplitude * legacyMilkyWayPerlin(p + octaveOffset);
+    p *= 2.0f;
+    amplitude *= 0.5f;
+  }
+  return value;
+}
+
+vec3 evalLegacyMilkyWay(vec3 direction, vec3 outerColor, vec3 coreColor, float dustAmount) {
+  // Directions are Y-up world rays. The celestial clock only affects visibility.
+  const float galacticPlane = direction.x * 0.866f + direction.y * 0.5f;
+  // Beyond this angle, even the widest Gaussian is too faint to see.
+  if (abs(galacticPlane) > 0.5f) {
+    return vec3(0.0f);
+  }
+
+  const float latitude = galacticPlane + legacyMilkyWayFbm(direction * 3.0f, 3, 200.0f) * 0.04f;
+  const float latitude2 = latitude * latitude;
+  const float core = exp(-latitude2 * 300.0f);
+  const float halo = exp(-latitude2 * 80.0f);
+  const float variation = legacyMilkyWayPerlin(direction * 5.0f) * 0.5f + 0.5f;
+  const float density = (0.5f * core + 0.25f * halo) * (0.5f + 0.5f * variation);
+  const float intensity = 0.5f + legacyMilkyWayFbm(direction * 4.0f, 5, 311.0f);
+
+  const float dust = smoothstep(-0.15f, 0.15f, legacyMilkyWayFbm(direction * 2.5f, 4, 321.0f));
+  const vec3 bandColor = mix(outerColor, coreColor, exp(-latitude2 * 400.0f));
+  const vec3 color = mix(bandColor, vec3(0.15f, 0.08f, 0.05f), dust * dustAmount);
+  return color * (density * intensity);
+}

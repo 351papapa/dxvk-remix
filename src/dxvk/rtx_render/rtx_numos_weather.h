@@ -47,6 +47,7 @@
 #include "rtx_wetness_preset.h"
 #include "rtx_precipitation_state.h"
 #include "rtx_volumetric_weather.h"
+#include "rtx_numos_night_weather.h"
 
 namespace numos {
   struct Settings;
@@ -76,6 +77,9 @@ namespace dxvk {
     RTX_OPTION_FLAG("rtx.weather", float, gameWeatherBlend, -1.0f, RtxOptionFlags::NoSave,
       "Set by the game integration: 0..1 = the game's own blend from rtx.weather.gameWeatherOutgoing to "
       "rtx.weather.gameWeather; negative = the runtime blends over the preset's transition time.");
+    RTX_OPTION_FLAG("rtx.weather", uint32_t, snapRequest, 0u, RtxOptionFlags::NoSave,
+      "Set by the game integration: each new non-zero value makes the next weather update snap to the target "
+      "instead of blending over the preset's transition time.");
     RTX_OPTION_FLAG("rtx.weather", std::string, legacyPresetFile, std::string(""), RtxOptionFlags::NoSave,
       "A weather preset file in the older single-file format ([name] sections with coverage, density, layer2... keys) "
       "to convert into preset files in rtx.weather.presetDirectory. Each section is converted once; a preset of the same "
@@ -96,6 +100,7 @@ namespace dxvk {
       WetnessPreset wetness;
       PrecipitationPreset precipitation;
       VolumetricWeatherPreset volumetric;
+      NumosNightAppearancePreset nightAppearance;
       WaterWeatherState water;
       bool dirty = false;                // edited since the last load or save
       bool numosBuiltIn = false;         // the name of one of NUMOS's presets (it can be reset)
@@ -118,6 +123,7 @@ namespace dxvk {
     WaterWeatherState waterState() const;
     const PrecipitationState& precipitationState() const;
     VolumetricWeatherState volumetricState(const VolumetricWeatherState& base) const;
+    NumosNightAppearanceState nightAppearanceState() const;
     // Shows a decoded seed's weather until the preset or the game weather changes.
     void holdSnapshot(const numos::WeatherSnapshot& weather);
 

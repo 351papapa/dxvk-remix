@@ -40,8 +40,12 @@
 
 #include <rtx_shaders/composite.h>
 #include <rtx_shaders/composite_sky_provider.h>
+#include <rtx_shaders/composite_sky_provider_night_appearance.h>
 #include <rtx_shaders/composite_alpha_blend.h>
+#include <cmath>
 #include "rtx_texture_manager.h"
+#include "rtx_numos_night.h"
+#include "rtx_numos_weather.h"
 
 namespace dxvk {
 
@@ -173,7 +177,10 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(CompositeShader);
 
     // The sky provider variant is used only while a sky provider renders, see composite.comp.slang.
-    Rc<DxvkShader> getCompositeShader(bool skyProviderActive) {
+    Rc<DxvkShader> getCompositeShader(bool skyProviderActive, bool nightAppearance) {
+      if (skyProviderActive && nightAppearance) {
+        return GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, CompositeShader, composite_sky_provider_night_appearance);
+      }
       return skyProviderActive
         ? GET_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, CompositeShader, composite_sky_provider)
         : CompositeShader::getShader();
@@ -182,7 +189,7 @@ namespace dxvk {
     struct CompositeShaderVariantPrewarmer {
       CompositeShaderVariantPrewarmer() {
         AutoShaderPipelinePrewarmer::registerComputeShaderForPrewarm([] {
-          return getCompositeShader(true);
+          return getCompositeShader(true, NumosNightAppearance::nightAppearance());
         });
       }
     };
@@ -586,6 +593,29 @@ namespace dxvk {
     compositeArgs.domeLightArgs = domeLightArgs;
     compositeArgs.domeLightArgs.radiance = compositeArgs.domeLightArgs.radiance * PreExposure::get();
     compositeArgs.skyBrightness = RtxOptions::skyBrightness() * PreExposure::get();
+    const float moonDiskBrightness = NumosNightAppearance::moonDiskBrightness();
+    // A reduced disk gain keeps highlight detail as dark geometry raises camera exposure.
+    compositeArgs.moonDiskBrightness = moonDiskBrightness < 1.0f
+      ? moonDiskBrightness / std::max(PreExposure::trackedExposure(), 1.0f)
+      : moonDiskBrightness;
+    const auto skyLook = ctx->getCommonObjects()->metaNumosWeather().nightAppearanceState();
+    const bool nightAppearance = compositeArgs.skyProviderActive && skyLook.nightAppearance;
+    if (nightAppearance) {
+      compositeArgs.nightStarBrightness = skyLook.starBrightness;
+      const float magnitude = skyLook.starMagnitudeLimit;
+      // NUMOS stores V-band flux relative to the Sun, multiplied by 1e10.
+      compositeArgs.nightStarMinFlux = magnitude >= 7.5f ? 0.0f : std::pow(10.0f, -0.4f * (magnitude + 26.74f)) * 1e10f;
+      compositeArgs.nightMilkyWayBrightness = skyLook.catalogueMilkyWayGain;
+      compositeArgs.nightSkyBackground = skyLook.nightSkyColor *
+        (skyLook.nightSkyBrightness * PreExposure::get());
+      compositeArgs.legacyMilkyWay = skyLook.legacyMilkyWay && skyLook.catalogueMilkyWayGain == 0.0f;
+      if (skyLook.legacyMilkyWayGain > 0.0f) {
+        compositeArgs.legacyMilkyWayBrightness = skyLook.legacyMilkyWayGain * PreExposure::get();
+        compositeArgs.legacyMilkyWayOuterColor = skyLook.legacyMilkyWayOuterColor;
+        compositeArgs.legacyMilkyWayDustAmount = skyLook.legacyMilkyWayDustAmount;
+        compositeArgs.legacyMilkyWayCoreColor = skyLook.legacyMilkyWayCoreColor;
+      }
+    }
     const bool sparseRenderingEnabled = rtOutput.m_raytraceArgs.sparseRenderingArgs.mode != SparseRenderingMode::Off;
 
     Rc<DxvkBuffer> cb = getCompositeConstantsBuffer();
@@ -605,7 +635,7 @@ namespace dxvk {
     {
       ScopedGpuProfileZone(ctx, "Composition");
       ctx->setFramePassStage(RtxFramePassStage::Composition);
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getCompositeShader(compositeArgs.skyProviderActive != 0));
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getCompositeShader(compositeArgs.skyProviderActive != 0, nightAppearance));
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 

@@ -10,12 +10,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 
 #include "numos/settings.h"
 #include "numos/weather.h"
 
 #include "rtx_numos_settings.h"
+#include "rtx_numos_night.h"
 #include "../../util/util_env.h"
 #include "../../util/log/log.h"
 
@@ -343,6 +345,97 @@ namespace dxvk {
       return false;
     }
 
+    bool parseNightPreset(NumosNightAppearancePreset& preset, const std::string& key, const std::string& text) {
+      const std::string prefix = "rtx.numos.";
+      if (key.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+      }
+      const std::string name = key.substr(prefix.size());
+      if (name == "legacyMilkyWay") {
+        std::string value = text;
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (value == "true" || value == "1") { preset.legacyMilkyWay = true; }
+        else if (value == "false" || value == "0") { preset.legacyMilkyWay = false; }
+        else { Logger::warn("[NUMOS weather] Invalid night sky switch for " + key); }
+        return true;
+      }
+      for (size_t i = 0; i < preset.floats.size(); ++i) {
+        if (name != kNumosNightWeatherFloats[i].name) {
+          continue;
+        }
+        try {
+          size_t end = 0;
+          const float value = std::stof(text, &end);
+          if (end != text.size() || !std::isfinite(value)) {
+            throw std::invalid_argument("value");
+          }
+          preset.floats[i] = value;
+        } catch (...) {
+          Logger::warn("[NUMOS weather] Invalid night sky value for " + key);
+        }
+        return true;
+      }
+      for (size_t i = 0; i < preset.colors.size(); ++i) {
+        if (name != kNumosNightWeatherColors[i].name) {
+          continue;
+        }
+        std::string numbers = text;
+        std::replace(numbers.begin(), numbers.end(), ',', ' ');
+        std::istringstream input(numbers);
+        Vector3 value;
+        std::string trailing;
+        if (input >> value.x >> value.y >> value.z && !(input >> trailing)
+            && std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z)) {
+          preset.colors[i] = value;
+        } else {
+          Logger::warn("[NUMOS weather] Invalid night sky color for " + key);
+        }
+        return true;
+      }
+      return false;
+    }
+
+    NumosNightAppearanceState nightAppearanceBase() {
+      NumosNightAppearanceState state;
+      state.nightAppearance = NumosNightAppearance::nightAppearance();
+      state.legacyMilkyWay = NumosNightAppearance::legacyMilkyWay();
+      state.starBrightness = NumosNightAppearance::starBrightness();
+      state.starMagnitudeLimit = NumosNightAppearance::starMagnitudeLimit();
+      state.milkyWayBrightness = NumosNightAppearance::milkyWayBrightness();
+      state.legacyMilkyWayBrightness = NumosNightAppearance::legacyMilkyWayBrightness();
+      state.legacyMilkyWayDustAmount = NumosNightAppearance::legacyMilkyWayDustAmount();
+      state.nightSkyBrightness = NumosNightAppearance::nightSkyBrightness();
+      state.legacyMilkyWayOuterColor = NumosNightAppearance::legacyMilkyWayOuterColor();
+      state.legacyMilkyWayCoreColor = NumosNightAppearance::legacyMilkyWayCoreColor();
+      state.nightSkyColor = NumosNightAppearance::nightSkyColor();
+      state.resolveMilkyWayGains();
+      return state;
+    }
+
+    void writeNightAppearance(const NumosNightAppearanceState& state) {
+      NumosNightAppearance::starBrightnessObject().setDeferred(state.starBrightness);
+      NumosNightAppearance::starMagnitudeLimitObject().setDeferred(state.starMagnitudeLimit);
+      NumosNightAppearance::milkyWayBrightnessObject().setDeferred(state.milkyWayBrightness);
+      NumosNightAppearance::legacyMilkyWayBrightnessObject().setDeferred(state.legacyMilkyWayBrightness);
+      NumosNightAppearance::legacyMilkyWayDustAmountObject().setDeferred(state.legacyMilkyWayDustAmount);
+      NumosNightAppearance::nightSkyBrightnessObject().setDeferred(state.nightSkyBrightness);
+      NumosNightAppearance::legacyMilkyWayOuterColorObject().setDeferred(state.legacyMilkyWayOuterColor);
+      NumosNightAppearance::legacyMilkyWayCoreColorObject().setDeferred(state.legacyMilkyWayCoreColor);
+      NumosNightAppearance::nightSkyColorObject().setDeferred(state.nightSkyColor);
+    }
+
+    void logNightAppearance(const std::string& target, const NumosNightAppearanceState& state) {
+      if (!state.nightAppearance) {
+        return;
+      }
+      const auto& color = state.nightSkyColor;
+      Logger::info(str::format("[NUMOS weather] Night sky target=", target.empty() ? "(global)" : target,
+        " background=", state.nightSkyBrightness, " color=", color.x, ",", color.y, ",", color.z,
+        " stars=", state.starBrightness, " magnitude=", state.starMagnitudeLimit,
+        " legacyMilkyWay=", state.legacyMilkyWay ? "on" : "off",
+        " milkyWay=", state.legacyMilkyWay ? state.legacyMilkyWayBrightness : state.milkyWayBrightness));
+    }
+
     bool readPresetFile(const fs::path& path, NumosWeather::Preset& p) {
       std::ifstream f(path, std::ios::binary);
       if (!f) {
@@ -378,7 +471,8 @@ namespace dxvk {
             continue;
           }
           const bool precipitationKey = parsePrecipitationPreset(p.precipitation, key, value);
-          if (parseWetnessPreset(p.wetness, key, value) || precipitationKey || parseVolumetricPreset(p.volumetric, key, value)) {
+          if (parseWetnessPreset(p.wetness, key, value) || precipitationKey ||
+              parseVolumetricPreset(p.volumetric, key, value) || parseNightPreset(p.nightAppearance, key, value)) {
             continue;
           }
           if (key == "weather.bindings") {
@@ -627,7 +721,8 @@ namespace dxvk {
       relative(numos::settingInfos().size(), false) { }
   NumosWeather::Preset::Preset(const Preset& o)
     : name(o.name), bindings(o.bindings), transitionSeconds(o.transitionSeconds), enabled(o.enabled),
-      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness), precipitation(o.precipitation), volumetric(o.volumetric), water(o.water), dirty(o.dirty),
+      values(std::make_unique<numos::Settings>(*o.values)), set(o.set), relative(o.relative), wetness(o.wetness),
+      precipitation(o.precipitation), volumetric(o.volumetric), nightAppearance(o.nightAppearance), water(o.water), dirty(o.dirty),
       numosBuiltIn(o.numosBuiltIn) { }
   NumosWeather::Preset& NumosWeather::Preset::operator=(const Preset& o) {
     if (this != &o) {
@@ -641,6 +736,7 @@ namespace dxvk {
       wetness = o.wetness;
       precipitation = o.precipitation;
       volumetric = o.volumetric;
+      nightAppearance = o.nightAppearance;
       water = o.water;
       dirty = o.dirty;
       numosBuiltIn = o.numosBuiltIn;
@@ -655,12 +751,15 @@ namespace dxvk {
     WetnessArgs wetnessFrom, wetnessCurrent;
     PrecipitationState precipitationFrom, precipitationCurrent;
     VolumetricWeatherState volumetricFrom, volumetricCurrent;
+    NumosNightAppearanceState nightFrom, nightCurrent, nightTuneBaseline, nightTuneStart;
+    std::optional<bool> nightTuneLegacyLayerValue;
     WaterWeatherState waterFrom, waterCurrent;
     float elapsed = 0.0f;
     float duration = 0.0f;
     bool hasCurrent = false;
     bool held = false;
     bool snap = false;  // the next change of target shows at once
+    uint32_t lastSnapRequest = 0;
     Preset heldPreset;
     std::string lastGameWeather, lastManualPreset, lastLegacyFile;
     numos::Settings tuneBaseline, tuneStart;  // the user's settings, and the look written over them
@@ -776,6 +875,20 @@ namespace dxvk {
         text << infos[i].key << " = " << (p.relative[i] ? "x" : "") << numos::formatSetting(*p.values, infos[i]) << "\n";
       }
     }
+    if (p.nightAppearance.legacyMilkyWay.has_value()) {
+      text << "rtx.numos.legacyMilkyWay = " << (*p.nightAppearance.legacyMilkyWay ? "True" : "False") << "\n";
+    }
+    for (size_t i = 0; i < p.nightAppearance.floats.size(); ++i) {
+      if (p.nightAppearance.floats[i]) {
+        text << "rtx.numos." << kNumosNightWeatherFloats[i].name << " = " << *p.nightAppearance.floats[i] << "\n";
+      }
+    }
+    for (size_t i = 0; i < p.nightAppearance.colors.size(); ++i) {
+      if (p.nightAppearance.colors[i]) {
+        const auto color = *p.nightAppearance.colors[i];
+        text << "rtx.numos." << kNumosNightWeatherColors[i].name << " = " << color.x << ", " << color.y << ", " << color.z << "\n";
+      }
+    }
     text << "weather.oceanRainWeight = " << p.water.rain << "\n"
          << "weather.oceanStormWeight = " << p.water.storm << "\n";
     for (size_t i = 0; i < p.precipitation.values.size(); ++i) {
@@ -847,6 +960,7 @@ namespace dxvk {
       p.water = m_state->waterCurrent;
       p.precipitation.store(m_state->precipitationCurrent);
       p.volumetric.store(m_state->volumetricCurrent);
+      p.nightAppearance.store(nightAppearanceState());
       p.set = weatherKeys();
     }
     p.name = name;
@@ -1055,6 +1169,7 @@ namespace dxvk {
     preset->water = m_state->waterCurrent;
       preset->precipitation.store(m_state->precipitationCurrent);
       preset->volumetric.store(m_state->volumetricCurrent);
+    preset->nightAppearance.store(nightAppearanceState());
     preset->dirty = true;
     return *preset;
   }
@@ -1066,9 +1181,19 @@ namespace dxvk {
     State& s = *m_state;
     s.tuneBaseline = NumosSettings::resolved();
     s.tuneStart = s.current;
+    s.nightTuneBaseline = nightAppearanceBase();
+    s.nightTuneStart = nightAppearanceState();
     {
       RtxOptionLayerTarget target(RtxOptionEditTarget::User);
       NumosSettings::write(s.tuneStart);
+      writeNightAppearance(s.nightTuneStart);
+      auto& legacy = NumosNightAppearance::legacyMilkyWayObject();
+      {
+        std::lock_guard<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
+        const auto* value = legacy.getGenericValue(legacy.getTargetLayer());
+        s.nightTuneLegacyLayerValue = value != nullptr ? std::optional<bool>(value->b) : std::nullopt;
+      }
+      legacy.setDeferred(s.nightTuneStart.legacyMilkyWay);
     }
     m_tuning = true;
     m_tuningPreset = presetName;
@@ -1105,11 +1230,23 @@ namespace dxvk {
       stored->water = s.waterCurrent;
       stored->precipitation.store(s.precipitationCurrent);
       stored->volumetric.store(s.volumetricCurrent);
+      stored->nightAppearance.store(nightAppearanceBase(), &s.nightTuneStart);
       stored->dirty = true;
     }
     {
       RtxOptionLayerTarget target(RtxOptionEditTarget::User);
       NumosSettings::write(s.tuneBaseline);
+      writeNightAppearance(s.nightTuneBaseline);
+      auto& legacy = NumosNightAppearance::legacyMilkyWayObject();
+      if (s.nightTuneLegacyLayerValue.has_value()) {
+        legacy.setDeferred(*s.nightTuneLegacyLayerValue);
+      } else if (const auto* layer = legacy.getTargetLayer()) {
+        {
+          std::lock_guard<std::mutex> lock(RtxOptionImpl::getUpdateMutex());
+          legacy.disableLayerValue(layer);
+        }
+        layer->onLayerValueChanged();
+      }
     }
     m_tuning = false;
     m_tuningPreset.clear();
@@ -1275,8 +1412,21 @@ namespace dxvk {
   const numos::Settings& NumosWeather::update(const numos::Settings& base, float deltaSeconds) {
     ensureLoaded();
     State& s = *m_state;
+    const uint32_t snapRequestValue = snapRequest();
+    if (snapRequestValue != s.lastSnapRequest) {
+      s.lastSnapRequest = snapRequestValue;
+      s.snap = true;
+    }
     s.base = base;
     const auto volumetricBase = RtxGlobalVolumetrics::baseWeatherState();
+    const auto nightBase = nightAppearanceBase();
+    const auto nightFor = [&](const Preset* selected) {
+      auto state = nightBase;
+      if (selected != nullptr) {
+        selected->nightAppearance.apply(state);
+      }
+      return state;
+    };
     const auto volumetricFor = [&](const Preset* selected) {
       auto state = volumetricBase;
       if (controlVolumetricFog() && selected != nullptr) { selected->volumetric.apply(state); }
@@ -1309,6 +1459,7 @@ namespace dxvk {
     // While tuning, the sliders are the look: no preset, no blend.
     if (m_tuning) {
       s.wetnessCurrent = wetnessBase;
+      s.nightCurrent = nightBase;
       if (!s.hasCurrent || !controlVolumetricFog()) { s.volumetricCurrent = volumetricBase; }
       // Keep ocean weather fixed while tuning the sky look.
       s.current = base;
@@ -1349,15 +1500,21 @@ namespace dxvk {
     // The game blends weathers itself: follow its blend factor exactly.
     const float gameBlend = gameWeatherBlend();
     if (previewPreset == nullptr && !s.held && gamePreset != nullptr && gameBlend >= 0.0f) {
+      const float blendFactor = s.snap ? 1.0f : std::clamp(gameBlend, 0.0f, 1.0f);
       numos::Settings outgoing = base;
       applyPreset(boundPreset(gameWeatherOutgoing()), outgoing);
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
-      blend(outgoing, incoming, std::clamp(gameBlend, 0.0f, 1.0f), s.current);
-      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), gameBlend);
-      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), gameBlend);
-      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), gameBlend);
-      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), gameBlend);
+      blend(outgoing, incoming, blendFactor, s.current);
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), blendFactor);
+      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), blendFactor);
+      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), blendFactor);
+      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), blendFactor);
+      const auto nightIncoming = nightFor(gamePreset);
+      s.nightCurrent = NumosNightAppearancePreset::blend(nightFor(boundPreset(gameWeatherOutgoing())), nightIncoming, blendFactor);
+      if (!s.hasCurrent || targetName != m_targetName) {
+        logNightAppearance(targetName, nightIncoming);
+      }
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
       s.snap = false;
@@ -1372,11 +1529,16 @@ namespace dxvk {
     const WaterWeatherState waterGoal = waterFor(target);
     const auto precipitationGoal = precipitationFor(target);
     const auto volumetricGoal = volumetricFor(target);
-    if (!s.hasCurrent || targetName != m_targetName) {
+    const auto nightGoal = nightFor(target);
+    if (!s.hasCurrent || targetName != m_targetName || s.snap) {
+      if (!s.hasCurrent || targetName != m_targetName) {
+        logNightAppearance(targetName, nightGoal);
+      }
       s.wetnessFrom = s.hasCurrent ? s.wetnessCurrent : wetnessGoal;
       s.waterFrom = s.hasCurrent ? s.waterCurrent : waterGoal;
       s.precipitationFrom = s.hasCurrent ? s.precipitationCurrent : precipitationGoal;
       s.volumetricFrom = s.hasCurrent ? s.volumetricCurrent : volumetricGoal;
+      s.nightFrom = s.hasCurrent ? s.nightCurrent : nightGoal;
       s.from = s.hasCurrent ? s.current : goal;
       s.duration = !s.hasCurrent || s.snap ? 0.0f
                  : (target && target->transitionSeconds >= 0.0f ? target->transitionSeconds : transitionSeconds());
@@ -1391,6 +1553,7 @@ namespace dxvk {
     s.waterCurrent = WaterWeatherState::blend(s.waterFrom, waterGoal, smoothstep01(t));
     s.precipitationCurrent = PrecipitationPreset::blend(s.precipitationFrom, precipitationGoal, smoothstep01(t));
     s.volumetricCurrent = VolumetricWeatherPreset::blend(s.volumetricFrom, volumetricGoal, smoothstep01(t));
+    s.nightCurrent = NumosNightAppearancePreset::blend(s.nightFrom, nightGoal, smoothstep01(t));
     if (t >= 1.0f) {
       s.current = goal;  // settled: live edits to the preset or the settings show at once
     } else {
@@ -1402,6 +1565,12 @@ namespace dxvk {
 
   VolumetricWeatherState NumosWeather::volumetricState(const VolumetricWeatherState& base) const {
     return controlVolumetricFog() && m_state->hasCurrent ? m_state->volumetricCurrent : base;
+  }
+
+  NumosNightAppearanceState NumosWeather::nightAppearanceState() const {
+    auto state = m_state->hasCurrent ? m_state->nightCurrent : nightAppearanceBase();
+    state.nightAppearance = NumosNightAppearance::nightAppearance();
+    return state;
   }
 
   const PrecipitationState& NumosWeather::precipitationState() const {

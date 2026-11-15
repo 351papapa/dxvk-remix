@@ -19,11 +19,39 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <algorithm>
+#include <cmath>
+
 #include "rtx_pathtracer_integrate_indirect.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
 // Surface wetness is selected independently of the pass feature matrix.
 #include "rtx_wetness_shaders.h"
+#include <rtx_shaders/integrate_indirect_rayquery_wboit_lean_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_closesthit_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery_wboit_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_ser_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_closesthit_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_ser_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_closesthit_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_ser_wboit_leanls_df_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_wboit_leanls_wetness.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_wboit_leanls_df_wetness.h>
 #include <rtx_shaders/integrate_indirect_material_opaque_translucent_closestHit_wetness.h>
 #include <rtx_shaders/integrate_indirect_material_opaque_translucent_closestHit_wboit_wetness.h>
 #include <rtx_shaders/integrate_indirect_material_rayportal_closestHit_wetness.h>
@@ -371,8 +399,36 @@
 #define RTX_WETNESS_SHADER_integrate_nee_restir_gi_slim integrate_nee_restir_gi_slim_wetness
 #define RTX_WETNESS_SHADER_visualize_nee visualize_nee_wetness
 
+// Performance mode and compute SHARC variants.
+#define RTX_WETNESS_SHADER_integrate_indirect_rayquery_wboit_lean integrate_indirect_rayquery_wboit_lean_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_closesthit_wboit_leanls integrate_indirect_sharc_query_closesthit_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_rayquery integrate_indirect_sharc_query_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_rayquery_wboit integrate_indirect_sharc_query_rayquery_wboit_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_rayquery_wboit_leanls integrate_indirect_sharc_query_rayquery_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_ser_wboit_leanls integrate_indirect_sharc_query_ser_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_query_wboit_leanls integrate_indirect_sharc_query_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_closesthit_wboit_leanls_df integrate_indirect_sharc_update4_closesthit_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_rayquery integrate_indirect_sharc_update4_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_rayquery_wboit integrate_indirect_sharc_update4_rayquery_wboit_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_rayquery_wboit_df integrate_indirect_sharc_update4_rayquery_wboit_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_rayquery_wboit_leanls integrate_indirect_sharc_update4_rayquery_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_rayquery_wboit_leanls_df integrate_indirect_sharc_update4_rayquery_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_ser_wboit_leanls_df integrate_indirect_sharc_update4_ser_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_wboit_leanls integrate_indirect_sharc_update4_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update4_wboit_leanls_df integrate_indirect_sharc_update4_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_closesthit_wboit_leanls_df integrate_indirect_sharc_update8_closesthit_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_rayquery integrate_indirect_sharc_update8_rayquery_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_rayquery_wboit integrate_indirect_sharc_update8_rayquery_wboit_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_rayquery_wboit_df integrate_indirect_sharc_update8_rayquery_wboit_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_rayquery_wboit_leanls integrate_indirect_sharc_update8_rayquery_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_rayquery_wboit_leanls_df integrate_indirect_sharc_update8_rayquery_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_ser_wboit_leanls_df integrate_indirect_sharc_update8_ser_wboit_leanls_df_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_wboit_leanls integrate_indirect_sharc_update8_wboit_leanls_wetness
+#define RTX_WETNESS_SHADER_integrate_indirect_sharc_update8_wboit_leanls_df integrate_indirect_sharc_update8_wboit_leanls_df_wetness
+
 #include "rtx_context.h"
 #include "rtx_fork_frame_features.h"
+#include "rtx_fork_light_bvh_pass.h"
 #include "rtx_fork_variant_tables.h"
 #include "rtx_options.h"
 #include "rtx_sparse_rendering.h"
@@ -560,6 +616,32 @@
 #include <rtx_shaders/integrate_indirect_sharc_update8_closesthit_wboit_lean_df.h>
 #include <rtx_shaders/integrate_indirect_sharc_update4_miss_wboit_df.h>
 #include <rtx_shaders/integrate_indirect_sharc_update8_miss_wboit_df.h>
+// The SHARC compute variants for RayQuery mode.
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery_wboit.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_ser_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_ser_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_ser_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_closesthit_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_closesthit_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_closesthit_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_sharc_update4_rayquery_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_update8_rayquery_wboit_leanls_df.h>
+#include <rtx_shaders/integrate_indirect_sharc_query_rayquery_wboit_leanls.h>
+#include <rtx_shaders/integrate_indirect_rayquery_wboit_lean.h>
 #include <rtx_shaders/integrate_indirect_raygen_neeCache_wboit_nopom.h>
 #include <rtx_shaders/integrate_indirect_raygen_ser_neeCache_wboit_nopom.h>
 #include <rtx_shaders/integrate_indirect_raygen_nrc_neeCache_wboit_nopom.h>
@@ -602,9 +684,11 @@ namespace dxvk {
       kIndKeyKeepPomOption      = 1u << 5, // rtx.integrateIndirect.slimKeepPom
       kIndKeyTranslucentShadows = 1u << 6, // rtx.enableIndirectTranslucentShadows
       kIndKeyPomNeeCache        = 1u << 7, // cb.pomEnableNEECache: POM can attenuate the assembly's NEE-cache shadow ray
+      kIndKeyCompute            = 1u << 8, // the pass dispatches its Ray Query compute shaders
     };
     const char* const kIndKeyNames[] = {
       "notValidating", "wboit", "noOmm2", "neeCacheOnly", "neeCache", "keepPomOption", "translucentShadows", "pomNeeCache",
+      "compute",
     };
     constexpr uint32_t kIndKeyNameCount = sizeof(kIndKeyNames) / sizeof(kIndKeyNames[0]);
     constexpr uint32_t kIndKeySharcRequired = kIndKeyNotValidating | kIndKeyWboit | kIndKeyNoOmm2 | kIndKeyNeeCacheOnly;
@@ -615,21 +699,33 @@ namespace dxvk {
     constexpr uint32_t kIndRemovesPortals = RtFrameFeatures::kScenePortalsActive;
     constexpr uint32_t kIndRemovesPom = RtFrameFeatures::kScenePom;
 
+    // The levels of the ray tracing pipelines, which need the compute key bit clear.
 #define INDIRECT_TRACE_VARIANT_ENTRIES(required) \
-      { "Lean", (required) | kIndKeyTranslucentShadows, (required), kIndRemovesPortals | kIndRemovesPom | kIndRemovesLean, \
-        (int32_t) IndirectSlimLevel::Lean }, \
-      { "Slim", (required), (required), kIndRemovesPortals | kIndRemovesPom, (int32_t) IndirectSlimLevel::Slim }, \
-      { "LeanPom", (required) | kIndKeyKeepPomOption | kIndKeyTranslucentShadows, (required) | kIndKeyKeepPomOption, \
+      { "Lean", (required) | kIndKeyCompute | kIndKeyTranslucentShadows, (required), \
+        kIndRemovesPortals | kIndRemovesPom | kIndRemovesLean, (int32_t) IndirectSlimLevel::Lean }, \
+      { "Slim", (required) | kIndKeyCompute, (required), kIndRemovesPortals | kIndRemovesPom, (int32_t) IndirectSlimLevel::Slim }, \
+      { "LeanPom", (required) | kIndKeyCompute | kIndKeyKeepPomOption | kIndKeyTranslucentShadows, (required) | kIndKeyKeepPomOption, \
         kIndRemovesPortals | kIndRemovesLean, (int32_t) IndirectSlimLevel::LeanPom }, \
-      { "SlimPom", (required) | kIndKeyKeepPomOption, (required) | kIndKeyKeepPomOption, kIndRemovesPortals, \
-        (int32_t) IndirectSlimLevel::SlimPom }, \
-      { "Full", 0u, 0u, 0u, (int32_t) IndirectSlimLevel::Full },
+      { "SlimPom", (required) | kIndKeyCompute | kIndKeyKeepPomOption, (required) | kIndKeyKeepPomOption, kIndRemovesPortals, \
+        (int32_t) IndirectSlimLevel::SlimPom },
+    // LeanLightSampler keeps the RIS and light BVH sampling of secondary NEE, so it serves frames whose secondary NEE
+    // does not take the NEE cache alone. The compute shaders have no OMM 2-state ray flag and no other slim level.
+    constexpr uint32_t kIndKeyLightSamplerBase = kIndKeyNotValidating | kIndKeyWboit;
+    constexpr uint32_t kIndRemovesLightSamplerLean = kIndRemovesPortals | kIndRemovesPom | kIndRemovesLean;
 
     const VariantTableEntry kSharcVariantEntries[] = {
       INDIRECT_TRACE_VARIANT_ENTRIES(kIndKeySharcRequired)
+      { "LeanLightSampler", kIndKeySharcRequired | kIndKeyCompute | kIndKeyTranslucentShadows,
+        kIndKeyLightSamplerBase | kIndKeyNoOmm2, kIndRemovesLightSamplerLean, (int32_t) IndirectSlimLevel::LeanLightSampler },
+      { "LeanLightSampler(compute)", kIndKeyLightSamplerBase | kIndKeyCompute | kIndKeyTranslucentShadows,
+        kIndKeyLightSamplerBase | kIndKeyCompute, kIndRemovesLightSamplerLean, (int32_t) IndirectSlimLevel::LeanLightSampler },
+      { "Full", 0u, 0u, 0u, (int32_t) IndirectSlimLevel::Full },
     };
     const VariantTableEntry kNonSharcVariantEntries[] = {
       INDIRECT_TRACE_VARIANT_ENTRIES(kIndKeyNonSharcRequired)
+      { "LeanLightSampler(compute)", kIndKeyLightSamplerBase | kIndKeyCompute | kIndKeyNeeCache | kIndKeyTranslucentShadows,
+        kIndKeyLightSamplerBase | kIndKeyCompute, kIndRemovesLightSamplerLean, (int32_t) IndirectSlimLevel::LeanLightSampler },
+      { "Full", 0u, 0u, 0u, (int32_t) IndirectSlimLevel::Full },
     };
 #undef INDIRECT_TRACE_VARIANT_ENTRIES
 
@@ -674,12 +770,12 @@ namespace dxvk {
       return key;
     }
 
-    uint32_t sharcVariantModeKey(const RtFrameFeatures& f) {
-      return indirectVariantCommonModeKey(f);
+    uint32_t sharcVariantModeKey(const RtFrameFeatures& f, const bool compute) {
+      return indirectVariantCommonModeKey(f) | (compute ? kIndKeyCompute : 0u);
     }
 
-    uint32_t nonSharcVariantModeKey(const RtFrameFeatures& f, const bool useNeeCache) {
-      return indirectVariantCommonModeKey(f) | (useNeeCache ? kIndKeyNeeCache : 0u);
+    uint32_t nonSharcVariantModeKey(const RtFrameFeatures& f, const bool useNeeCache, const bool compute) {
+      return indirectVariantCommonModeKey(f) | (useNeeCache ? kIndKeyNeeCache : 0u) | (compute ? kIndKeyCompute : 0u);
     }
 
     uint32_t assemblyVariantModeKey(const RtFrameFeatures& f) {
@@ -749,6 +845,7 @@ namespace dxvk {
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_THROUGHPUT_CONE_RADIUS_INPUT)
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_ACTIVE_LOCAL_PIXEL_COORDS_INPUT)
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_FIRST_HIT_PERCEPTUAL_ROUGHNESS_INPUT)
+        TEXTURE2D(INTEGRATE_INDIRECT_BINDING_SPARSE_ACTIVE_PIXEL_MASK_INPUT)
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_FIRST_SAMPLED_LOBE_DATA_INPUT)
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_LAST_GBUFFER_INPUT)
         TEXTURE2D(INTEGRATE_INDIRECT_BINDING_PREV_WORLD_POSITION_INPUT)
@@ -995,9 +1092,24 @@ namespace dxvk {
     PREWARM_SHADER_PIPELINE(VisualizeNEEShader);
   }
 
-  DxvkPathtracerIntegrateIndirect::DxvkPathtracerIntegrateIndirect(DxvkDevice* device) 
+  DxvkPathtracerIntegrateIndirect::DxvkPathtracerIntegrateIndirect(DxvkDevice* device)
     : CommonDeviceObject(device)
     , m_integrateIndirectMode(IntegrateIndirectMode::Count) {
+  }
+
+  bool DxvkPathtracerIntegrateIndirect::rayQueryUsesRaygen() const {
+    return !rayQueryComputeKernel()
+      && m_device->adapter()->deviceProperties().vendorID == static_cast<uint32_t>(DxvkGpuVendor::Nvidia);
+  }
+
+  void DxvkPathtracerIntegrateIndirect::logRayQueryRaygenOnce() {
+    if (m_rayQueryRaygenLogged) {
+      return;
+    }
+    m_rayQueryRaygenLogged = true;
+    Logger::info("[IntegrateIndirect] Ray Query mode traces the ray query kernels (integrate indirect, SHARC update and "
+                 "query) as ray generation shaders on this GPU (rtx.integrateIndirect.rayQueryComputeKernel runs the "
+                 "compute kernels instead).");
   }
 
   void DxvkPathtracerIntegrateIndirect::prewarmShaders(DxvkPipelineManager& pipelineManager) const {
@@ -1009,7 +1121,7 @@ namespace dxvk {
     GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateNEEShader, integrate_nee_restir_gi);
     // The assembly slim levels of the configured mode only.
     {
-      const IntegrateIndirectMode mode = RtxOptions::integrateIndirectMode();
+      const IntegrateIndirectMode mode = RtxOptions::resolvedIntegrateIndirectMode();
       const bool nrcMode = mode == IntegrateIndirectMode::NeuralRadianceCache;
       const bool restirGiMode = mode == IntegrateIndirectMode::ReSTIRGI;
       getAssemblyShader(nrcMode, restirGiMode, SlimLevel::Slim);
@@ -1054,15 +1166,18 @@ namespace dxvk {
             }
 
             getComputeShader(useNeeCache, nrcEnabled, wboitEnabled);
+            if (!useNeeCache && !nrcEnabled && wboitEnabled) {
+              getComputeShader(false, false, true, SlimLevel::LeanLightSampler);
+            }
           }
         }
       }
     } else {
       // Note: The getters for these SER/OMM enabled flags also check if SER/OMMs are supported, so we do not need to check for that manually.
       const bool serEnabled = RtxOptions::isShaderExecutionReorderingInPathtracerIntegrateIndirectEnabled();
-      const bool ommEnabled = OpacityMicromapManager::checkIsOpacityMicromapSupported(*m_device) && RtxOptions::OpacityMicromap::enable();
-      const bool useNeeCache = NeeCachePass::enable();
-      const bool nrcEnabled = RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache;
+      const bool ommEnabled = RtxOptions::getEnableOpacityMicromap();
+      const bool useNeeCache = NeeCachePass::resolvedEnable();
+      const bool nrcEnabled = RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache;
       const bool wboitEnabled = RtxOptions::wboitEnabled();
 
       for (int32_t includesPortals = portalsEnabled; includesPortals >= 0; includesPortals--) {
@@ -1071,7 +1186,15 @@ namespace dxvk {
           DxvkComputePipelineShaders shaders;
           switch (RtxOptions::renderPassIntegrateIndirectRaytraceMode()) {
           case RaytraceMode::RayQuery:
-            getComputeShader(useNeeCache, nrcEnabled, wboitEnabled);
+            if (rayQueryUsesRaygen()) {
+              pipelineManager.registerRaytracingShaders(getPipelineShaders(true, serEnabled, ommEnabled, useNeeCache, includesPortals, pomEnabled, nrcEnabled, wboitEnabled));
+            } else {
+              getComputeShader(useNeeCache, nrcEnabled, wboitEnabled);
+              // The lean kernel serves frames without the NEE cache, which performance mode turns off at runtime.
+              if (!nrcEnabled && wboitEnabled) {
+                getComputeShader(false, false, true, SlimLevel::LeanLightSampler);
+              }
+            }
             break;
           case RaytraceMode::RayQueryRayGen:
             pipelineManager.registerRaytracingShaders(getPipelineShaders(true, serEnabled, ommEnabled, useNeeCache, includesPortals, pomEnabled, nrcEnabled, wboitEnabled));
@@ -1088,7 +1211,7 @@ namespace dxvk {
 
       // The non-SHARC slim levels this configuration can bind (see
       // selectNonSharcSlimLevel): Slim / Lean have POM off, the POM-kept levels follow pomEnabled.
-      if (RtxOptions::integrateIndirectMode() != IntegrateIndirectMode::Sharc &&
+      if (RtxOptions::resolvedIntegrateIndirectMode() != IntegrateIndirectMode::Sharc &&
           RtxOptions::renderPassIntegrateIndirectRaytraceMode() == RaytraceMode::TraceRay &&
           useNeeCache && wboitEnabled && !portalsEnabled && !useFoliageRaysOmm2StateVariant(ommEnabled)) {
         pipelineManager.registerRaytracingShaders(getPipelineShaders(false, serEnabled, ommEnabled, true, false, false, nrcEnabled, true, SlimLevel::Slim));
@@ -1102,14 +1225,14 @@ namespace dxvk {
       }
     }
 
-    if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::Sharc) {
+    if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::Sharc) {
       prewarmSharcShaders(pipelineManager);
     }
   }
 
   void DxvkPathtracerIntegrateIndirect::logIntegrateIndirectMode() {
-    if (m_integrateIndirectMode != RtxOptions::integrateIndirectMode()) {
-      m_integrateIndirectMode = RtxOptions::integrateIndirectMode();
+    if (m_integrateIndirectMode != RtxOptions::resolvedIntegrateIndirectMode()) {
+      m_integrateIndirectMode = RtxOptions::resolvedIntegrateIndirectMode();
 
       switch (m_integrateIndirectMode) {
       default:
@@ -1163,6 +1286,11 @@ namespace dxvk {
           ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_wboit_leanpom_df)
           : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_wboit_leanpom_df));
         break;
+      case SlimLevel::LeanLightSampler:
+        shaders.addGeneralShader(depth4
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_wboit_leanls_df)
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_wboit_leanls_df));
+        break;
       }
     } else if (slimLevel == SlimLevel::SlimPom || slimLevel == SlimLevel::LeanPom) {
       // rtx.integrateIndirect.slimKeepPom (WBOIT, no OMM 2-state; see selectSharcSlimLevel).
@@ -1174,6 +1302,11 @@ namespace dxvk {
         : (lean
           ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_wboit_leanpom)
           : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_wboit_slimpom)));
+    } else if (slimLevel == SlimLevel::LeanLightSampler) {
+      // Lean with the light sampler kept (WBOIT, no OMM 2-state; see selectSharcSlimLevel).
+      shaders.addGeneralShader(depth4
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update4_wboit_leanls)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_wboit_leanls));
     } else if (slimLevel != SlimLevel::Full) {
       // The slim levels (WBOIT, no OMM 2-state; see selectSharcSlimLevel).
       const bool lean = slimLevel == SlimLevel::Lean;
@@ -1223,33 +1356,88 @@ namespace dxvk {
     return serEnabled && !includePortals && sharcDeferredFlushPossible(ommEnabled, wboitEnabled);
   }
 
+  bool DxvkPathtracerIntegrateIndirect::sharcUsesCompute() const {
+    // GPUs other than NVIDIA run SHARC only as compute kernels, whatever the indirect raytrace mode.
+    if (m_device->adapter()->deviceProperties().vendorID != static_cast<uint32_t>(DxvkGpuVendor::Nvidia)) {
+      return true;
+    }
+    return RtxOptions::renderPassIntegrateIndirectRaytraceMode() == RaytraceMode::RayQuery && !rayQueryUsesRaygen();
+  }
+
+  Rc<DxvkShader> DxvkPathtracerIntegrateIndirect::getSharcUpdateComputeShader(const bool depth4, const bool wboitEnabled, const bool deferredFlush,
+                                                                             const SlimLevel slimLevel) {
+    // LeanLightSampler is WBOIT only (selectSharcSlimLevel), as are the deferred-flush variants
+    // (sharcDeferredFlushPossible).
+    if (slimLevel == SlimLevel::LeanLightSampler) {
+      if (deferredFlush) {
+        return depth4
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_rayquery_wboit_leanls_df)
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_rayquery_wboit_leanls_df);
+      }
+      return depth4
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update4_rayquery_wboit_leanls)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_rayquery_wboit_leanls);
+    }
+    if (deferredFlush) {
+      return depth4
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_rayquery_wboit_df)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_rayquery_wboit_df);
+    }
+    if (depth4) {
+      return wboitEnabled
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update4_rayquery_wboit)
+        : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update4_rayquery);
+    }
+    return wboitEnabled
+      ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_rayquery_wboit)
+      : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcUpdateShader, integrate_indirect_sharc_update8_rayquery);
+  }
+
+  Rc<DxvkShader> DxvkPathtracerIntegrateIndirect::getSharcQueryComputeShader(const bool wboitEnabled, const SlimLevel slimLevel) {
+    if (slimLevel == SlimLevel::LeanLightSampler) {
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_rayquery_wboit_leanls);
+    }
+    return wboitEnabled
+      ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_rayquery_wboit)
+      : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_rayquery);
+  }
+
   DxvkRaytracingPipelineShaders DxvkPathtracerIntegrateIndirect::getSharcUpdateSerPipelineShaders(
     const bool depth4, const bool ommEnabled, const SlimLevel slimLevel) {
     // The TraceRay + SER update. Raygen with SER, the update hit shader of the same level and the update miss
     // shader, all with the deferred-flush payload (SHARC_DEFERRED_FLUSH) of the propagation depth.
     DxvkRaytracingPipelineShaders shaders;
+    const bool leanLightSampler = slimLevel == SlimLevel::LeanLightSampler;
     const bool lean = slimLevel == SlimLevel::Lean;
     const bool slim = slimLevel == SlimLevel::Slim;
     if (depth4) {
-      shaders.addGeneralShader(lean
+      shaders.addGeneralShader(leanLightSampler
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_ser_wboit_leanls_df)
+        : lean
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_ser_wboit_lean_df)
         : slim
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_ser_wboit_slim_df)
         : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update4_ser_wboit_df));
       shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, IntegrateIndirectMissShader, integrate_indirect_sharc_update4_miss_wboit_df));
-      shaders.addHitGroup(lean
+      shaders.addHitGroup(leanLightSampler
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update4_closesthit_wboit_leanls_df)
+        : lean
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update4_closesthit_wboit_lean_df)
         : slim
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update4_closesthit_wboit_slim_df)
         : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update4_closesthit_wboit_df), nullptr, nullptr);
     } else {
-      shaders.addGeneralShader(lean
+      shaders.addGeneralShader(leanLightSampler
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_ser_wboit_leanls_df)
+        : lean
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_ser_wboit_lean_df)
         : slim
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_ser_wboit_slim_df)
         : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcUpdateDeferredShader, integrate_indirect_sharc_update8_ser_wboit_df));
       shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, IntegrateIndirectMissShader, integrate_indirect_sharc_update8_miss_wboit_df));
-      shaders.addHitGroup(lean
+      shaders.addHitGroup(leanLightSampler
+        ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update8_closesthit_wboit_leanls_df)
+        : lean
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update8_closesthit_wboit_lean_df)
         : slim
         ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_update8_closesthit_wboit_slim_df)
@@ -1277,11 +1465,25 @@ namespace dxvk {
     const bool slimPomPossible = slimPossible && slimKeepPom();
     // rtx.sharc.deferredFlush: the _df variants replace the inline ones while the option is on and they exist.
     const bool deferredFlush = sharcDeferredFlushPossible(ommEnabled, wboitEnabled);
+    if (sharcUsesCompute()) {
+      for (int32_t depth4 = 1; depth4 >= 0; depth4--) {
+        getSharcUpdateComputeShader(depth4, wboitEnabled, deferredFlush);
+        if (wboitEnabled) {
+          getSharcUpdateComputeShader(depth4, wboitEnabled, deferredFlush, SlimLevel::LeanLightSampler);
+        }
+      }
+      getSharcQueryComputeShader(wboitEnabled);
+      if (wboitEnabled) {
+        getSharcQueryComputeShader(wboitEnabled, SlimLevel::LeanLightSampler);
+      }
+      return;
+    }
     for (int32_t depth4 = 1; depth4 >= 0; depth4--) {
       pipelineManager.registerRaytracingShaders(getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, SlimLevel::Full, deferredFlush));
       if (slimPossible) {
         pipelineManager.registerRaytracingShaders(getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, SlimLevel::Slim, deferredFlush));
         pipelineManager.registerRaytracingShaders(getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, SlimLevel::Lean, deferredFlush));
+        pipelineManager.registerRaytracingShaders(getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, SlimLevel::LeanLightSampler, deferredFlush));
       }
       if (slimPomPossible) {
         pipelineManager.registerRaytracingShaders(getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, SlimLevel::SlimPom, deferredFlush));
@@ -1294,6 +1496,7 @@ namespace dxvk {
         if (slimPossible) {
           pipelineManager.registerRaytracingShaders(getSharcUpdateSerPipelineShaders(depth4, ommEnabled, SlimLevel::Slim));
           pipelineManager.registerRaytracingShaders(getSharcUpdateSerPipelineShaders(depth4, ommEnabled, SlimLevel::Lean));
+          pipelineManager.registerRaytracingShaders(getSharcUpdateSerPipelineShaders(depth4, ommEnabled, SlimLevel::LeanLightSampler));
         }
       }
     }
@@ -1305,6 +1508,7 @@ namespace dxvk {
     if (slimPossible && !portalsEnabled) {
       pipelineManager.registerRaytracingShaders(getSharcQueryPipelineShaders(serEnabled, ommEnabled, false, false, wboitEnabled, SlimLevel::Slim));
       pipelineManager.registerRaytracingShaders(getSharcQueryPipelineShaders(serEnabled, ommEnabled, false, false, wboitEnabled, SlimLevel::Lean));
+      pipelineManager.registerRaytracingShaders(getSharcQueryPipelineShaders(serEnabled, ommEnabled, false, false, wboitEnabled, SlimLevel::LeanLightSampler));
     }
     if (slimPomPossible && !portalsEnabled) {
       // POM-kept levels: the query hit follows pomEnabled (rtx.displacement.enableIndirectHit), so both.
@@ -1316,17 +1520,35 @@ namespace dxvk {
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectSharcSlimLevel(
-    RtxContext* ctx, const Resources::RaytracingOutput& rtOutput, const bool ommEnabled, const bool includePortals, const bool wboitEnabled) {
-    return selectSharcSlimLevel(ctx->getFrameFeatures(), ommEnabled, includePortals, wboitEnabled);
+    RtxContext* ctx, const Resources::RaytracingOutput& rtOutput, const bool ommEnabled, const bool includePortals, const bool wboitEnabled,
+    const bool compute) {
+    return selectSharcSlimLevel(ctx->getFrameFeatures(), ommEnabled, includePortals, wboitEnabled, compute);
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectSharcSlimLevel(
-    const RtFrameFeatures& features, const bool ommEnabled, const bool includePortals, const bool wboitEnabled) {
-    if (!wboitEnabled || includePortals || useFoliageRaysOmm2StateVariant(ommEnabled)) {
+    const RtFrameFeatures& features, const bool ommEnabled, const bool includePortals, const bool wboitEnabled, const bool compute) {
+    // The compute shaders have no OMM 2-state ray flag, so OMM 2-state does not limit them.
+    if (!wboitEnabled || includePortals || (!compute && useFoliageRaysOmm2StateVariant(ommEnabled))) {
       return SlimLevel::Full;
     }
     // The update / query raygen and hit POM code runs only while the frame's POM mode is on.
-    return selectIndirectSlimLevel(features, !features.has(RtFrameFeatures::kScenePom), true);
+    const bool pomCompiledOutOk = !features.has(RtFrameFeatures::kScenePom);
+    if (compute) {
+      // Of the slim levels, compute shaders exist for LeanLightSampler only, which serves every frame Lean serves,
+      // with or without the NEE cache.
+      return selectIndirectSlimLevel(features, pomCompiledOutOk, false) == SlimLevel::Lean ? SlimLevel::LeanLightSampler : SlimLevel::Full;
+    }
+    return selectIndirectSlimLevel(features, pomCompiledOutOk, true, true);
+  }
+
+  DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectNonSharcComputeSlimLevel(
+    const RtFrameFeatures& features, const bool useNeeCache, const bool nrcEnabled, const bool includePortals, const bool wboitEnabled) {
+    // The lean compute variant exists for the plain kernel without the NEE cache, with WBOIT.
+    if (useNeeCache || nrcEnabled || !wboitEnabled || includePortals) {
+      return SlimLevel::Full;
+    }
+    return selectIndirectSlimLevel(features, !features.has(RtFrameFeatures::kScenePom), false) == SlimLevel::Lean
+      ? SlimLevel::LeanLightSampler : SlimLevel::Full;
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectNonSharcSlimLevel(
@@ -1348,7 +1570,7 @@ namespace dxvk {
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectIndirectSlimLevel(
-    const RtFrameFeatures& features, const bool pomCompiledOutOk, const bool requireNeeCacheOnly) {
+    const RtFrameFeatures& features, const bool pomCompiledOutOk, const bool requireNeeCacheOnly, const bool lightSamplerLean) {
     // The frame feature mask is built from this frame's constant buffer, so the decision matches what the
     // shader would test.
     // rtx.frameFeatures.validate runs the Full kernels.
@@ -1362,7 +1584,8 @@ namespace dxvk {
     }
     // INDIRECT_SLIM_NEE_CACHE_ONLY replaces exactly this runtime test (integrator_indirect.slangh).
     // (cb.neeCacheArgs.enable && enableAnalyticalLight && lightBvhOverrideNeeCacheAnalytic == 0, the neeCacheOnly bit)
-    if (requireNeeCacheOnly && !features.hasMode(RtFrameFeatures::kModeNeeCacheOnly)) {
+    const bool neeCacheOnlyMissing = requireNeeCacheOnly && !features.hasMode(RtFrameFeatures::kModeNeeCacheOnly);
+    if (neeCacheOnlyMissing && (!lightSamplerLean || keepPom)) {
       return SlimLevel::Full;
     }
     // Translucent hits on the secondary NEE ray: through OBJECT_MASK_TRANSLUCENT (the option) or a translucent view-model /
@@ -1370,6 +1593,10 @@ namespace dxvk {
     // bound to a live instance (rtx.frameFeatures.liveMaterialCounts).
     const bool translucentHitPossible = features.hasMode(RtFrameFeatures::kModeIndirectTranslucentShadows) ||
       features.has(RtFrameFeatures::kSceneTranslucentDynamic);
+    if (neeCacheOnlyMissing) {
+      // LeanLightSampler keeps the light sampler and compiles out POM and the translucent and thin-opaque visibility.
+      return translucentHitPossible || features.has(RtFrameFeatures::kSceneThinOpaque) ? SlimLevel::Full : SlimLevel::LeanLightSampler;
+    }
     if (translucentHitPossible || features.has(RtFrameFeatures::kSceneThinOpaque)) {
       return keepPom ? SlimLevel::SlimPom : SlimLevel::Slim;
     }
@@ -1430,6 +1657,7 @@ namespace dxvk {
     case SlimLevel::Lean: return "Lean";
     case SlimLevel::SlimPom: return "SlimPom";
     case SlimLevel::LeanPom: return "LeanPom";
+    case SlimLevel::LeanLightSampler: return "LeanLightSampler";
     }
     return "?";
   }
@@ -1465,21 +1693,21 @@ namespace dxvk {
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectSharcVariantLevel(
-    RtxContext* ctx, const SlimPass pass, const SlimLevel legacyLevel) {
+    RtxContext* ctx, const SlimPass pass, const bool compute, const SlimLevel legacyLevel) {
     // No compile fallback here: the query is a ray tracing pipeline, and the update keeps the query's
     // level. The pass's OMM / portal / WBOIT inputs come from the same sources as the mask's omm2 / portalsActive / wboit bits.
     const IndirectVariantChoice choice = chooseIndirectVariant(
       ctx, pass == SlimPass::SharcUpdate ? VariantTablePass::SharcUpdate : VariantTablePass::IndirectIntegration,
-      kSharcVariantTable, sharcVariantModeKey(ctx->getFrameFeatures()), legacyLevel);
+      kSharcVariantTable, sharcVariantModeKey(ctx->getFrameFeatures(), compute), legacyLevel);
     m_frameVariantInfo[(uint32_t) pass] = variantSelectionToString(kSharcVariantTable, choice.selection, choice.modeKey, choice.selection.entry);
     return (SlimLevel) kSharcVariantEntries[choice.selection.entry].level;
   }
 
   DxvkPathtracerIntegrateIndirect::SlimLevel DxvkPathtracerIntegrateIndirect::selectNonSharcVariantLevel(
-    RtxContext* ctx, const bool useNeeCache, const SlimLevel legacyLevel) {
-    // TraceRay only (ray tracing pipelines, no compile fallback).
+    RtxContext* ctx, const bool useNeeCache, const bool compute, const SlimLevel legacyLevel) {
+    // TraceRay, or the Ray Query compute kernel without NRC (no compile fallback; the compute variant is prewarmed).
     const IndirectVariantChoice choice = chooseIndirectVariant(
-      ctx, VariantTablePass::IndirectIntegration, kNonSharcVariantTable, nonSharcVariantModeKey(ctx->getFrameFeatures(), useNeeCache),
+      ctx, VariantTablePass::IndirectIntegration, kNonSharcVariantTable, nonSharcVariantModeKey(ctx->getFrameFeatures(), useNeeCache, compute),
       legacyLevel);
     m_frameVariantInfo[(uint32_t) SlimPass::Integration] =
       variantSelectionToString(kNonSharcVariantTable, choice.selection, choice.modeKey, choice.selection.entry);
@@ -1518,7 +1746,7 @@ namespace dxvk {
                                                                  VariantTableSelfCheckResult& assembly) {
     // Every combination of the scene bits 0-8, the mode bits either side reads, OMM on / off (the OMM
     // 2-state bit follows the live foliage option, as in the mask) and, for the non-SHARC table, the NEE cache on / off,
-    // at the current option values. useRayQuery is false, as at the only non-SHARC call site (TraceRay mode).
+    // at the current option values, for the ray tracing pipelines and the compute shaders.
     const uint32_t modeBits[] = {
       RtFrameFeatures::kModeWboit, RtFrameFeatures::kModeNeeCacheOnly, RtFrameFeatures::kModeIndirectTranslucentShadows,
       RtFrameFeatures::kModePomNeeCache,
@@ -1542,24 +1770,32 @@ namespace dxvk {
                                " mode=", frameFeaturesModeToString(f.mode), " omm=", omm, extra);
           };
 
-          {
-            const SlimLevel legacy = selectSharcSlimLevel(f, ommEnabled, portals, wboit);
-            const uint32_t key = sharcVariantModeKey(f);
+          for (uint32_t compute = 0; compute < 2; compute++) {
+            const SlimLevel legacy = selectSharcSlimLevel(f, ommEnabled, portals, wboit, compute != 0);
+            const uint32_t key = sharcVariantModeKey(f, compute != 0);
             const VariantSelection selection = selectVariant(kSharcVariantTable, key, f.scene);
             sharc.checked++;
             if ((SlimLevel) kSharcVariantEntries[selection.entry].level != legacy) {
               reportVariantTableSelfCheckMismatch(VariantTablePass::SharcUpdate, sharc, kSharcVariantEntries[selection.entry].name,
-                                                  slimLevelToString(legacy), inputs(kSharcVariantTable, key, ""));
+                                                  slimLevelToString(legacy), inputs(kSharcVariantTable, key, compute != 0 ? " compute=1" : ""));
             }
           }
           for (uint32_t neeCache = 0; neeCache < 2; neeCache++) {
-            const SlimLevel legacy = selectNonSharcSlimLevel(f, false, ommEnabled, neeCache != 0, portals, wboit);
-            const uint32_t key = nonSharcVariantModeKey(f, neeCache != 0);
-            const VariantSelection selection = selectVariant(kNonSharcVariantTable, key, f.scene);
-            nonSharc.checked++;
-            if ((SlimLevel) kNonSharcVariantEntries[selection.entry].level != legacy) {
-              reportVariantTableSelfCheckMismatch(VariantTablePass::IndirectIntegration, nonSharc, kNonSharcVariantEntries[selection.entry].name,
-                                                  slimLevelToString(legacy), inputs(kNonSharcVariantTable, key, neeCache != 0 ? " neeCache=1" : " neeCache=0"));
+            // TraceRay (compute = 0) and the Ray Query compute kernel without NRC (compute = 1).
+            for (uint32_t compute = 0; compute < 2; compute++) {
+              const SlimLevel legacy = compute != 0
+                ? selectNonSharcComputeSlimLevel(f, neeCache != 0, false, portals, wboit)
+                : selectNonSharcSlimLevel(f, false, ommEnabled, neeCache != 0, portals, wboit);
+              const uint32_t key = nonSharcVariantModeKey(f, neeCache != 0, compute != 0);
+              const VariantSelection selection = selectVariant(kNonSharcVariantTable, key, f.scene);
+              nonSharc.checked++;
+              if ((SlimLevel) kNonSharcVariantEntries[selection.entry].level != legacy) {
+                const char* extra = neeCache != 0
+                  ? (compute != 0 ? " neeCache=1 compute=1" : " neeCache=1")
+                  : (compute != 0 ? " neeCache=0 compute=1" : " neeCache=0");
+                reportVariantTableSelfCheckMismatch(VariantTablePass::IndirectIntegration, nonSharc, kNonSharcVariantEntries[selection.entry].name,
+                                                    slimLevelToString(legacy), inputs(kNonSharcVariantTable, key, extra));
+              }
             }
           }
           if (omm == 0) {
@@ -1591,7 +1827,12 @@ namespace dxvk {
     // and no OMM 2-state; Slim / Lean also no POM).
     if (slimLevel != SlimLevel::Full) {
       const bool lean = slimLevelIsLean(slimLevel);
-      if (slimLevelKeepsPom(slimLevel)) {
+      const bool leanLightSampler = slimLevel == SlimLevel::LeanLightSampler;
+      if (leanLightSampler) {
+        shaders.addGeneralShader(serEnabled
+          ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_ser_wboit_leanls)
+          : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_wboit_leanls));
+      } else if (slimLevelKeepsPom(slimLevel)) {
         // rtx.integrateIndirect.slimKeepPom: the TraceRay raygen holds no slim feature besides POM, so the base one.
         shaders.addGeneralShader(serEnabled
           ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_RAYGEN_BIT_KHR, IntegrateIndirectSharcQueryShader, integrate_indirect_sharc_query_ser_wboit)
@@ -1607,7 +1848,9 @@ namespace dxvk {
       }
       shaders.addGeneralShader(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_MISS_BIT_KHR, IntegrateIndirectMissShader, integrate_indirect_sharc_query_miss_wboit));
       // The hit shader carries POM only while pomEnabled (POM on and rtx.displacement.enableIndirectHit), as for Full.
-      if (slimLevelKeepsPom(slimLevel) && pomEnabled) {
+      if (leanLightSampler) {
+        shaders.addHitGroup(GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_query_closesthit_wboit_leanls), nullptr, nullptr);
+      } else if (slimLevelKeepsPom(slimLevel) && pomEnabled) {
         shaders.addHitGroup(lean
           ? GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_query_closesthit_pom_wboit_lean)
           : GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, IntegrateIndirectClosestHitShader, integrate_indirect_sharc_query_closesthit_pom_wboit_slim), nullptr, nullptr);
@@ -1689,6 +1932,11 @@ namespace dxvk {
 
     RtxSharc& sharc = ctx->getCommonObjects()->metaSharc();
 
+    // NVIDIA routes Ray Query mode through the ray tracing pipelines (rayQueryUsesRaygen), SHARC included.
+    if (RtxOptions::renderPassIntegrateIndirectRaytraceMode() == RaytraceMode::RayQuery && !sharcUsesCompute()) {
+      logRayQueryRaygenOnce();
+    }
+
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_SHARED_MATERIAL_DATA0_INPUT, rtOutput.m_sharedMaterialData0.view, nullptr);
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_SHARED_MATERIAL_DATA1_INPUT, rtOutput.m_sharedMaterialData1.view, nullptr);
     sharc.bindResources(*ctx);
@@ -1716,18 +1964,27 @@ namespace dxvk {
       if (deferredFlush) {
         sharc.bindDeferredResources(*ctx);
       }
-      {
-        SlimLevel updateSlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled);
+      if (sharcUsesCompute()) {
+        SlimLevel updateSlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled, true);
+        updateSlimLevel = selectSharcVariantLevel(ctx, SlimPass::SharcUpdate, true, updateSlimLevel);
+        noteSlimLevel(SlimPass::SharcUpdate, updateSlimLevel);
+        const VkExtent3D workgroups = util::computeBlockCount(updateDims, VkExtent3D { 16, 8, 1 });
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getSharcUpdateComputeShader(depth4, wboitEnabled, deferredFlush, updateSlimLevel));
+        ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+      } else {
+        SlimLevel updateSlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled, false);
         // The variant table picks the level; the rule above still runs as the check.
-        updateSlimLevel = selectSharcVariantLevel(ctx, SlimPass::SharcUpdate, updateSlimLevel);
+        updateSlimLevel = selectSharcVariantLevel(ctx, SlimPass::SharcUpdate, false, updateSlimLevel);
         noteSlimLevel(SlimPass::SharcUpdate, updateSlimLevel);
         // The same update through TraceRay with SER, where the variants exist:
-        // the deferred flush is bound, a Full / Slim / Lean level (the POM-kept levels keep the inline update), and for Full no
-        // POM this frame (its hit shader has no POM, like the query hit while POM is off). Everything else: the RayQuery update.
+        // the deferred flush is bound, a Full / Slim / Lean / LeanLightSampler level (the POM-kept levels keep the inline update), and for Full no
+        // POM this frame, or rtx.integrateIndirect.sharcUpdateSerWithPom with indirect hits that ignore POM (its hit shader has
+        // no POM, like the query hit while POM is off). Everything else: the RayQuery update.
         const bool updateSer = deferredFlush &&
           sharcUpdateSerPossible(serEnabled, ommEnabled, wboitEnabled, includePortals) &&
-          (updateSlimLevel == SlimLevel::Slim || updateSlimLevel == SlimLevel::Lean ||
-           (updateSlimLevel == SlimLevel::Full && !ctx->getFrameFeatures().has(RtFrameFeatures::kScenePom)));
+          (updateSlimLevel == SlimLevel::Slim || updateSlimLevel == SlimLevel::Lean || updateSlimLevel == SlimLevel::LeanLightSampler ||
+           (updateSlimLevel == SlimLevel::Full && (!ctx->getFrameFeatures().has(RtFrameFeatures::kScenePom) ||
+             (sharcUpdateSerWithPom() && !RtxOptions::Displacement::enableIndirectHit()))));
         ctx->bindRaytracingPipelineShaders(updateSer
           ? getSharcUpdateSerPipelineShaders(depth4, ommEnabled, updateSlimLevel)
           : getSharcUpdatePipelineShaders(depth4, ommEnabled, wboitEnabled, updateSlimLevel, deferredFlush));
@@ -1757,9 +2014,19 @@ namespace dxvk {
       ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_SHARED_MATERIAL_DATA1_INPUT, rtOutput.m_sharedMaterialData1.view, nullptr);
       sharc.bindResources(*ctx);
 
-      SlimLevel querySlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled);
+      if (sharcUsesCompute()) {
+        SlimLevel querySlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled, true);
+        querySlimLevel = selectSharcVariantLevel(ctx, SlimPass::Integration, true, querySlimLevel);
+        noteSlimLevel(SlimPass::Integration, querySlimLevel);
+        const VkExtent3D workgroups = util::computeBlockCount(rayDims, VkExtent3D { 16, 8, 1 });
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getSharcQueryComputeShader(wboitEnabled, querySlimLevel));
+        ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
+        return;
+      }
+
+      SlimLevel querySlimLevel = selectSharcSlimLevel(ctx, rtOutput, ommEnabled, includePortals, wboitEnabled, false);
       // The variant table picks the level; the rule above still runs as the check.
-      querySlimLevel = selectSharcVariantLevel(ctx, SlimPass::Integration, querySlimLevel);
+      querySlimLevel = selectSharcVariantLevel(ctx, SlimPass::Integration, false, querySlimLevel);
       noteSlimLevel(SlimPass::Integration, querySlimLevel);
       ctx->bindRaytracingPipelineShaders(getSharcQueryPipelineShaders(serEnabled, ommEnabled, includePortals, pomEnabled, wboitEnabled, querySlimLevel));
       ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
@@ -1801,6 +2068,8 @@ namespace dxvk {
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_RAY_ORIGIN_DIRECTION_INPUT, rtOutput.m_indirectRayOriginDirection.view(Resources::AccessType::Read), nullptr);
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_ACTIVE_LOCAL_PIXEL_COORDS_INPUT, rtOutput.m_sparseRenderingActiveLocalPixelCoords.view, nullptr);
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_FIRST_HIT_PERCEPTUAL_ROUGHNESS_INPUT, rtOutput.m_indirectFirstHitPerceptualRoughness.view(Resources::AccessType::Read), nullptr);
+    // A null view while sparse rendering is off.
+    ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_SPARSE_ACTIVE_PIXEL_MASK_INPUT, rtOutput.m_sparseRenderingActivePixelMask.view, nullptr);
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_LAST_GBUFFER_INPUT, rtOutput.m_gbufferLast.view, nullptr);
     ctx->bindResourceView(INTEGRATE_INDIRECT_BINDING_PREV_WORLD_POSITION_INPUT, rtOutput.getPreviousPrimaryWorldPositionWorldTriangleNormal().view(Resources::AccessType::Read, rtOutput.getPreviousPrimaryWorldPositionWorldTriangleNormal().matchesWriteFrameIdx(frameIdx - 1)), nullptr);
 
@@ -1880,20 +2149,31 @@ namespace dxvk {
         dispatchSharc(ctx, rtOutput, rayDims, serEnabled, ommEnabled, includePortals, pomEnabled, wboitEnabled);
         return;
       }
-      // The non-SHARC slim levels (TraceRay only; Full for the other modes).
+      // The non-SHARC slim levels: TraceRay, and the Ray Query compute kernel without NRC; Full for the other modes.
       const bool traceRayMode = RtxOptions::renderPassIntegrateIndirectRaytraceMode() == RaytraceMode::TraceRay;
-      SlimLevel slimLevel = traceRayMode
-        ? selectNonSharcSlimLevel(ctx, rtOutput.m_raytraceArgs, false, ommEnabled, neeCacheEnabled, includePortals, wboitEnabled)
-        : SlimLevel::Full;
-      // The variant table picks the level; the rule above still runs as the check.
+      const bool computeMode = RtxOptions::renderPassIntegrateIndirectRaytraceMode() == RaytraceMode::RayQuery && !rayQueryUsesRaygen();
+      SlimLevel slimLevel = SlimLevel::Full;
+      // The variant table picks the level; the rule still runs as the check.
       if (traceRayMode) {
-        slimLevel = selectNonSharcVariantLevel(ctx, neeCacheEnabled, slimLevel);
+        slimLevel = selectNonSharcSlimLevel(ctx, rtOutput.m_raytraceArgs, false, ommEnabled, neeCacheEnabled, includePortals, wboitEnabled);
+        slimLevel = selectNonSharcVariantLevel(ctx, neeCacheEnabled, false, slimLevel);
+      } else if (computeMode && !nrcEnabled) {
+        slimLevel = selectNonSharcComputeSlimLevel(ctx->getFrameFeatures(), neeCacheEnabled, nrcEnabled, includePortals, wboitEnabled);
+        slimLevel = selectNonSharcVariantLevel(ctx, neeCacheEnabled, true, slimLevel);
       }
       noteSlimLevel(SlimPass::Integration, slimLevel);
 
       switch (RtxOptions::renderPassIntegrateIndirectRaytraceMode()) {
       case RaytraceMode::RayQuery:
-        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(neeCacheEnabled, nrcEnabled, wboitEnabled));
+        // NVIDIA traces the ray query kernel as a ray generation shader (rayQueryUsesRaygen); the compute
+        // dispatch of the same kernel faults the device there.
+        if (rayQueryUsesRaygen()) {
+          logRayQueryRaygenOnce();
+          ctx->bindRaytracingPipelineShaders(getPipelineShaders(true, serEnabled, ommEnabled, neeCacheEnabled, includePortals, pomEnabled, nrcEnabled, wboitEnabled));
+          ctx->traceRays(rayDims.width, rayDims.height, rayDims.depth);
+          break;
+        }
+        ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(neeCacheEnabled, nrcEnabled, wboitEnabled, slimLevel));
         ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
         break;
       case RaytraceMode::RayQueryRayGen:
@@ -1994,14 +2274,88 @@ namespace dxvk {
     dispatchNEE(ctx, AssemblyResources(rtOutput), assemblySlimLevel);
     ctx->recordGpuStageTiming("IndirectAssembly");
 
+    collectPtPerformanceCounters(ctx, rtOutput.m_raytraceArgs.ptPerformanceCounters != 0);
+
     logSlimLevels(ctx->getDevice()->getCurrentFrameId());
+  }
+
+  void DxvkPathtracerIntegrateIndirect::collectPtPerformanceCounters(RtxContext* ctx, const bool enabled) {
+    constexpr VkDeviceSize kOffset = VkDeviceSize(PT_PERFORMANCE_COUNTER_BASE) * sizeof(uint32_t);
+    constexpr VkDeviceSize kBytes = VkDeviceSize(PT_PERFORMANCE_COUNTER_SLOTS) * sizeof(uint32_t);
+
+    if (!enabled) {
+      m_ptPerformanceCountersCleared = false;
+      m_ptPerformanceCounterReadbackFrame.fill(UINT32_MAX);
+      m_ptPerformanceCounterRecent.fill(0.0);
+      return;
+    }
+
+    const Rc<DxvkBuffer> gpu = getLightSamplingStatsBuffer(ctx->getDevice().ptr());
+    if (gpu == nullptr || gpu->info().size < kOffset + kBytes) {
+      return;
+    }
+
+    // The words held whatever was counted before performance mode counted, so this frame's counts are discarded.
+    if (!m_ptPerformanceCountersCleared) {
+      ctx->clearBuffer(gpu, kOffset, kBytes, 0u);
+      m_ptPerformanceCountersCleared = true;
+      return;
+    }
+
+    const uint32_t frameId = ctx->getDevice()->getCurrentFrameId();
+    const uint32_t slot = frameId % kPtPerformanceCounterLatency;
+
+    if (m_ptPerformanceCounterReadback[slot] == nullptr) {
+      DxvkBufferCreateInfo info = {};
+      info.size = kBytes;
+      info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT;
+      info.access = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
+      m_ptPerformanceCounterReadback[slot] = device()->createBuffer(info, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                             DxvkMemoryStats::Category::RTXBuffer, "performance mode counters readback");
+      m_ptPerformanceCounterReadbackFrame[slot] = UINT32_MAX;
+    }
+
+    // The slot was written kPtPerformanceCounterLatency frames ago. A copy the GPU has not finished yet is left alone, and this
+    // frame's counts are dropped instead of waiting for it.
+    const Rc<DxvkBuffer>& readback = m_ptPerformanceCounterReadback[slot];
+    if (m_ptPerformanceCounterReadbackFrame[slot] != UINT32_MAX) {
+      if (readback->isInUse()) {
+        ctx->clearBuffer(gpu, kOffset, kBytes, 0u);
+        return;
+      }
+      const uint32_t* counters = static_cast<const uint32_t*>(readback->mapPtr(0));
+      if (counters != nullptr) {
+        for (uint32_t i = 0; i < PT_PERFORMANCE_COUNTER_SLOTS; i++) {
+          m_ptPerformanceCounterSum.counts[i] += counters[i];
+          m_ptPerformanceCounterRecent[i] = 0.9 * m_ptPerformanceCounterRecent[i] + double(counters[i]);
+        }
+        m_ptPerformanceCounterSum.frames++;
+        const uint64_t unresolvable = uint64_t(counters[PT_PERFORMANCE_COUNTER_MISS_REJECTED]) +
+                                      counters[PT_PERFORMANCE_COUNTER_MISS_TOO_CLOSE] + counters[PT_PERFORMANCE_COUNTER_MISS_FOOTPRINT];
+        ctx->getCommonObjects()->metaSharc().onPtPerformanceCounters(counters[PT_PERFORMANCE_COUNTER_CACHE_QUERIES],
+                                                              counters[PT_PERFORMANCE_COUNTER_CACHE_HITS], unresolvable,
+                                                              m_ptPerformanceCounterReadbackFrame[slot]);
+      }
+    }
+
+    ctx->copyBuffer(readback, 0, gpu, kOffset, kBytes);
+    ctx->emitMemoryBarrier(0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+    ctx->clearBuffer(gpu, kOffset, kBytes, 0u);
+    m_ptPerformanceCounterReadbackFrame[slot] = frameId;
+  }
+
+  DxvkPathtracerIntegrateIndirect::PtPerformanceCounters DxvkPathtracerIntegrateIndirect::takePtPerformanceCounters() {
+    PtPerformanceCounters sum = m_ptPerformanceCounterSum;
+    m_ptPerformanceCounterSum = {};
+    return sum;
   }
 
   void DxvkPathtracerIntegrateIndirect::dispatchNEE(RtxContext* ctx, const AssemblyResources& resources, const SlimLevel slimLevel) {
     // Sample triangles in the NEE cache and perform NEE
     // Construct restir input sample
-    const auto rayDims = resources.compositeOutputExtent;
-    VkExtent3D workgroups = util::computeBlockCount(rayDims, VkExtent3D { INTEGRATE_NEE_THREADS_DISPATCH_WIDTH, INTEGRATE_NEE_THREADS_DISPATCH_HEIGHT, 1 });
+    VkExtent3D workgroups = util::computeBlockCount(resources.compositeOutputExtent, VkExtent3D { INTEGRATE_NEE_THREADS_DISPATCH_WIDTH, INTEGRATE_NEE_THREADS_DISPATCH_HEIGHT, 1 });
     Rc<DxvkBuffer> primitiveIDPrefixSumBuffer = ctx->getSceneManager().getCurrentFramePrimitiveIDPrefixSumBuffer();
     NeuralRadianceCache& nrc = ctx->getCommonObjects()->metaNeuralRadianceCache();
     DxvkReSTIRGIRayQuery& reSTIRGI = ctx->getCommonObjects()->metaReSTIRGIRayQuery();
@@ -2410,7 +2764,13 @@ namespace dxvk {
     return shaders;
   }
 
-  Rc<DxvkShader> DxvkPathtracerIntegrateIndirect::getComputeShader(const bool useNeeCache, const bool nrcEnabled, const bool wboitEnabled) const {
+  Rc<DxvkShader> DxvkPathtracerIntegrateIndirect::getComputeShader(const bool useNeeCache, const bool nrcEnabled, const bool wboitEnabled,
+                                                                  const SlimLevel slimLevel) const {
+    // LeanLightSampler: the plain kernel without the NEE cache, with WBOIT (selectNonSharcComputeSlimLevel).
+    if (slimLevel == SlimLevel::LeanLightSampler) {
+      assert(!useNeeCache && !nrcEnabled && wboitEnabled);
+      return GET_WETNESS_SHADER_VARIANT(VK_SHADER_STAGE_COMPUTE_BIT, IntegrateIndirectRayGenShader, integrate_indirect_rayquery_wboit_lean);
+    }
     if (wboitEnabled) {
       if (nrcEnabled) {
         if (useNeeCache) {

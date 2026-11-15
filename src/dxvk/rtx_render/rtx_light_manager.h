@@ -141,6 +141,7 @@ public:
   void dynamicLightMatching();
 
   void prepareSceneData(Rc<DxvkContext> ctx, CameraManager const& cameraManager);
+  void endFrame();
 
   void addGameLight(frontend::FixedFunctionLight::Type type, const RtLight& light);
   RtLight* addLight(const RtLight& light, const RtLightAntiCullingType antiCullingType);
@@ -184,10 +185,24 @@ private:
   remixapi_LightHandle m_externalActiveDomeLight = nullptr;
   DomeLightArgs m_gpuDomeLightArgs;
 
-  // Pending external light mutations to be applied at the start of the frame
-  std::vector<remixapi_LightHandle> m_pendingExternalLightErases{};
-  std::vector<std::pair<remixapi_LightHandle, RtLight>> m_pendingExternalLightUpdates{};
-  std::unordered_set<remixapi_LightHandle> m_pendingExternalActiveLights{};
+  // Commands and payloads retain caller order until the frame's safe mutation point.
+  enum class ExternalLightMutationType {
+    AddAnalytic,
+    AddDome,
+    Remove,
+    Activate,
+    RegisterPersistent,
+    UnregisterPersistent,
+    AutoInstance
+  };
+  struct ExternalLightMutation {
+    ExternalLightMutationType type;
+    remixapi_LightHandle handle;
+    size_t payload = 0;
+  };
+  std::vector<ExternalLightMutation> m_pendingExternalLightMutations;
+  std::vector<RtLight> m_pendingExternalAnalyticLights;
+  std::vector<DomeLight> m_pendingExternalDomeLights;
   std::unordered_set<remixapi_LightHandle> m_persistentExternalLights{};
 
   Rc<DxvkBuffer> m_lightBuffer;

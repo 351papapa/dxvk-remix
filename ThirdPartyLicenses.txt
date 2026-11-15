@@ -5999,3 +5999,28 @@ freely, subject to the following restrictions:
   be misrepresented as being the original software.
 
 – This notice may not be removed or altered from any source distribution.
+
+NUMOS complete HAZE light-list shader variants
+Copyright 2026 Kim2091 (Sparkles). Licensed under Apache License 2.0.
+Remix Plus modifies generated copies of aerial_perspective_lights.slangh and
+the light-cull/froxel-lighting passes for complete grouped light lists and
+conservative spotlight rejection. The original copyright and licence notices
+remain in the generated files. See submodules/numos/LICENSE and NOTICE.
+
+NUMOS night-sky appearance adjustment
+Copyright 2026 Kim2091 (Sparkles). Licensed under Apache License 2.0.
+Remix Plus adapts the catalogue-star sampling from NUMOS night_sky.slangh to
+adjust star magnitude and radiance in its optional camera-sky composite.
+See src/dxvk/shaders/rtx/pass/composite/numos_night_appearance.slangh and
+submodules/numos/LICENSE and NOTICE.
+
+NUMOS cloud scene-visibility shader variants
+Copyright 2026 Kim2091 (Sparkles). Licensed under Apache License 2.0.
+Remix Plus modifies generated copies of cloud_march_common.slangh for scene
+visibility on direct sunlight and finite source-path extinction of cloud diffraction.
+The sources retain their original notices. See submodules/numos/LICENSE,
+submodules/numos/NOTICE and submodules/numos/THIRD_PARTY_NOTICES.md.
+
+Remix Plus procedural Milky Way
+The camera-sky variant adapts the original Remix Plus band by Kim2091 and
+retains the NVIDIA (2024) MIT notice in legacy_milky_way.slangh. See LICENSE-MIT.

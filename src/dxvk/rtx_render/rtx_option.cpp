@@ -21,7 +21,22 @@
 */
 #include "rtx_options.h"
 
+#include <string_view>
+
 namespace dxvk {
+  std::atomic<uint64_t> g_rtxD3D9OptionGeneration { 0 };
+
+  static bool isPerFrameSkyOption(std::string_view category, std::string_view name) {
+    // Sky shading consumes these values every frame, after draw translation.
+    if (category == "rtx.atmosphere")
+      return name == "sunElevation" || name == "sunRotation";
+
+    if (category == "rtx.atmosphere.moon0")
+      return name == "enabled" || name == "elevation" || name == "rotation" || name == "phase";
+
+    return category == "rtx" && name == "skyBrightness";
+  }
+
   void fillHashVector(const std::vector<std::string>& rawInput, std::vector<XXH64_hash_t>& hashVectorOutput) {
     for (auto&& hashStr : rawInput) {
       const XXH64_hash_t h = std::stoull(hashStr, nullptr, 16);
@@ -1087,8 +1102,11 @@ namespace dxvk {
       // Copy to m_resolvedValue
       copyValue(optionValue.data, value);
       if (&value == &m_resolvedValue) {
-        // rtx.textureCategoryCache: derived caches rebuild on the next lookup.
         g_rtxOptionResolveGeneration.fetch_add(1, std::memory_order_release);
+        if ((getFlags() & RtxOptionFlags::InvalidatesDrawcallTranslation) != 0
+            || !isPerFrameSkyOption(m_category, m_name)) {
+          g_rtxD3D9OptionGeneration.fetch_add(1, std::memory_order_release);
+        }
       }
     }
     return valueHasChanged;

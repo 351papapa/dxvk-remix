@@ -26,6 +26,7 @@
 #include "rtx_context.h"
 #include <remix/remix_local_starbursts.h>
 #include "rtx_postFx.h"
+#include "../../util/util_env.h"
 #include "dxvk_device.h"
 #include "dxvk_scoped_annotation.h"
 #include "rtx_render/rtx_shader_manager.h"
@@ -246,6 +247,7 @@ namespace dxvk {
   DxvkPostFx::DxvkPostFx(DxvkDevice* device)
   : m_vkd(device->vkd())
   {
+    m_screenLensDropTimings = env::getEnvVar("RTX_SCREEN_LENS_DROPS_TIMINGS") == "1";
   }
 
   DxvkPostFx::~DxvkPostFx()
@@ -359,6 +361,13 @@ namespace dxvk {
 
   void DxvkPostFx::showLensRainImguiSettings() {
     ImGui::TextWrapped("Each drop has an independent position, size, lifetime and sliding response. Player or vehicle speed drives sliding when the game provides it. Otherwise camera motion drives sliding. Force Amount overrides weather. Respect Cullzones / Interiors fades drops in sheltered areas identified by the game; it does not detect arbitrary roofs or water.");
+    ImGui::BeginDisabled(!enable());
+    RemixGui::Checkbox("Game Water Droplets", &gameWaterDropsEnableObject());
+    RemixGui::Checkbox("Game Blood Droplets", &gameBloodDropsEnableObject());
+    RemixGui::DragFloat("Game Drop Size", &gameDropSizeScaleObject(), 0.01f, 0.25f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    RemixGui::DragFloat("Blood Absorption", &bloodAbsorptionObject(), 0.01f, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::TextWrapped("Game droplets retain native triggers and lifetimes and remain available in dry weather. A compatible game bridge is required. Rain controls below affect weather droplets.");
+    ImGui::EndDisabled();
     ImGui::BeginDisabled(!enable() || !lensRainEnable());
     RemixGui::DragFloat("Force Amount (-1 = weather)", &forceAmountObject(), 0.01f, -1.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     RemixGui::Checkbox("Respect Cullzones / Interiors", &respectShelterObject());
@@ -377,11 +386,55 @@ namespace dxvk {
     ImGui::EndDisabled();
   }
 
-  void DxvkPostFx::dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput) {
-    const uint64_t waterHash = parseWaterMediumHash(WaterSystem::cameraMediumMaterialHash());
-    const bool cameraInWater = waterHash != 0
+  uint64_t DxvkPostFx::screenLensWaterMediumHash() {
+    const auto& setting = WaterSystem::cameraMediumMaterialHash();
+    if (setting != m_screenLensWaterMediumSetting) {
+      m_screenLensWaterMediumSetting = setting;
+      m_screenLensWaterMediumHash = parseWaterMediumHash(setting);
+    }
+    return m_screenLensWaterMediumHash;
+  }
+
+  void DxvkPostFx::recordScreenLensCameraMedium(Rc<RtxContext> ctx, bool resolved) {
+    // prepareSceneData returns before resolving the medium when no instances are active.
+    resolved = resolved && ctx->getSceneManager().getInstanceManager().getActiveCount() != 0;
+    m_screenLensMediumFrame = ctx->getDevice()->getCurrentFrameId();
+    m_screenLensMediumResolved = resolved;
+    const uint64_t waterHash = screenLensWaterMediumHash();
+    m_screenLensMediumInWater = resolved && waterHash != 0
       && waterHash == ctx->getSceneManager().getStartInMediumMaterialSourceHash();
-    if (!enable() || !lensRainEnable() || cameraInWater) {
+  }
+
+  bool DxvkPostFx::screenLensCameraInWater(Rc<RtxContext> ctx) {
+    const uint32_t frame = ctx->getDevice()->getCurrentFrameId();
+    if (m_screenLensMediumResolved && m_screenLensMediumFrame == frame) {
+      return m_screenLensMediumInWater;
+    }
+    // No scene preparation this frame: use the current typed external-medium request,
+    // with the exact same cache-index validation and source precedence as prepareSceneData.
+    // This is not a previous-frame resolved decision or an altitude-based water guess.
+    const uint64_t waterHash = screenLensWaterMediumHash();
+    return waterHash != 0
+      && waterHash == ctx->getSceneManager().getActiveExternalStartInMediumMaterialSourceHash();
+  }
+
+  void DxvkPostFx::dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput) {
+    const bool cameraInWater = screenLensCameraInWater(ctx);
+    if (cameraInWater) {
+      // Intentional underwater suppression applies to every lens-drop kind. Resolve this
+      // accepted frame now so a late-present fallback cannot bring its droplets back.
+      m_screenLensDrops.consume();
+      m_lensRainInitialized = false;
+      m_lensRainStateBuffer = nullptr;
+      m_lensRainDropBuffer = nullptr;
+      m_lensRainTileBuffer = nullptr;
+      m_screenLensLateSource.reset();
+      m_screenLensLateOutput.reset();
+      return;
+    }
+    const bool gameDropsEnabled = m_screenLensDrops.available(ctx->getDevice()->getCurrentFrameId(), ctx->getSceneManager().clearEpoch());
+    const bool weatherEnabled = enable() && lensRainEnable() && !cameraInWater;
+    if (!weatherEnabled && !gameDropsEnabled) {
       m_lensRainInitialized = false;
       m_lensRainStateBuffer = nullptr;
       m_lensRainDropBuffer = nullptr;
@@ -416,7 +469,8 @@ namespace dxvk {
         && std::strtof(precipitationEnable.c_str(), nullptr) <= 0.0f;
       if (interior || ctx->isInsideNoRainZone(camera.getPosition())) { amount = 0.0f; }
     }
-    amount = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 0.0f;
+    amount = weatherEnabled && std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 0.0f;
+    if (!weatherEnabled) { m_lensRainAmount = 0.0f; }
     const float fadeSeconds = std::clamp(amount < m_lensRainAmount ? drySeconds() : wetSeconds(), 0.1f, 10.0f);
     m_lensRainAmount += (amount - m_lensRainAmount) * (1.0f - std::exp(-3.0f * dt / fadeSeconds));
 
@@ -479,12 +533,19 @@ namespace dxvk {
     const Vector3 flowVelocity(std::clamp(m_lensRainVelocity.x * response, -1.5f, 1.5f),
       std::clamp(m_lensRainVelocity.y * response, -1.5f, 1.5f),
       std::clamp(m_lensRainVelocity.z * response, 0.0f, 1.5f));
+    std::vector<LensRainDrop> gameDrops;
+    if (gameDropsEnabled) {
+      m_screenLensDrops.consume();
+      const auto displayExtent = rtOutput.m_finalOutput.resource(Resources::AccessType::Read).image->info().extent;
+      const float displayAspect = static_cast<float>(displayExtent.width) / displayExtent.height;
+      gameDrops = screenLensDropUploads(displayAspect);
+    }
     if (m_lensRainAmount <= 0.001f) {
       if (amount <= 0.001f) {
         m_lensRainAmount = 0.0f;
         m_lensRainDropCount = 0;
       }
-      return;
+      if (gameDrops.empty()) { return; }
     }
     const bool allowSpawning = amount > 0.001f;
     amount = m_lensRainAmount;
@@ -508,31 +569,47 @@ namespace dxvk {
     args.dt = dt;
     args.aspect = aspect;
     args.previousAspect = m_lensRainAspect;
+    args.externalCount = static_cast<uint32_t>(gameDrops.size());
+    // Grow once to full external capacity; fluctuating native counts never reallocate a buffer.
+    args.tileDropCapacity = args.externalCount ? LENS_RAIN_TOTAL_DROPS : LENS_RAIN_MAX_DROPS;
     args.density = std::clamp(density(), 5.0f, 40.0f);
     args.sizeScale = std::clamp(sizeScale(), 0.5f, 3.0f);
     args.slideSpeed = std::clamp(slideSpeed(), 0.0f, 3.0f);
     const int countOverride = std::clamp(dropCount(), 0, LENS_RAIN_MAX_DROPS);
-    args.dropCount = countOverride > 0 ? countOverride
-      : static_cast<uint32_t>(std::clamp(args.density * args.density * aspect * 1.2f, 32.0f, 1024.0f));
+    args.dropCount = m_lensRainAmount > 0.001f ? (countOverride > 0 ? countOverride
+      : static_cast<uint32_t>(std::clamp(args.density * args.density * aspect * 1.2f, 32.0f, 1024.0f))) : 0;
     args.previousCount = m_lensRainDropCount;
     args.allowSpawning = allowSpawning;
     m_lensRainDropCount = args.dropCount;
     m_lensRainAspect = aspect;
+    dispatchLensRainImage(ctx, color,
+      rtOutput.m_postFxIntermediateTexture.resource(Resources::AccessType::Write), args, gameDrops);
+    ctx->copyImage(color.image, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 },
+      rtOutput.m_postFxIntermediateTexture.image(Resources::AccessType::Read),
+      { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, extent);
+  }
+
+  void DxvkPostFx::dispatchLensRainImage(Rc<RtxContext> ctx, const Resources::Resource& source,
+    const Resources::Resource& destination, const LensRainArgs& args, const std::vector<LensRainDrop>& gameDrops) {
     const uint32_t tileTotal = args.tileCount.x * args.tileCount.y;
     const auto allocate = [&](Rc<DxvkBuffer>& buffer, size_t size, const char* name) {
       if (buffer == nullptr || buffer->info().size < size) {
         DxvkBufferCreateInfo info;
         info.size = align(size, size_t(256));
-        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        info.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-        info.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        info.stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        info.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
         buffer = ctx->getDevice()->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
           DxvkMemoryStats::Category::RTXBuffer, name);
       }
     };
     allocate(m_lensRainStateBuffer, LENS_RAIN_MAX_DROPS * sizeof(LensRainState), "Lens rain state");
-    allocate(m_lensRainDropBuffer, LENS_RAIN_MAX_DROPS * sizeof(LensRainDrop), "Lens rain drops");
-    allocate(m_lensRainTileBuffer, tileTotal * (2 + LENS_RAIN_MAX_DROPS) * sizeof(uint32_t), "Lens rain tile lists");
+    allocate(m_lensRainDropBuffer, args.tileDropCapacity * sizeof(LensRainDrop), "Lens rain drops");
+    allocate(m_lensRainTileBuffer, tileTotal * (2 + args.tileDropCapacity) * sizeof(uint32_t), "Lens rain tile lists");
+    if (!gameDrops.empty()) {
+      ctx->updateBuffer(m_lensRainDropBuffer, LENS_RAIN_MAX_DROPS * sizeof(LensRainDrop),
+        gameDrops.size() * sizeof(LensRainDrop), gameDrops.data());
+    }
     ctx->bindResourceBuffer(LENS_RAIN_DROPS, DxvkBufferSlice(m_lensRainDropBuffer));
     ctx->bindResourceBuffer(LENS_RAIN_TILES, DxvkBufferSlice(m_lensRainTileBuffer));
     ctx->bindResourceBuffer(LENS_RAIN_STATES, DxvkBufferSlice(m_lensRainStateBuffer));
@@ -541,16 +618,13 @@ namespace dxvk {
     ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainTilesShader::getShader());
     ctx->dispatch((tileTotal + 63) / 64, 1, 1);
     ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainUpdateShader::getShader());
-    ctx->dispatch((args.dropCount + 63) / 64, 1, 1);
-    ctx->bindResourceView(LENS_RAIN_INPUT, color.view, nullptr);
+    ctx->dispatch((std::max(args.dropCount, args.externalCount) + 63) / 64, 1, 1);
+    ctx->bindResourceView(LENS_RAIN_INPUT, source.view, nullptr);
     ctx->bindResourceSampler(LENS_RAIN_INPUT, ctx->getResourceManager().getSampler(
       VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE));
-    ctx->bindResourceView(LENS_RAIN_OUTPUT, rtOutput.m_postFxIntermediateTexture.view(Resources::AccessType::Write), nullptr);
+    ctx->bindResourceView(LENS_RAIN_OUTPUT, destination.view, nullptr);
     ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, LensRainShader::getShader());
-    ctx->dispatch((extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-    ctx->copyImage(color.image, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 },
-      rtOutput.m_postFxIntermediateTexture.image(Resources::AccessType::Read),
-      { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, extent);
+    ctx->dispatch((args.imageSize.x + 7) / 8, (args.imageSize.y + 7) / 8, 1);
   }
 
   void DxvkPostFx::showLensEffectsImguiSettings() {

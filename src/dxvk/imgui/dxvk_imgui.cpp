@@ -20,9 +20,12 @@
 * DEALINGS IN THE SOFTWARE.
 */
 
+#include <array>
 #include <cassert>
+#include <cstdio>
 #include <ctime>
 #include <tuple>
+#include <unordered_set>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -104,6 +107,7 @@
 #include "rtx_render/rtx_numos_ui.h"
 #include "rtx_render/rtx_sky_ui.h"
 #include "../rtx_render/rtx_sharc.h"
+#include "../rtx_render/rtx_pt_performance.h"
 #include "../dxvk_instance.h"
 
 
@@ -256,6 +260,15 @@ namespace dxvk {
         {RenderPassIntegrateIndirectRaytraceMode::RayQuery, "RayQuery (CS)"},
         {RenderPassIntegrateIndirectRaytraceMode::RayQueryRayGen, "RayQuery (RGS)"},
         {RenderPassIntegrateIndirectRaytraceMode::TraceRay, "TraceRay (RGS)"}
+    } }
+  };
+
+  RemixGui::ComboWithKey<PtPerformanceFirstHit> ptPerformanceFirstHitCombo {
+    "First Hit",
+    RemixGui::ComboWithKey<PtPerformanceFirstHit>::ComboEntries { {
+        {PtPerformanceFirstHit::Trace, "Trace"},
+        {PtPerformanceFirstHit::Raster, "Raster"},
+        {PtPerformanceFirstHit::Auto, "Auto"}
     } }
   };
 
@@ -2155,9 +2168,9 @@ namespace dxvk {
         } else {
           resourceAliasingQueryText += "NRD, ";
         }
-        if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache) {
+        if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache) {
           resourceAliasingQueryText += "NRC)";
-        } else if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::ReSTIRGI) {
+        } else if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::ReSTIRGI) {
           resourceAliasingQueryText += "ReSTIR-GI)";
         } else {
           resourceAliasingQueryText += "ImportanceSampled)";
@@ -3401,6 +3414,14 @@ namespace dxvk {
         RemixGui::DragFloat("Maximum slope degrees", &GrassSystem::maxSlopeDegreesObject(), 0.1f, 0.0f, 80.0f);
         RemixGui::DragFloat("Boundary fade distance", &GrassSystem::fadeDistanceObject(), 0.1f, 0.01f, 200.0f);
         RemixGui::DragFloat("Root offset", &GrassSystem::groundOffsetObject(), 0.001f, -1.0f, 1.0f);
+        RemixGui::DragFloat("Wind Reference", &GrassSystem::windReferenceObject(), 0.001f, 0.001f, 2.0f);
+        RemixGui::SliderFloat("Wind Max Radians", &GrassSystem::windMaxRadiansObject(), 0.0f, 1.45f);
+        RemixGui::SliderFloat("Wind Strength Multiplier", &GrassSystem::windStrengthMultiplierObject(), 0.0f, 10.0f);
+        RemixGui::SliderFloat("Gust Strength", &GrassSystem::gustStrengthObject(), 0.0f, 2.0f);
+        RemixGui::DragFloat("Gust Frequency (Hz)", &GrassSystem::gustFrequencyObject(), 0.001f, 0.0f, 10.0f);
+        RemixGui::DragFloat("Sway Frequency (Hz)", &GrassSystem::swayFrequencyObject(), 0.001f, 0.0f, 10.0f);
+        RemixGui::DragFloat("Contact Radius", &GrassSystem::contactRadiusObject(), 0.01f, 0.01f, 4.0f);
+        RemixGui::SliderFloat("Contact Max Radians", &GrassSystem::contactMaxRadiansObject(), 0.0f, 1.45f);
         RemixGui::Checkbox("Keep inside surface", &GrassSystem::keepInsideSurfaceObject());
         RemixGui::SliderInt("Instance budget", &GrassSystem::maxInstancesObject(), 1, 512);
         RemixGui::InputInt("Reload version", &GrassSystem::reloadVersionObject());
@@ -3413,13 +3434,13 @@ namespace dxvk {
       if (RemixGui::CollapsingHeader("Window Lighting", collapsingHeaderClosedFlags)) {
         ImGui::Indent();
         RemixGui::Checkbox("Enable window lighting", &WindowLightOptions::enabledObject());
-        RemixGui::InputText("Window texture names", &WindowLightOptions::textureNamesObject());
+        drawNameRules("Window texture names", WindowLightOptions::textureNamesObject(), m_windowTextureEditor);
         RemixGui::SliderFloat("Lit share at night start", &WindowLightOptions::litRatioObject(), 0.0f, 1.0f);
         RemixGui::SliderFloat("Night start hour", &WindowLightOptions::startHourObject(), 0.0f, 24.0f);
         RemixGui::SliderFloat("Night end hour", &WindowLightOptions::endHourObject(), 0.0f, 24.0f);
         RemixGui::InputInt("Night seed", &WindowLightOptions::nightSeedObject());
         RemixGui::Checkbox("Enable street lamps", &WindowLightOptions::streetLampsEnabledObject());
-        RemixGui::InputText("Street lamp texture names", &WindowLightOptions::streetLampTextureNamesObject());
+        drawNameRules("Street lamp texture names", WindowLightOptions::streetLampTextureNamesObject(), m_streetLampTextureEditor);
         ImGui::Unindent();
       }
 
@@ -3427,6 +3448,8 @@ namespace dxvk {
         ImGui::Indent();
         RemixGui::Checkbox("Enabled", &WetnessOptions::enabledObject());
         RemixGui::Checkbox("Respect no rain zones", &WetnessOptions::respectNoRainZonesObject());
+        RemixGui::DragFloat("No-rain edge feather (m)", &WetnessOptions::noRainZoneFeatherMetersObject(), 0.05f, 0.0f, 100.0f);
+        RemixGui::DragFloat("No-rain corner radius (m)", &WetnessOptions::noRainZoneCornerRadiusMetersObject(), 0.05f, 0.0f, 100.0f);
         RemixGui::Checkbox("Non road roughness only", &WetnessOptions::nonRoadRoughnessOnlyObject());
         RemixGui::Checkbox("Road only", &WetnessOptions::roadOnlyObject());
         RemixGui::InputText("Force enable dff", &WetnessOptions::forceEnableDffObject());
@@ -4232,6 +4255,12 @@ namespace dxvk {
     if (RemixGui::CollapsingHeader("Shader Variants", collapsingHeaderClosedFlags)) {
       ImGui::Indent();
       RemixGui::Checkbox("Slim Indirect Variants Keep POM", &DxvkPathtracerIntegrateIndirect::slimKeepPomObject());
+      RemixGui::Checkbox("SER SHARC Update on Displacement Frames", &DxvkPathtracerIntegrateIndirect::sharcUpdateSerWithPomObject());
+      RemixGui::Checkbox("Indirect Ray Query Mode Runs the Compute Kernel on NVIDIA", &DxvkPathtracerIntegrateIndirect::rayQueryComputeKernelObject());
+      RemixGui::SetTooltipToLastWidgetOnHover(
+        "rtx.integrateIndirect.rayQueryComputeKernel. Off, Ray Query mode traces the ray query kernel as a ray generation shader\n"
+        "on NVIDIA GPUs, where the compute dispatch of this kernel faults the device, and the SHARC update and query run through\n"
+        "their ray tracing pipelines there. Other GPUs always run the compute kernels.");
       showVariantTablesImguiSettings();
       showFrameFeaturesImguiSettings();
       RemixGui::Checkbox("Log Pipeline Shader Stats (restart required)", &RtxPipelineStats::logPipelineStatsObject());
@@ -4515,6 +4544,143 @@ namespace dxvk {
     ImGui::Unindent();
   }
 
+  void ImGUI::drawNameRules(const char* label, RtxOption<std::string>& option, NameRuleEditor& editor) {
+    const auto parse = [](const std::string& text) {
+      std::vector<std::string> entries;
+      size_t begin = 0;
+      while (begin < text.size()) {
+        const size_t end = text.find_first_of(";\r\n", begin);
+        const auto entry = text.substr(begin, end == std::string::npos ? end : end - begin);
+        const size_t first = entry.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+          entries.push_back(entry.substr(first, entry.find_last_not_of(" \t") - first + 1));
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        begin = end + 1;
+      }
+      return entries;
+    };
+    const auto commit = [&](const std::vector<std::string>& entries) {
+      std::string serialized;
+      std::unordered_set<std::string> seen;
+      for (const auto& entry : entries) {
+        auto key = entry;
+        for (char& c : key) {
+          if (c >= 'A' && c <= 'Z') {
+            c += 'a' - 'A';
+          }
+        }
+        if (!seen.insert(key).second) {
+          continue;
+        }
+        if (!serialized.empty()) {
+          serialized += ';';
+        }
+        serialized += entry;
+      }
+      RemixGui::CheckRtxOptionPopups(&option);
+      option.setDeferred(serialized);
+    };
+    auto entries = parse(option.get());
+    ImGui::PushID(label);
+    {
+      RemixGui::RtxOptionUxWrapper wrapper(&option);
+      ImGui::TextUnformatted(label);
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputTextWithHint("##add", "Type a name fragment, then press Enter", editor.m_input.data(),
+        editor.m_input.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+      const auto added = parse(editor.m_input.data());
+      if (!added.empty()) {
+        entries.insert(entries.end(), added.begin(), added.end());
+        commit(entries);
+        editor.m_input.fill(0);
+        ImGui::ClearActiveID();
+        ImGui::SetKeyboardFocusHere(-1);
+      }
+    }
+
+    const auto& style = ImGui::GetStyle();
+    const float rowWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float rightEdge = ImGui::GetCursorScreenPos().x + rowWidth;
+    bool openEditor = false;
+    if (entries.empty()) {
+      ImGui::TextDisabled("No name rules");
+    }
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const auto& entry = entries[i];
+      const float textWidth = ImGui::CalcTextSize(entry.data(), entry.data() + entry.size()).x + style.FramePadding.x * 2.0f;
+      const float width = std::min(std::max(1.0f, rowWidth), textWidth);
+      if (i && ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= rightEdge) {
+        ImGui::SameLine();
+      }
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::BeginGroup();
+      ImGui::Button("##chip", ImVec2(width, ImGui::GetFrameHeight()));
+      const ImVec2 lower = ImGui::GetItemRectMin();
+      const ImVec2 upper = ImGui::GetItemRectMax();
+      ImGui::RenderTextClippedEx(ImGui::GetWindowDrawList(), ImVec2(lower.x + style.FramePadding.x, lower.y + style.FramePadding.y),
+        ImVec2(upper.x - style.FramePadding.x, upper.y - style.FramePadding.y),
+        entry.data(), entry.data() + entry.size(), nullptr, ImVec2(0.0f, 0.0f));
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s\nDouble-click to edit or remove", entry.c_str());
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          editor.m_selected = i;
+          editor.m_original = option.get();
+          editor.m_edit.assign(std::max(size_t(1024), entry.size() + 1), 0);
+          std::memcpy(editor.m_edit.data(), entry.data(), entry.size());
+          editor.m_focusEdit = true;
+          openEditor = true;
+        }
+      }
+      ImGui::EndGroup();
+      ImGui::PopID();
+    }
+    if (openEditor) {
+      ImGui::OpenPopup("Edit name rule");
+    }
+    if (ImGui::BeginPopup("Edit name rule")) {
+      // A layer reset or config reload must not redirect an edit to a different rule.
+      if (editor.m_original != option.get() || editor.m_selected >= entries.size() || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+      } else {
+        ImGui::TextUnformatted("Edit name rule");
+        if (editor.m_focusEdit) {
+          ImGui::SetKeyboardFocusHere();
+          editor.m_focusEdit = false;
+        }
+        const bool enter = ImGui::InputText("##edit", editor.m_edit.data(), editor.m_edit.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+        const auto edited = parse(editor.m_edit.data());
+        const bool valid = edited.size() == 1;
+        if (!valid) {
+          ImGui::TextDisabled("Enter one non-empty name fragment.");
+        }
+        ImGui::BeginDisabled(!valid);
+        const bool save = ImGui::Button("Save");
+        ImGui::EndDisabled();
+        if (valid && (save || enter)) {
+          entries[editor.m_selected] = edited.front();
+          commit(entries);
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+          entries.erase(entries.begin() + editor.m_selected);
+          commit(entries);
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::PopID();
+  }
+
   void ImGUI::showRenderingSettings(const Rc<DxvkContext>& ctx) {
     ImGui::PushItemWidth(largeUiMode() ? m_largeWindowWidgetWidth : m_regularWindowWidgetWidth);
     auto common = ctx->getCommonObjects();
@@ -4531,6 +4697,106 @@ namespace dxvk {
       auto& dlss = common->metaDLSS();
       auto& rayReconstruction = common->metaRayReconstruction();
       ImGui::Indent();
+
+      RemixGui::Checkbox("Path Tracing: Performance", &PtPerformance::enableObject());
+      ImGui::Indent();
+      ImGui::BeginDisabled(!PtPerformance::active());
+      ImGui::TextSeparator("Sampling");
+      // Sparse rendering applies while DLSS Ray Reconstruction is on.
+      RemixGui::DragFloat("Sparse Sampling Rate##ptPerformance", &PtPerformance::samplingRateObject(), 0.005f, 1.0f / 16.0f, 1.0f, "%.3f");
+      RemixGui::DragFloat("Sparse Resolution Scaling Exponent##ptPerformance", &PtPerformance::samplingRateResolutionExponentObject(), 0.01f, 0.0f, 1.0f, "%.2f");
+
+      ImGui::TextSeparator("First Hit");
+      ptPerformanceFirstHitCombo.getKey(&PtPerformance::firstHitObject());
+      if (PtPerformance::active() && PtPerformance::firstHit() == PtPerformanceFirstHit::Auto) {
+        const RtxRasterFirstHit& rasterFirstHit = common->metaRasterFirstHit();
+        auto msText = [](float ms) {
+          std::array<char, 32> text = {};
+          if (ms < 0.0f) {
+            std::snprintf(text.data(), text.size(), "-");
+          } else {
+            std::snprintf(text.data(), text.size(), "%.2f ms", ms);
+          }
+          return text;
+        };
+        ImGui::Text("Auto: %s%s", PtPerformance::firstHitRaster() ? "Raster" : "Trace", rasterFirstHit.autoMeasuring() ? " (measuring)" : "");
+        ImGui::Text("Raster %s, Trace %s", msText(rasterFirstHit.autoRasterMs()).data(), msText(rasterFirstHit.autoTraceMs()).data());
+      }
+      ImGui::BeginDisabled(PtPerformance::firstHit() == PtPerformanceFirstHit::Trace);
+      RemixGui::Checkbox("Raster Alpha Test", &PtPerformance::rasterAlphaTestObject());
+      RemixGui::Checkbox("Raster Blended Surfaces as Cutouts", &PtPerformance::rasterBlendedAsCutoutObject());
+      RemixGui::Checkbox("Raster Occlusion Culling", &PtPerformance::rasterOcclusionCullingObject());
+      RemixGui::DragInt("Raster Log Interval (frames)", &PtPerformance::rasterLogIntervalFramesObject(), 1.0f, 0, 3600);
+      ImGui::EndDisabled();
+
+      ImGui::TextSeparator("Indirect");
+      RemixGui::DragInt("Indirect Bounces##ptPerformance", &PtPerformance::indirectBouncesObject(), 0.05f, 1, 2);
+      RemixGui::Checkbox("Extra Bounce on Cache Miss", &PtPerformance::cacheMissExtraBounceObject());
+      if (PtPerformance::active()) {
+        const char* missingFeature = RtxSharc::missingFeature(m_device);
+        if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::Sharc) {
+          ImGui::TextUnformatted("Indirect light: SHARC radiance cache");
+        } else if (missingFeature != nullptr) {
+          ImGui::TextWrapped("Indirect light: preset mode, the device lacks %s", missingFeature);
+        } else {
+          ImGui::TextUnformatted("Indirect light: preset mode");
+        }
+      }
+      RemixGui::Checkbox("Indirect Rays Treat Alpha-Tested as Opaque", &PtPerformance::indirectAlphaAsOpaqueObject());
+      {
+        const bool nvidiaGpu = m_device->adapter()->deviceProperties().vendorID == static_cast<uint32_t>(DxvkGpuVendor::Nvidia);
+        ImGui::BeginDisabled(PtPerformance::indirectAlphaAsOpaque() || nvidiaGpu);
+        RemixGui::DragFloat("Indirect Alpha-Tested Opaque Beyond (m)", &PtPerformance::indirectAlphaOpaqueDistanceObject(), 0.1f, 0.0f, 100000.0f, "%.1f");
+        ImGui::EndDisabled();
+      }
+      RemixGui::Checkbox("Indirect Simple Shading", &PtPerformance::indirectSimpleShadingObject());
+      ImGui::BeginDisabled(!PtPerformance::indirectSimpleShading());
+      RemixGui::DragFloat("Indirect Mip Bias", &PtPerformance::secondaryMipBiasObject(), 0.1f, 0.0f, 6.0f, "%.1f");
+      ImGui::EndDisabled();
+      RemixGui::DragFloat("Indirect Ray Max Distance (m)", &PtPerformance::indirectRayMaxDistanceObject(), 1.0f, 0.0f, 100000.0f, "%.0f");
+
+      ImGui::TextSeparator("Direct");
+      RemixGui::DragFloat("Local Shadow Cull Ratio##ptPerformance", &PtPerformance::localShadowCullRatioObject(), 0.001f, 0.0f, 1.0f, "%.3f");
+      RemixGui::DragInt("Light BVH Candidates##ptPerformance", &PtPerformance::lightCandidatesObject(), 0.05f, 1, 32);
+      RemixGui::Checkbox("Reduced Direct Lighting", &PtPerformance::reducedDirectLightObject());
+
+      ImGui::TextSeparator("Volumetrics and Denoising");
+      RemixGui::Checkbox("Reduced Volumetrics", &PtPerformance::reducedVolumetricsObject());
+      RemixGui::Checkbox("Combined Denoiser", &PtPerformance::combinedDenoiserObject());
+      RemixGui::Checkbox("Reduced Denoiser", &PtPerformance::reducedDenoiserObject());
+
+      ImGui::TextSeparator("Cache");
+      RemixGui::Checkbox("Adaptive Cache Update Interval", &PtPerformance::cacheUpdateAdaptiveObject());
+      ImGui::BeginDisabled(!PtPerformance::cacheUpdateAdaptive());
+      RemixGui::DragFloat("Relax Above Resolvable Hit Ratio", &PtPerformance::cacheUpdateRelaxHitRatioObject(), 0.005f, 0.5f, 1.0f, "%.3f");
+      ImGui::EndDisabled();
+      ImGui::BeginDisabled(PtPerformance::cacheUpdateAdaptive());
+      RemixGui::DragInt("Cache Update Interval (frames)##ptPerformance", &PtPerformance::cacheUpdateIntervalObject(), 0.05f, 1, 4);
+      ImGui::EndDisabled();
+      if (PtPerformance::active()) {
+        const RtxSharc& sharc = common->metaSharc();
+        const float hitRatio = sharc.getPtPerformanceResolvableHitRatio();
+        if (hitRatio < 0.0f) {
+          ImGui::Text("Cache update interval %u, resolvable hit ratio -", sharc.getUpdateInterval());
+        } else {
+          ImGui::Text("Cache update interval %u, resolvable hit ratio %.3f", sharc.getUpdateInterval(), hitRatio);
+        }
+        RemixGui::SetTooltipToLastWidgetOnHover("The adaptive interval compares this ratio with the setting above: cache hits over the first "
+                                                "indirect hits, without the rejected, too close and footprint misses, which no update can fix.");
+        // Shares of the first indirect hits, from the recent read back frames.
+        const auto& rc = common->metaPathtracerIntegrateIndirect().getRecentPtPerformanceCounters();
+        const double queries = rc[PT_PERFORMANCE_COUNTER_CACHE_QUERIES];
+        if (queries > 0.0) {
+          ImGui::Text("Cache hit ratio over all first hits %.3f", rc[PT_PERFORMANCE_COUNTER_CACHE_HITS] / queries);
+          ImGui::Text("Misses: rejected %.3f, too close %.3f, footprint %.3f", rc[PT_PERFORMANCE_COUNTER_MISS_REJECTED] / queries,
+                      rc[PT_PERFORMANCE_COUNTER_MISS_TOO_CLOSE] / queries, rc[PT_PERFORMANCE_COUNTER_MISS_FOOTPRINT] / queries);
+          ImGui::Text("Misses: no entry %.3f, unfilled %.3f; sky %.3f", rc[PT_PERFORMANCE_COUNTER_MISS_NO_ENTRY] / queries,
+                      rc[PT_PERFORMANCE_COUNTER_MISS_UNFILLED] / queries,
+                      rc[PT_PERFORMANCE_COUNTER_SKY] / (queries + rc[PT_PERFORMANCE_COUNTER_SKY]));
+        }
+      }
+      ImGui::EndDisabled();
+      ImGui::Unindent();
 
       if (RtxOptions::showRaytracingOption()) {
         RemixGui::Checkbox("Raytracing Enabled", &RtxOptions::enableRaytracingObject());
@@ -4820,7 +5086,13 @@ namespace dxvk {
         ImGui::Indent();
         integrateIndirectModeCombo.getKey(&RtxOptions::integrateIndirectModeObject());
 
-        if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::ReSTIRGI) {
+        // The cache needs device features some GPUs lack, so the control is disabled there, and performance mode
+        // selects the cache on its own, so the control is disabled while the mode is on.
+        ImGui::BeginDisabled(!RtxSharc::checkIsSupported(m_device) || PtPerformance::active());
+        RemixGui::Checkbox("Indirect Light From Radiance Cache", &RtxSharc::indirectFromCacheObject());
+        ImGui::EndDisabled();
+
+        if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::ReSTIRGI) {
           if (RemixGui::CollapsingHeader("ReSTIR GI", collapsingHeaderClosedFlags)) {
             ImGui::Indent();
             ImGui::PushID("ReSTIR GI");
@@ -4829,7 +5101,7 @@ namespace dxvk {
             ImGui::PopID();
             ImGui::Unindent();
           }
-        } else if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache) {
+        } else if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::NeuralRadianceCache) {
           if (RemixGui::CollapsingHeader("RTX Neural Radiance Cache", collapsingHeaderClosedFlags)) {
 
             ImGui::Indent();
@@ -4839,7 +5111,7 @@ namespace dxvk {
             ImGui::PopID();
             ImGui::Unindent();
           }
-        } else if (RtxOptions::integrateIndirectMode() == IntegrateIndirectMode::Sharc) {
+        } else if (RtxOptions::resolvedIntegrateIndirectMode() == IntegrateIndirectMode::Sharc) {
           if (RemixGui::CollapsingHeader("SHARC", collapsingHeaderClosedFlags)) {
             ImGui::Indent();
             ImGui::PushID("SHARC");
@@ -4964,7 +5236,7 @@ namespace dxvk {
         common->metaComposite().showDenoiseImguiSettings();
         ImGui::Unindent();
       }
-      bool useDoubleDenoisers = RtxOptions::denoiseDirectAndIndirectLightingSeparately();
+      bool useDoubleDenoisers = RtxOptions::resolvedDenoiseDirectAndIndirectLightingSeparately();
       if (isRayReconstructionEnabled) {
         if (RemixGui::CollapsingHeader("DLSS-RR", collapsingHeaderClosedFlags)) {
           ImGui::Indent();

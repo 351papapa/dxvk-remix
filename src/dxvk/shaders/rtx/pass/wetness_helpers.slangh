@@ -41,6 +41,17 @@ float wetUpNormal(float3 normal) { return cb.isZUp ? normal.z : normal.y; }
 float2 wetGroundPosition(float3 position) { return cb.isZUp ? position.xy : position.xz; }
 float3 wetWorldVector(float3 value) { return cb.isZUp ? value : value.xzy; }
 
+float wetGroundExposure(float3 position) {
+  const float featherMeters = cb.wetnessArgs.noRainZoneFeatherMeters;
+  const float cornerRadiusMeters = cb.wetnessArgs.noRainZoneCornerRadiusMeters;
+  if (featherMeters <= 0.0f && cornerRadiusMeters <= 0.0f) {
+    return wetnessExposure(position);
+  }
+  const float units = max(cb.metersToWorldUnitScale, 0.0001f);
+  return noRainGroundExposure(wetnessZones, cb.wetnessArgs.noRainNodeCount, position, cb.isZUp != 0u,
+    featherMeters * units, cornerRadiusMeters * units);
+}
+
 bool wetStaticGround(Surface surface) {
   return rainMapStaticGround(surface);
 }
@@ -161,12 +172,12 @@ struct WetPuddleSample {
 };
 
 // Both surface shading and contact particles use the same height, wetness and exposure calculation.
-WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStrength, bool needsRainExposure) {
+WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float weatherWetness, float zoneExposure, bool needsRainExposure) {
   WetPuddleSample result = {};
   const WetnessArgs args = cb.wetnessArgs;
   const float units = max(cb.metersToWorldUnitScale, 0.0001f);
   const float cameraDistance = length(position - cameraGetWorldPosition(cb.camera));
-  wetStrength = saturate(wetStrength);
+  const float wetStrength = saturate(weatherWetness * zoneExposure);
   const bool canPool = wetStrength > 0.0f && zNormal > 0.95f && cameraDistance <= args.puddleDetailDistance * units;
   if (!canPool && !needsRainExposure) {
     return result;
@@ -208,7 +219,8 @@ WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStren
   const float terrain = micro - depression;
   const float level = amplitude * (2.0f * saturate(args.puddleCoverage) * wetStrength - 1.0f);
   const float depth = level - terrain;
-  const float exposure = smoothstep(0.95f, 0.98f, zNormal) * slopeFade * mapWeight
+  // Scale the final mask so deep depressions fade at the zone boundary.
+  const float exposure = zoneExposure * smoothstep(0.95f, 0.98f, zNormal) * slopeFade * mapWeight
     * lerp(1.0f, result.rainExposure, saturate(args.puddleOcclusion));
   const float submerged = smoothstep(0.0f, max(args.puddleEdgeWidth, 0.0001f) * units, depth);
 
@@ -219,8 +231,8 @@ WetPuddleSample wetEvaluatePuddle(float3 position, float zNormal, float wetStren
   return result;
 }
 
-float wetPuddleCoverage(float3 position, float zNormal, float wetStrength) {
-  return wetEvaluatePuddle(position, zNormal, wetStrength, false).coverage;
+float wetPuddleCoverage(float3 position, float zNormal, float weatherWetness, float zoneExposure) {
+  return wetEvaluatePuddle(position, zNormal, weatherWetness, zoneExposure, false).coverage;
 }
 
 float3 wetWindRipples(float3 position, float cameraDistance) {

@@ -331,6 +331,8 @@ shader_compile_script = join_paths(global_src_root_norm, 'scripts-common/compile
 numos_root = join_paths(global_src_root_norm, 'submodules/numos')
 numos_shader_script = join_paths(global_src_root_norm, 'scripts-common/numos_shaders.py')
 numos_spirv_dir = join_paths(current_build_dir_norm, 'src/dxvk/numos_spirv')
+numos_haze_script = join_paths(global_src_root_norm, 'scripts-common/numos_haze_shaders.py')
+numos_haze_overlay = join_paths(current_build_dir_norm, 'src/dxvk/numos_haze_overlay')
 # NV-DXVK end
 
 # GLSL Compiler
@@ -397,6 +399,7 @@ rtx_shaders_command_arguments = [
   # NV-DXVK start: NUMOS host shader API (submodules/numos). numos_shim first: it maps NUMOS's vendored
   # numos/util/* copies onto the Remix headers they came from.
   '-include', join_paths(shader_directory, 'numos_shim'),
+  '-include', numos_haze_overlay,
   '-include', join_paths(numos_root, 'shaders'),
   # NV-DXVK end
   '-output', rtx_shader_output_directory,

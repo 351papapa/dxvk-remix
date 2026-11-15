@@ -33,6 +33,7 @@
 #include "rtx.h"
 #include "rtx_context.h"
 #include "rtx_opacity_micromap_manager.h"
+#include "rtx_retained_scene.h"
 #include "rtx_scene_manager.h"
 #include "rtx_accel_manager.h"
 #include "rtx_grass.h"
@@ -53,6 +54,7 @@
 #include "rtx/concept/billboard.h"
 
 #include "rtx/pass/common_binding_indices.h"
+#include "../../util/util_env.h"
 
 namespace dxvk {
 
@@ -912,6 +914,7 @@ namespace dxvk {
     const bool optTrackDynamicBlasOnChange = RtxOptions::trackDynamicBlasOnChange();
     const bool optParallelDynamicPass = RtxOptions::parallelDynamicBlasPass();
     const bool optHoldBoundOmms = RtxOptions::ommHoldBoundMicromaps();
+    static const bool rebatchSettledD3d9 = env::getEnvVar("RTX_D3D9_REBATCH_SETTLED_BLAS") != "0";
     // See rtx_fork_d3d9_alpha.h.
     const bool optBindSharedBlasOmm = D3d9Alpha::bindSharedBlas();
     const bool d3d9AlphaStats = D3d9Alpha::statsActive();
@@ -1536,6 +1539,15 @@ namespace dxvk {
     }
     m_pendingClusterMerges.clear();
 
+    // Sample the ownership decisions of this routing pass without adding a full-scene scan.
+    static const bool logRoutes = env::getEnvVar("RTX_TLAS_ROUTING_STATS") == "1";
+    const bool sampleRoutes = logRoutes && currentFrame % 120 == 0;
+    struct RouteCounts {
+      uint32_t merged = 0, settledMerged = 0, separate = 0, smallSeparate = 0;
+      uint32_t pointInstancer = 0, skinned = 0, deforming = 0, moved = 0, toggled = 0, chronic = 0;
+      uint32_t shared = 0, tooLarge = 0, existing = 0, other = 0;
+    } routes;
+
     // Index loop: cluster routing appends pulled-in members.
     for (size_t routeIndex = 0; routeIndex < routeItems.size(); ++routeIndex) {
       RtInstance* instance = routeItems[routeIndex].instance;
@@ -1650,18 +1662,64 @@ namespace dxvk {
           }
         }
       }
-      // A deforming entry is rebuilt or refit in place every frame, so it gets its own BLAS at once
-      // instead of after the chronic-dirty streak, and never dirties a merged bucket.
-      const bool promoteDeforming = promotableGeometry && blasEntry->deforming;
+      // D3D9 can give a draw owned geometry on a material/fog update. If a small original mesh settles,
+      // keep its owned source data and motion history but route its current geometry through a merged BLAS.
+      // A later geometry or transform update dirties its cached bucket and immediately restores its own BLAS.
+      constexpr uint64_t kD3d9Handle = 1ull << 61; // D3D9Frontend's retained handle namespace.
+      const auto settled = [currentFrame](uint32_t stamp) {
+        constexpr uint32_t kSettledFrames = 120;
+        return stamp == kInvalidFrameIndex || (stamp <= currentFrame && currentFrame - stamp >= kSettledFrames);
+      };
+      const bool mergeSettledD3d9 = rebatchSettledD3d9 && promotableGeometry && blasEntry->deforming &&
+        !optMinimizeBlasMerging && !promoteMoved && !promoteToggled && !promoteChronic &&
+        blasPrims < minPrimsInDynamicBLAS && blasPrims <= maxPrimsForMergedBLAS &&
+        (instance->getSceneOwnedHandle() >> 61) == (kD3d9Handle >> 61) &&
+        instance->surface.instancesToObject == nullptr && instance->surface.alphaState.isFullyOpaque &&
+        !instance->usesUnorderedApproximations() && !instance->isViewModel() && !instance->isPlayerModelInstance() &&
+        !instance->isCreatedByRenderer() && !instance->isAnimated() && instance->getBillboardCount() == 0 &&
+        blasEntry->getLinkedInstances().size() == 1 && blasEntry->input.cameraType == CameraType::Main &&
+        blasEntry->input.getSkinningState().numBones == 0 && !blasEntry->input.usesVertexShader &&
+        !blasEntry->input.newGeometryEveryFrame && !blasEntry->input.isUsingRaytracedRenderTarget &&
+        !instance->testCategoryFlags(InstanceCategories::Sky, InstanceCategories::Terrain, InstanceCategories::Particle,
+                                     InstanceCategories::ParticleEmitter, InstanceCategories::AnimatedWater, InstanceCategories::Beam) &&
+        blasEntry->frameCreated != kInvalidFrameIndex && settled(blasEntry->frameCreated) &&
+        settled(blasEntry->frameLastUpdated) && settled(blasEntry->frameTopologyChanged) &&
+        settled(blasEntry->frameLastInstanceMoved) && settled(blasEntry->frameLastInstanceToggled) &&
+        static_cast<RtxContext*>(ctx.ptr())->getSceneManager().retainedScene().isPlainFrontendInstance(*instance);
+
+      // Geometry that is actively deforming still bypasses the chronic-dirty streak.
+      const bool promoteDeforming = promotableGeometry && blasEntry->deforming && !mergeSettledD3d9;
       const bool promoteToOwnBlas = promoteMoved || promoteToggled || promoteChronic || promoteDeforming;
 
       const bool forceMergedBlas = !promoteToOwnBlas &&
-                                   (blasEntry->buildGeometries.size() > 1 ||                                       // Currently we use multiple build geometries for particle billboards, which we prefer to merge into large BLAS
+                                   (mergeSettledD3d9 ||
+                                    blasEntry->buildGeometries.size() > 1 ||                                       // Currently we use multiple build geometries for particle billboards, which we prefer to merge into large BLAS
                                     (!optMinimizeBlasMerging && blasPrims < minPrimsInDynamicBLAS && !shareSmallBlas) ||   // Avoid creating lots of small dynamic BLAS
                                     optForceMergeAllMeshes) &&                                          // Setting to force all meshes into the merged BLAS
                                       instance->surface.instancesToObject == nullptr;                              // Never merge point instancer geometry
 
-      if ((requestDynamicBlas || promoteToOwnBlas) && !forceMergedBlas) {
+      const bool separate = (requestDynamicBlas || promoteToOwnBlas) && !forceMergedBlas;
+      if (sampleRoutes) {
+        if (!separate) {
+          ++routes.merged;
+          routes.settledMerged += mergeSettledD3d9;
+        } else {
+          ++routes.separate;
+          routes.smallSeparate += blasPrims < minPrimsInDynamicBLAS;
+          // Assign each routed instance to one reason, in this order.
+          if (instance->surface.instancesToObject != nullptr) ++routes.pointInstancer;
+          else if (blasEntry->input.getSkinningState().numBones != 0) ++routes.skinned;
+          else if (promoteDeforming) ++routes.deforming;
+          else if (promoteMoved) ++routes.moved;
+          else if (promoteToggled) ++routes.toggled;
+          else if (promoteChronic) ++routes.chronic;
+          else if (blasEntry->getLinkedInstances().size() > 1) ++routes.shared;
+          else if (blasPrims > maxPrimsForMergedBLAS) ++routes.tooLarge;
+          else if (blasEntry->dynamicBlas != nullptr) ++routes.existing;
+          else ++routes.other;
+        }
+      }
+      if (separate) {
         if (promoteToOwnBlas && !requestDynamicBlas) {
           if (promoteMoved) {
             m_buildStats.promotedMoved++;
@@ -1773,6 +1831,15 @@ namespace dxvk {
         m_pendingClusterMerges.push_back(PendingClusterMerge { bucketKey, instance, blasPrims, transformDeviceAddress });
         trackBlasBuildResources(ctx, execBarriers, blasEntry, true, !batchBarriers);
       }
+    }
+
+    if (sampleRoutes) {
+      Logger::info(str::format("[AccelRoutes] frame=", currentFrame, " sceneInstances=", instances.size(),
+        " routed=", routeItems.size(), " merged=", routes.merged, " settledMerged=", routes.settledMerged, " separate=", routes.separate,
+        " smallSeparate=", routes.smallSeparate, " pointInstancer=", routes.pointInstancer,
+        " skinned=", routes.skinned, " deforming=", routes.deforming, " moved=", routes.moved,
+        " toggled=", routes.toggled, " chronic=", routes.chronic, " shared=", routes.shared,
+        " tooLarge=", routes.tooLarge, " existing=", routes.existing, " other=", routes.other));
     }
 
     // Fill the buckets of every key routed this frame in (key, instance
@@ -3948,30 +4015,65 @@ namespace dxvk {
           continue;
         }
         const auto& geometry = blas->input.getGeometryData();
-        const uint64_t hashParts[] = { geometry.hashes[HashComponents::Indices],
-          geometry.hashes[HashComponents::VertexPosition], geometry.vertexCount, geometry.indexCount,
-          uint64_t(geometry.positionBuffer.vertexFormat()), geometry.indexBuffer.defined() ? geometry.indexBuffer.indexType() : UINT64_MAX };
-        const uint64_t key = XXH64(hashParts, sizeof(hashParts), 0);
-        if (!blas->windowIslandRootsValid || blas->windowIslandRootsHash != key) {
-          WindowTopologyInput input;
-          input.vertexCount = geometry.vertexCount;
-          input.indexCount = geometry.indexCount;
+        WindowTopologyInput input;
+        input.vertexCount = geometry.vertexCount;
+        input.indexCount = geometry.indexCount;
+        switch (geometry.topology) {
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: input.topology = WindowPrimitiveTopology::TriangleList; break;
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: input.topology = WindowPrimitiveTopology::TriangleStrip; break;
+        case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: input.topology = WindowPrimitiveTopology::TriangleFan; break;
+        default: input.topology = WindowPrimitiveTopology::Unsupported; break;
+        }
+        if (input.topology != WindowPrimitiveTopology::Unsupported) {
           input.triangleCount = geometry.calculatePrimitiveCount();
-          const auto format = geometry.positionBuffer.vertexFormat();
-          if (format == VK_FORMAT_R32G32B32_SFLOAT || format == VK_FORMAT_R32G32B32A32_SFLOAT) {
-            input.positions = readSpan(geometry.positionBuffer);
+        }
+        const auto positionFormat = geometry.positionBuffer.vertexFormat();
+        const auto texcoordFormat = geometry.texcoordBuffer.vertexFormat();
+        if (positionFormat == VK_FORMAT_R32G32B32_SFLOAT || positionFormat == VK_FORMAT_R32G32B32A32_SFLOAT) {
+          input.positions = readSpan(geometry.positionBuffer);
+        }
+        if (texcoordFormat == VK_FORMAT_R32G32_SFLOAT || texcoordFormat == VK_FORMAT_R32G32B32_SFLOAT || texcoordFormat == VK_FORMAT_R32G32B32A32_SFLOAT) {
+          input.texcoords = readSpan(geometry.texcoordBuffer);
+        }
+        input.positionStride = geometry.positionBuffer.stride();
+        input.texcoordStride = geometry.texcoordBuffer.stride();
+        if (geometry.indexBuffer.defined()) {
+          const auto indexType = geometry.indexBuffer.indexType();
+          input.indexWidth = indexType == VK_INDEX_TYPE_UINT32 ? 4u : (indexType == VK_INDEX_TYPE_UINT16 ? 2u : 1u);
+          input.indexStride = geometry.indexBuffer.stride();
+          input.indices = readSpan(geometry.indexBuffer);
+        }
+        const uint64_t contentParts[] = { geometry.hashes[HashComponents::Indices],
+          geometry.hashes[HashComponents::VertexPosition], geometry.hashes[HashComponents::VertexTexcoord],
+          geometry.vertexCount, geometry.indexCount, uint64_t(geometry.topology) };
+        const uint64_t contentKey = XXH64(contentParts, sizeof(contentParts), 0);
+        const uint64_t layoutParts[] = { contentKey, uint64_t(positionFormat), uint64_t(texcoordFormat),
+          input.positionStride, input.texcoordStride, input.indexWidth, input.indexStride,
+          geometry.positionBuffer.offsetFromSlice(), geometry.texcoordBuffer.offsetFromSlice(), geometry.indexBuffer.offsetFromSlice(),
+          input.positions.size(), input.texcoords.size(), input.indices.size() };
+        const uint64_t key = XXH64(layoutParts, sizeof(layoutParts), 0);
+        if (!blas->windowIslandRootsValid || blas->windowIslandRootsHash != key) {
+          WindowTopologyDiagnostics diagnostics;
+          blas->windowIslandRoots = buildWindowIslandRoots(input, &diagnostics);
+          if (input.topology == WindowPrimitiveTopology::Unsupported) {
+            diagnostics.status = WindowTopologyStatus::UnsupportedLayout;
           }
-          input.positionStride = geometry.positionBuffer.stride();
-          if (geometry.indexBuffer.defined()) {
-            input.indexWidth = geometry.indexBuffer.indexType() == VK_INDEX_TYPE_UINT32 ? 4u : 2u;
-            input.indexStride = geometry.indexBuffer.stride();
-            input.indices = readSpan(geometry.indexBuffer);
-          }
-          blas->windowIslandRoots = buildWindowIslandRoots(input);
           blas->windowIslandRootsHash = key;
-          // Retry after a pending GPU write; unmappable device-local sources keep the fallback.
-          blas->windowIslandRootsValid = !(geometry.positionBuffer.defined() && geometry.positionBuffer.isPendingGpuWrite())
-            && !(geometry.indexBuffer.defined() && geometry.indexBuffer.isPendingGpuWrite());
+          // Availability is part of the key, so newly readable buffers retry a cached fallback.
+          blas->windowIslandRootsValid = true;
+          if (RtxPerfLog::detailedLogging()) {
+            const auto groups = input.triangleCount - diagnostics.mergedTriangles;
+            Logger::info(str::format("[WindowTopology] ", diagnostics.status == WindowTopologyStatus::Complete ? "built" : "fallback",
+              " geometry=", instance.surface.associatedGeometryHash,
+              " status=", uint32_t(diagnostics.status), " triangles=", input.triangleCount, " groups=", groups,
+              " matchedEdges=", diagnostics.matchedEdges, " invalid=", diagnostics.trianglesInvalid,
+              " ambiguous=", diagnostics.ambiguousEdges, " rejectedFaces=", diagnostics.rejectedFacePairs,
+              " positionTolerance=", diagnostics.positionTolerance, " uvTolerance=", diagnostics.uvTolerance,
+              " readable(position/uv/index)=", !input.positions.empty(), "/", !input.texcoords.empty(), "/", !input.indices.empty(),
+              " pending(position/uv/index)=", geometry.positionBuffer.defined() && geometry.positionBuffer.isPendingGpuWrite(), "/",
+              geometry.texcoordBuffer.defined() && geometry.texcoordBuffer.isPendingGpuWrite(), "/",
+              geometry.indexBuffer.defined() && geometry.indexBuffer.isPendingGpuWrite()));
+          }
         }
         uint32_t count = 0;
         for (const auto& range : blas->buildRanges) {
@@ -3980,7 +4082,7 @@ namespace dxvk {
         auto& record = m_windowSurfaceRecords[slot];
         record.base = uint32_t(ids.size());
         const uint64_t geometryHash = instance.surface.associatedGeometryHash != kEmptyHash
-          ? instance.surface.associatedGeometryHash : key;
+          ? instance.surface.associatedGeometryHash : contentKey;
         record.hash = uint32_t(geometryHash ^ (geometryHash >> 32));
         const uint32_t sourceBase = m_reorderedSurfacesFirstIndexOffset[slot] / 3;
         for (uint32_t primitive = 0; primitive < count; ++primitive) {

@@ -30,6 +30,12 @@ foreach external_dll : external_dll_paths
 endforeach
 
 tests = []
+exe = executable('test_window_topology', files('test_window_topology.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_window_topology', exe, env: test_env)
+tests += exe
+exe = executable('test_local_coronas', files('test_local_coronas.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_local_coronas', exe, env: test_env)
+tests += exe
 exe = executable('test_retained_world_batch', files('test_retained_world_batch.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
 test('test_retained_world_batch', exe, env: test_env)
 tests += exe

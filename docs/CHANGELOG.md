@@ -1,5 +1,228 @@
 # Remix Plus changelog
 
+## 2026-11-15 — Port Path Tracing Performance and SHARC pipeline prewarm
+
+Path Tracing Performance adds a lower-cost indirect path, an optional rasterized first hit and sparse shading with Ray Reconstruction. The SHARC update and query dispatches select a compatible path on each supported GPU. Startup prewarm registers the opacity micromap variants used during rendering and reports late compiles.
+
+- The port adds `rtx.ptPerformance.*`, `rtx.sharc.indirectFromCache` and graphics preset Very Low (6). Medium, Low and Very Low enable Performance Mode. Custom retains the user's selection.
+- Ported upstream commits `fcbf07df`, `3787d811` and `36d86f31`.
+- See [Path Tracing Performance](../documentation/PtPerformance.md) and [SHARC](../documentation/SharcRadianceCache.md).
+
+## 2026-11-14 — Restore the procedural Milky Way as a camera-sky option
+
+Night Sky Appearance can draw the original procedural galactic band with a
+fixed world-space orientation. Its brightness, core colour, outer colour and
+dust strength are adjustable separately from the catalogue sky.
+
+- Options: `rtx.numos.legacyMilkyWay` defaults off. The procedural controls are
+  `legacyMilkyWayBrightness`, `legacyMilkyWayOuterColor`,
+  `legacyMilkyWayCoreColor` and `legacyMilkyWayDustAmount` in the same namespace.
+- Source: band and noise from the original sky in `30eb0e404`.
+
+## 2026-11-14 — Preserve volumetric lighting in front of NUMOS clouds
+
+The screen composite now preserves native froxel in-scattering along the ray up
+to the opacity-weighted cloud depth. Distant clouds keep the complete near-field
+integral. Clouds that intersect the froxel grid use a depth-limited integral.
+
+- Options and defaults are unchanged.
+- Validation: both composite shaders passed SPIR-V validation. A fixed nighttime
+  Vice City view reproduced the hard silhouette in the previous build and showed
+  continuous foreground light in the updated build.
+- Source: local change in `composite.comp.slang`.
+
+## 2026-11-14 — Feather wet ground outside no-rain zones
+
+Ground sheen, puddles and wet-ground contact effects can fade over an adjustable
+horizontal distance beyond a no-rain zone. Rounded outward corners preserve the
+dry coverage of touching zones. The existing box height and precipitation shelter
+boundaries are retained.
+
+- Options: `rtx.wetness.noRainZoneFeatherMeters` and
+  `rtx.wetness.noRainZoneCornerRadiusMeters` default to 0 and are independent of
+  graphics and weather presets.
+- Details: [Wetness integration](../documentation/RemixWetnessAPI.md).
+
+## 2026-11-08 — Window lighting shared-edge grouping
+
+Window triangles with separate vertex indices can share an emission switch when
+both endpoints of their common edge match in position and UV within small
+tolerances. Corner-only contacts and UV seams stay separate. Strip/fan primitive
+ordering and UV-aware cache invalidation prevent incorrect triangle identities.
+Bounded diagnostics identify unreadable or malformed geometry; GPU-only fallback
+and the shader's UV tile rule remain explicit limits.
+
+- Options/defaults/presets: unchanged. No shader or surface-buffer ABI change.
+- Validation: targeted CPU topology tests. Target-game visual confirmation and
+  performance measurements are not implied by these tests.
+- Commits: this local checkpoint.
+- Details: [Window and street lamp lighting](../documentation/RemixWindowLighting.md).
+
+## 2026-11-08 — Local Corona Cores filter and ordered v2 ownership
+
+Added an independent reorderable post-processing filter, default-off `rtx.localCoronas.localCoronasEnable`, brightness and size controls, and accepted/dispatch/suppression diagnostics. V2 supports 4096 complete sources and synchronously rejects first late CPU submissions and suppresses duplicates; disabling the filter hides its v2 host cores. Both 150-second target-game replays and runtime switch checks passed (25.297 vs 25.634 base FPS in one pair, without a speedup claim). GPU completion and isolated pass cost remain unverified. Options are preset-independent and brightness/size default to 1.
+See [Local corona cores](../documentation/LocalCoronaCores.md). Commits: this local checkpoint.
+
+## 2026-11-08 — Experimental local corona core replacement
+
+Added a bounded, material-aware screen-space radial core pass using the existing
+GameValue transport. The host's CorePostFx option defaults off, preserves distance
+selection and independent starbursts, and keeps IM3D when a batch is rejected or
+exceeds 512 sources. Accepted cores replace their old card/mesh only in the screen
+image; the card's reflection/GI contribution is absent while physical light
+illumination is unchanged. Acceptance is queue-level: whole-RTX early-outs or
+late submission can still omit an accepted core. This experimental path has no
+late-present guarantee. No GPU performance improvement is claimed.
+See [Local corona cores](../documentation/LocalCoronaCores.md).
+Commits: this local checkpoint.
+
+## 2026-11-08 — Refract underwater volumetric sunlight at the water boundary
+
+Underwater distant-light samples and the volume caustic direction now use the
+camera-medium material's IOR/F0 at the valid base-Z water plane, correcting shafts
+that followed the un-refracted air sun while the visible water-surface sun refracted.
+Radiance/PDF transform together, and visibility follows water and air segments;
+local lights and non-water shading retain their existing paths.
+
+- Options/defaults: none added, removed or changed. No CPU/API buffer ABI change.
+- Validation: 7,248 actual-helper float32 checks and 8 Slang/optimizer/SPIR-V variants;
+  independent 25,000-case mathematical review. Same-native-camera before/after game captures and user confirmation
+  accepted the visible sunlight direction correction. This does not establish
+  pixel-exact wave agreement or a measured performance improvement.
+- Cost: at most one additional scene visibility ray for eligible underwater
+  distant-light samples. Plane approximation; wave-surface/receiver caustics unchanged.
+- Commits: this local checkpoint.
+- Design/limits: [Water](../documentation/RemixWater.md).
+
+
+## 2026-11-08 — Optional native water and blood lens droplets
+
+Post FX > Lens Rain gains native water/blood drop switches (both default off),
+native size and blood absorption controls. Native snapshots share the lens pass
+but remain independent of rain amount and dry-weather spawning. A dedicated,
+transactional GameValue handoff preserves native drawing whenever submission is
+unavailable or rejected; accepted snapshots draw once in their renderer frame.
+An actual-backbuffer fallback finishes pending snapshots when normal composition
+was bypassed or already ran. It preserves sampled-value gamma semantics and HDR
+range, resolves MSAA and uses the existing framebuffer blit for MSAA writeback.
+The late path is after the game HUD and before the Remix GUI. Active native frames
+use an ordered CPU-command-stream capability check; its cost requires measurement.
+Complete tile lists retain every weather and native slot. External buffers grow
+once to capacity; empty events add no dispatch or snapshot serialization.
+The Vice City adapter reads the actual water/blood particle lists and preserves
+their game-owned triggers and lifetimes. See
+[Native screen droplets](../documentation/RemixLensDropsAPI.md).
+Commits: this local checkpoint. In-game optical/trigger and
+performance acceptance is required after integration.
+
+## 2026-11-07 — HAZE light distance controls
+
+Sky > Haze gains camera-distance, fade-distance and spotlight-reach controls.
+They affect the HAZE light copies while preserving surface lights. The new
+`rtx.numos.hazeLightDistanceMeters`, `hazeLightFadeMeters` and
+`hazeSpotlightReachMeters` options default to zero; the fade then uses the last
+20% of an enabled camera-distance limit. Spotlight reach respects the existing
+range-window switch. These authored look limits are preset-independent.
+The full local-list fix and eight integration taps remain in use. A separate
+composite optimization skips medium evaluation only when the original geometry
+checks already prove zero contribution. No new GPU speedup is claimed without
+measurement. See [HAZE light controls](../documentation/HazeLightControls.md).
+Commits: this local checkpoint.
+
+## 2026-11-07 — Complete HAZE local-light lists
+
+HAZE cluster and screen-column lists retain all candidates beyond the previous
+16-light capacity, using a grouped bitset in the existing buffer layout. Up to
+512 lights have exact membership; larger global budgets conservatively expand
+groups. Spotlight rejection removes only candidates proven to contribute zero;
+the eight airlight sample positions and shadow estimator remain unchanged.
+The three sidecars are validated and selected as a set, with a legacy-compatible
+composite and full-set fallback. No quality settings or defaults change.
+An opt-in, bounded asynchronous GPU probe compares actual constants, light data
+and column membership. See [HAZE light lists](../documentation/HazeLightLists.md).
+Visual and performance acceptance must use the same camera, weather and time;
+source and compilation checks alone do not establish a flicker fix.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Incident cloud extinction for solar diffraction
+
+Screen-cloud diffraction includes the cloud depth from each scattering sample to
+the sun, across both layers, as well as opaque scene visibility. A foreground
+surface no longer makes its truncated camera column behave as though the sun were
+at that surface. Forward transport includes the finite early-exit tail and uses
+logarithmic sums for stable thick-cloud normalization. No options or defaults
+change. Extra sun-depth work requires same-scene GPU measurement; no performance
+improvement is claimed by this entry. The existing release SPIR-V optimizer reduces
+the validated normal/fast sidecars from 20.87/21.17 MB to 8.92/9.22 MB without
+changing shader settings. Structural ABI and SPIR-V validation pass after optimization.
+Original NUMOS pass-table validation excludes the host sidecars on repeated builds.
+See [Cloud scene visibility](../documentation/CloudSceneVisibility.md) for the
+model, validation and material limitations. The NUMOS submodule stays unchanged.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Ordered external-light lifetimes
+
+External-light creation, replacement, drawing and destruction preserve caller
+order across ordinary and batched API calls and both presentation paths. A
+recreated light cannot be erased by a queued deletion from its previous lifetime.
+Normal updates preserve temporal identity, and analytic/dome replacements release
+the previous kind safely before frame linearization. No options or defaults changed.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Remove the IPL vegetation wind protocol
+
+The runtime no longer publishes the host-to-plugin IPL wind state. Its wind and
+vegetation-catalog conventions are removed from the API documentation, alongside
+the game's removal of IPL tree deformation. Procedural grass retains direct NUMOS
+wind input and contact pushers. No procedural-grass quality setting is reduced.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Camera sky contribution diagnostics
+
+Five debug views separate camera cloud, aerial-perspective and sun/moon-disk
+changes from the surface image, and expose primary/alpha/foreground classification.
+They make large bright silhouettes attributable to a specific composite stage.
+Normal rendering and all option defaults are unchanged. The views use the existing
+Debug View menu and are preset-independent.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Scene shadows on screen clouds
+
+The screen-cloud pass now checks opaque scene visibility between each nonempty
+cloud sample and the sun. Direct lighting and the solar aureole respond to
+buildings while ambient cloud light remains. No options or defaults changed;
+the correction is preset-independent. It adds a shadow query per nonempty
+sample; no performance improvement is claimed without measurement.
+See [Cloud scene visibility](../documentation/CloudSceneVisibility.md) for
+partial-shadow and material limitations. NUMOS source is unchanged; the host
+build generates and ABI-checks modified shader variants.
+Commits: this local checkpoint.
+
+## 2026-11-07 — Vegetation controls and external-light history
+
+Procedural Grass exposes the wind and contact controls in Game Setup. The wind
+strength multiplier defaults to 1 instead of 3 and respects the ambient wind
+angle limit independently of the contact angle limit. Slope-aligned bending
+preserves blade height. These corrections are preset-independent.
+
+External lights omitted from an upload lose their previous buffer index, so
+reappearing lights cannot reuse another light's history or write beyond the
+previous light mapping. Six focused regression cases pass. No measured frame
+rate improvement is claimed by this entry.
+
+Options documented: windReference, windMaxRadians, windStrengthMultiplier,
+gustStrength, gustFrequency, swayFrequency, contactRadius and contactMaxRadians.
+See [Vegetation API](../documentation/RemixVegetationAPI.md).
+Commits: this local checkpoint.
+
+## 2026-11-05 — Window lighting name tags
+
+Window and street lamp texture names appear as individual tags. Press Enter to
+add a name fragment, or double-click a tag to edit or remove it. The repeated
+inline x buttons are omitted to keep dense texture lists readable. Escape
+cancels an edit. Existing semicolon-separated configuration remains compatible;
+no options or defaults changed.
+
 ## 2026-11-05 — Reduce host memory retained by native D3D9 draws
 
 Native D3D9 draws now use 1 MiB staging pages that can be reused once all draw,

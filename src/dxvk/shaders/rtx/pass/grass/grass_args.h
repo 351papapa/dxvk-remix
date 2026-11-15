@@ -41,6 +41,11 @@ struct GrassConstants {
   vec4 dimensions;
   vec4 bounds;
   vec4 viewPlanes[5];
+  vec4 windDirectionStrength;
+  vec4 windAnimation;
+  vec4 windLimits;
+  vec4 pushers[16];
+  vec4 pusherWeights[16];
   uint rootCount;
   uint budget;
   uint groupCount;

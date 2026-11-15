@@ -15,15 +15,6 @@ VisibilityResult evalVolumeNEEVisibility(
   // But that will require a separate TLAS that doesn't contain such objects
   PortalSpace2BitsType portalSpace = PORTAL_SPACE_NONE;
 
-#if VOLUME_WATER_SURFACE_LIGHTING
-  // Beer uses the virtual water-entry sample. Occlusion still reaches the source.
-  if (lightSample.volumeVisibilityRay.w > 0.0f)
-  {
-    visibilityRay.direction = lightSample.volumeVisibilityRay.xyz;
-    visibilityRay.tMax = lightSample.volumeVisibilityRay.w;
-  }
-#endif
-
   // Trace a visibility ray to test if the light is visible
 
   // Note: Only trace rays against fully opaque objects, alpha blend objects, optionally translucent
@@ -32,6 +23,54 @@ VisibilityResult evalVolumeNEEVisibility(
   const bool enableTranslucentShadows = cb.volumeArgs.enableTranslucentShadows != 0;
   uint8_t rayMask = OBJECT_MASK_OPAQUE | OBJECT_MASK_ALPHA_BLEND;
   rayMask |= enableTranslucentShadows ? OBJECT_MASK_TRANSLUCENT : 0;
+
+#if VOLUME_WATER_SURFACE_LIGHTING
+  if (lightSample.volumeVisibilityRay.w > 0.0f)
+  {
+    // The caller's ray ends at the refracted entry point, and remains the Beer/SH segment.
+    const float waterDepth = max(lightSample.position.z - visibilityRay.origin.z, 0.0f);
+    const float positionError = max(calculatePositionError(lightSample.position), calculatePositionError(visibilityRay.origin));
+    const float interfaceBias = min(calculateRayOffset(positionError, float3(0.0f, 0.0f, 1.0f)).z,
+      waterDepth * 0.25f);
+    Ray waterRay = visibilityRay;
+    waterRay.tMax = max(waterRay.tMax - interfaceBias / max(float(waterRay.direction.z), 0.000001f), 0.0f);
+    VisibilityResult waterResult;
+    if (enableTranslucentShadows)
+    {
+      waterResult = traceVisibilityRay<visibilityModeDisableCulling | visibilityModeEnableTranslucentMaterials>(
+        waterRay, rayMask, sampledTransportPortalIndex, portalSpace);
+    }
+    else
+    {
+      waterResult = traceVisibilityRay<visibilityModeDisableCulling>(
+        waterRay, rayMask, sampledTransportPortalIndex, portalSpace);
+    }
+    if (waterResult.hasOpaqueHit)
+    {
+      return waterResult;
+    }
+    Ray airRay = visibilityRay;
+    airRay.origin = lightSample.position + float3(0.0f, 0.0f, interfaceBias);
+    airRay.direction = lightSample.volumeVisibilityRay.xyz;
+    airRay.tMax = lightSample.volumeVisibilityRay.w;
+    airRay.coneRadius += max(visibilityRay.spreadAngle, 0.0f) * visibilityRay.tMax;
+    VisibilityResult airResult;
+    if (enableTranslucentShadows)
+    {
+      airResult = traceVisibilityRay<visibilityModeDisableCulling | visibilityModeEnableTranslucentMaterials>(
+        airRay, rayMask, invalidRayPortalIndex, portalSpace);
+    }
+    else
+    {
+      airResult = traceVisibilityRay<visibilityModeDisableCulling>(
+        airRay, rayMask, invalidRayPortalIndex, portalSpace);
+    }
+    waterResult.attenuation *= airResult.attenuation;
+    waterResult.hasOpaqueHit |= airResult.hasOpaqueHit;
+    waterResult.hasPOMHit |= airResult.hasPOMHit;
+    return waterResult;
+  }
+#endif
 
   // Note: Culling disabled via visibilityModeDisableCulling to avoid light leaking through geometry as this is especially
   // bad in volumetrics due to how the voxels leak through walls to begin with. Other NEE does not disable culling like this

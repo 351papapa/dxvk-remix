@@ -86,9 +86,10 @@ bool tracePuddleGround(float3 position, out uint surfaceId, out float3 hit) {
   hit = ray.Origin + ray.Direction * query.CommittedRayT();
   return true;
 }
-float wetRoadAtContact(float3 position, out uint id, out float3 hit) {
+float wetRoadAtContact(float3 position, out uint id, out float3 hit, out float zoneExposure) {
   id = 0;
   hit = position;
+  zoneExposure = 0.0f;
   if (particleCb.sceneTlasValid == 0 || cb.wetnessArgs.enabled == 0) { return 0; }
   if (!tracePuddleGround(position, id, hit)) { return 0; }
   uint surfaceCount, surfaceStride;
@@ -98,15 +99,15 @@ float wetRoadAtContact(float3 position, out uint id, out float3 hit) {
   if ((tag >> 24) != 2u) { return 0; }
   if ((tag & 0x800u) != 0 || (cb.wetnessArgs.roadOnly != 0 && (tag & 0x500u) == 0)) { return 0; }
   bool bypass = (tag & 0x400u) != 0 || cb.wetnessArgs.respectNoRainZones == 0;
-  float wet = resolveWeatherWetness(tag, cb.wetnessArgs)
-    * (bypass ? 1.f : wetnessExposure(hit));
-  return saturate(wet);
+  zoneExposure = bypass ? 1.0f : wetGroundExposure(hit);
+  return saturate(resolveWeatherWetness(tag, cb.wetnessArgs));
 }
 
 float puddleAtContact(float3 position, out float3 hit) {
   uint id;
-  float wet = wetRoadAtContact(position, id, hit);
-  if (wet <= 0) { return 0; }
+  float zoneExposure;
+  const float weatherWetness = wetRoadAtContact(position, id, hit, zoneExposure);
+  if (weatherWetness <= 0.0f || zoneExposure <= 0.0f) { return 0; }
   // Spawn runs before this frame's AS/material upload. Its TLAS and material
   // buffer agree, but bindless vertex indices already belong to this frame.
   // Recover the local slope from two short neighbouring rays instead of ever
@@ -117,7 +118,7 @@ float puddleAtContact(float3 position, out float3 hit) {
   if (!tracePuddleGround(position + float3(delta,0,0), idX, hitX) || idX != id ||
       !tracePuddleGround(position + wetWorldVector(float3(0,delta,0)), idY, hitY) || idY != id) { return 0; }
   float3 normal = normalize(cross(hitX - hit, hitY - hit));
-  return wetPuddleCoverage(hit,abs(wetUpNormal(normal)),wet);
+  return wetPuddleCoverage(hit, abs(wetUpNormal(normal)), weatherWetness, zoneExposure);
 }
 
 // Use flags from the SAME completed scene as the TLAS. Never fetch old
@@ -396,7 +397,9 @@ GpuParticle respawn(uint particleIdx, uint spawnCtxIdx, const GpuParticleSystem 
   if (!contactValid) {
     if (particleSystem.desc.spawnOnWetRoads) {
       uint surfaceId;
-      float wet = wetRoadAtContact(candidate.spawnPosition, surfaceId, contactPosition);
+      float zoneExposure;
+      const float weatherWetness = wetRoadAtContact(candidate.spawnPosition, surfaceId, contactPosition, zoneExposure);
+      float wet = weatherWetness * zoneExposure;
       if (wet > 0.0f && wetUnderwater(contactPosition)) {
         wet = 0.0f;
       }

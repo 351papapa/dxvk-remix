@@ -412,14 +412,20 @@ dxvk_src = files([
   'rtx_render/rtx_pathtracer_integrate_indirect.cpp',
   'rtx_render/rtx_pathtracer_integrate_indirect.h',
   'rtx_render/rtx_postFx.cpp',
+  'rtx_render/rtx_screen_lens_drops.cpp',
+  'rtx_render/rtx_postFx_screen_lens_drops.cpp',
+  'rtx_render/rtx_screen_lens_drops.h',
   'rtx_render/rtx_postFx.h',
   'rtx_render/rtx_postFx_sun_flare.cpp',
   'rtx_render/rtx_postFx_local_starbursts.cpp',
+  'rtx_render/rtx_postFx_local_coronas.cpp',
   'rtx_render/rtx_preserved_object_picking.h',
   'rtx_render/rtx_srgb_dither.cpp',
   'rtx_render/rtx_srgb_dither.h',
   'rtx_render/rtx_rain_map.cpp',
   'rtx_render/rtx_rain_map.h',
+  'rtx_render/rtx_raster_first_hit.cpp',
+  'rtx_render/rtx_raster_first_hit.h',
   'rtx_render/rtx_ray_portal_manager.cpp',
   'rtx_render/rtx_ray_portal_manager.h',
   'rtx_render/rtx_ray_reconstruction.cpp',
@@ -446,6 +452,7 @@ dxvk_src = files([
   'rtx_render/rtx_retained_world_batch.cpp',
   'rtx_render/rtx_retained_world_batch.h',
   'rtx_render/rtx_retained_world_batch_cpu.h',
+  'rtx_render/rtx_pt_performance.h',
   'rtx_render/rtx_rtxdi_rayquery.cpp',
   'rtx_render/rtx_rtxdi_rayquery.h',
   'rtx_render/rtx_scene_command_queue.h',
@@ -460,8 +467,13 @@ dxvk_src = files([
   'rtx_render/rtx_skinning_retarget.h',
   'rtx_render/rtx_sky_ui.cpp',
   'rtx_render/rtx_sky_ui.h',
+  'rtx_render/rtx_numos_cloud_probe.cpp',
+  'rtx_render/rtx_numos_cloud_probe.h',
   'rtx_render/rtx_numos_gpu.cpp',
   'rtx_render/rtx_numos_gpu.h',
+  'rtx_render/rtx_numos_haze_lights.h',
+  'rtx_render/rtx_numos_haze_probe.cpp',
+  'rtx_render/rtx_numos_haze_probe.h',
   'rtx_render/rtx_numos_settings.cpp',
   'rtx_render/rtx_numos_settings.h',
   'rtx_render/rtx_numos.cpp',
@@ -661,22 +673,43 @@ submodules_dep = declare_dependency(
 )
 
 generated_dxvk_shaders = glsl_generator.process(dxvk_shaders)
+# Generate the dual-format NUMOS light-list consumer before the embedded composite.
+# NUMOS itself remains an unmodified dependency; the overlay preserves its notices.
+numos_haze_headers = custom_target(
+  'numos_haze_headers',
+  build_by_default: true,
+  output: ['_numos_haze_headers.txt'],
+  depend_files: files('../../scripts-common/numos_haze_shaders.py',
+    'shaders/numos_haze/numos_haze_helpers.slangh',
+    '../../submodules/numos/shaders/numos/lib/aerial_perspective_lights.slangh'),
+  command: [python_interpreter, numos_haze_script, 'emit-overlay', numos_root, numos_haze_overlay],
+  capture: true
+)
 rtx_shaders = custom_target(
   'rtx_shaders',
   build_by_default: true,
   output: ['_built_shaders.txt'],
+  depends: [numos_haze_headers],
   command: [ python_interpreter ] + rtx_shaders_command_arguments
 )
 
 # NV-DXVK start: NUMOS sky provider (submodules/numos): the CPU library, and its passes built with
 # this tree's slangc and checked against the library's pass table (passes.inc changes whenever a
 # submodule bump changes a shader, which re-runs the build).
+numos_shader_command = [ python_interpreter, numos_shader_script, 'build', numos_root, slang_compiler.full_path(), numos_spirv_dir, '@OUTPUT@' ]
+if release_build
+  numos_shader_command += [ spirv_opt.full_path(), spirv_val.full_path() ]
+endif
+
 numos_shaders = custom_target(
   'numos_shaders',
   build_by_default: true,
   output: ['_numos_shaders.txt'],
-  depend_files: files('../../submodules/numos/src/generated/passes.inc'),
-  command: [ python_interpreter, numos_shader_script, 'build', numos_root, slang_compiler.full_path(), numos_spirv_dir, '@OUTPUT@' ]
+  depend_files: files('../../submodules/numos/src/generated/passes.inc',
+    '../../scripts-common/numos_shaders.py', '../../scripts-common/numos_scene_shaders.py',
+    '../../scripts-common/compile_shaders.py', '../../scripts-common/numos_haze_shaders.py',
+    'shaders/numos_haze/numos_haze_helpers.slangh'),
+  command: numos_shader_command
 )
 
 numos_lib = static_library('numos', files([

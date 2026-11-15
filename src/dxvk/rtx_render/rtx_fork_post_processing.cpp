@@ -20,7 +20,7 @@ namespace dxvk {
 
   namespace {
     constexpr size_t kInvalidIndex = static_cast<size_t>(-1);
-    constexpr size_t kEffectCount = 10;
+    constexpr size_t kEffectCount = 11;
     constexpr const char* kExternalPrefix = "external:";
 
     std::string joinConfigIds(const std::vector<std::string>& ids) {
@@ -92,6 +92,7 @@ namespace dxvk {
       { EffectId::NtscVhs,     "NTSC / VHS",     "ntsc_vhs",     EffectDomain::Display, true  },
       { EffectId::SunFlare,    "Sun Flare",      "sun_flare",    EffectDomain::Display,  true  },
       { EffectId::LocalStarbursts, "Local Starbursts", "local_starbursts", EffectDomain::Display, true },
+      { EffectId::LocalCoronas, "Local Corona Cores", "local_coronas", EffectDomain::Display, true },
       { EffectId::LensRain, "Lens Rain", "lens_rain", EffectDomain::Display, true },
       { EffectId::LensEffects, "Lens Effects",   "lens_effects", EffectDomain::Display,  true  },
       { EffectId::SRGBDither,  "sRGB + Dither",  "srgb_dither",  EffectDomain::Terminal, false },
@@ -145,6 +146,7 @@ namespace dxvk {
       { false, EffectId::NtscVhs, {} },
       { false, EffectId::SunFlare, {} },
       { false, EffectId::LocalStarbursts, {} },
+      { false, EffectId::LocalCoronas, {} },
       { false, EffectId::LensRain, {} },
       { false, EffectId::LensEffects, {} },
       { false, EffectId::SRGBDither, {} },
@@ -224,7 +226,7 @@ namespace dxvk {
         const size_t lensIndex = findEffect(parsedOrder, "lens_effects");
         const size_t rainIndex = findEffect(parsedOrder, "lens_rain");
         const size_t flareIndex = rainIndex != kInvalidIndex ? rainIndex : lensIndex;
-        if ((entry.builtInId == EffectId::SunFlare || entry.builtInId == EffectId::LocalStarbursts) && flareIndex != kInvalidIndex) {
+        if ((entry.builtInId == EffectId::SunFlare || entry.builtInId == EffectId::LocalStarbursts || entry.builtInId == EffectId::LocalCoronas) && flareIndex != kInvalidIndex) {
           parsedOrder.insert(parsedOrder.begin() + flareIndex, entry);
         } else if (entry.builtInId == EffectId::LensRain && lensIndex != kInvalidIndex) {
           parsedOrder.insert(parsedOrder.begin() + lensIndex, entry);
@@ -373,7 +375,9 @@ namespace dxvk {
       const EffectId id = entry.builtInId;
       if (!optionalEffectsEnabled
           && id != EffectId::Tonemapping
-          && id != EffectId::SRGBDither) {
+          && id != EffectId::SRGBDither
+          && id != EffectId::LocalCoronas
+          && id != EffectId::LensRain) { // Finish an already accepted native-drop frame even after a UI toggle.
         continue;
       }
 
@@ -406,6 +410,9 @@ namespace dxvk {
         break;
       case EffectId::LensEffects:
         ctx->dispatchPostFxLensEffects(rtOutput);
+        break;
+      case EffectId::LocalCoronas:
+        ctx->getCommonObjects()->metaPostFx().dispatchLocalCoronas(ctx, rtOutput);
         break;
       case EffectId::SRGBDither:
         ctx->dispatchSRGBDither(rtOutput, performSRGBConversion);
@@ -522,6 +529,9 @@ namespace dxvk {
           break;
         case EffectId::NtscVhs:
           enabledOption = &postFx.ntscEnableObject();
+          break;
+        case EffectId::LocalCoronas:
+          enabledOption = &postFx.localCoronasEnableObject();
           break;
         case EffectId::LocalStarbursts:
           enabledOption = &postFx.enabledObject();
@@ -656,6 +666,9 @@ namespace dxvk {
         break;
       case EffectId::NtscVhs:
         postFx.showNtscImguiSettings();
+        break;
+      case EffectId::LocalCoronas:
+        postFx.showLocalCoronaSettings();
         break;
       case EffectId::LocalStarbursts:
         postFx.showLocalStarburstSettings();

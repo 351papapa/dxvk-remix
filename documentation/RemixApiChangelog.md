@@ -1,5 +1,72 @@
 ## Remix API Changelog
 
+## 2026-11-08 — Local corona v2 filter ownership
+
+### Added
+
+`__remix.localCoronas.runtimeVersion2`, `submit_v2`, and `status_v2` provide opt-in LC02 snapshots of up to 4096 sources, ordered CPU acceptance, and diagnostic status. Filter/PostFX disable accepts explicit suppression without host fallback; first late frame submissions reject while repeated submissions remain runtime-owned without drawing again. V1 keys and 512-source LC01 remain available. No bridge opcode changes. See [Local corona cores](LocalCoronaCores.md).
+
+## 2026-11-08 — Experimental local corona snapshot protocol v1
+
+### Added
+
+`remix_local_coronas.h` defines the exact `__remix.localCoronas.runtimeVersion`
+capability and `__remix.localCoronas.submit_v1` snapshot key. LC01 carries at most
+512 little-endian 48-byte records in bounded text; rejected batches retain host
+fallback. Success acknowledges the copied command-stream snapshot, not a completed
+draw: full-renderer early-outs and late submission remain experimental limits.
+The default-off host core backend is screen-only and does not preserve its former
+card's reflection/GI contribution. Exported bridge command ABI and starbursts are
+unchanged. See [Local corona cores](LocalCoronaCores.md).
+
+
+## 2026-11-08 — Native screen-droplet transactions
+
+Added the opt-in `__lensDrops.frame_v1` / `__lensDrops.capability_v1` /
+`__lensDrops.orderedCapability_v1`
+GameValue convention for complete native water/blood lens snapshots. The exact
+submit key synchronously validates the whole batch and transfers one-frame drawing
+ownership only on success. The device-owned consumer stamps frame and scene epoch,
+never reuses stale data, and finishes accepted frames across UI toggles. A bounded
+CPU-command-stream synchronization makes active-frame capability stamps ordered;
+it does not wait for GPU completion. Pending screen snapshots have a real current
+backbuffer fallback at scene present, including MSAA and actual gamma/HDR semantics.
+No exported
+signature, public struct, or interface-table changes. See
+[Native screen droplets](RemixLensDropsAPI.md).
+
+## 2026-11-07 — External-light operation ordering
+
+### Fixed
+
+CreateLight, CreateLightBatched, UpdateLightDefinition, DestroyLight and
+DrawLightInstance retain call order across native and API presentation. Batched
+creates flush before subsequent ordinary light operations while remaining grouped
+in one command-stream submission. A destroyed handle can be recreated safely with
+the same hash. No exported signature, struct layout or version changes.
+
+## 2026-11-07 — Remove host vegetation animation exchange
+
+### Removed
+
+Removed runtime publication of `__vegetation.wind_v1` and retired the host-only
+`__vegetation.render_catalog_v1` convention with the host vegetation animation
+path. Procedural grass continues to use resolved weather wind directly and
+consumes `__vegetation.pushers_v1` contacts. No exported function or binary struct
+layout changes. See [Vegetation contacts](RemixVegetationAPI.md).
+
+## 2026-11-07 — Vegetation wind and contact state
+
+### Added
+
+Documented the `__vegetation.wind_v1`, `__vegetation.pushers_v1` and host-only
+`__vegetation.render_catalog_v1` GameStateStore conventions. The runtime
+publishes resolved weather wind and accepts contact spheres for procedural
+grass. Game adapters can use the same values to animate their own vegetation.
+The existing grass wind/contact options now have menu controls; the wind
+multiplier defaults to 1 and respects the ambient angle limit. No exported
+function or binary struct layout changes. See [Vegetation state](RemixVegetationAPI.md).
+
 ## 2026-11-04 — Optional local starburst snapshot
 
 Added the standalone `remixapi_SubmitLocalStarbursts` version 1 export and matching bridge support. The fixed-width records describe presentation optics for the current frame. See [Local starbursts](LocalStarbursts.md).

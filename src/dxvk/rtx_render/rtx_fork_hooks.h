@@ -143,14 +143,13 @@ namespace dxvk {
     // Implementation in rtx_fork_capture.cpp.
     void captureCoordSystemSkip(lss::Export& exportPrep);
 
-    // Drains the deferred external-light erases, updates and activations, in that order,
-    // then activates the persistent lights.
+    // Applies deferred external-light commands in caller order, then activates persistent lights.
     // Called at the top of LightManager::prepareSceneData, before linearization.
     // Requires friend access to LightManager (see rtx_light_manager.h).
     // Implementation in rtx_fork_light.cpp.
     void flushPendingLightMutations(LightManager& mgr);
 
-    // Updates an externally tracked or external API light in place, with static-light sleep.
+    // Updates an externally tracked light in place, with static-light sleep.
     // A static light stops copying new data once isStaticCount reaches numFramesToPutLightsToSleep,
     // which preserves its temporal denoiser data.
     // Pass kInvalidExternallyTrackedLightId as externalId for an external API light.
@@ -170,22 +169,22 @@ namespace dxvk {
       remixapi_LightHandle handle,
       const RtLight& rtlight);
 
-    // Queues a light handle for erase at the next flushPendingLightMutations.
+    // Queues an ordered erase at the next flushPendingLightMutations.
     // Requires friend access to LightManager (see rtx_light_manager.h).
     // Implementation in rtx_fork_light.cpp.
     void disableExternalLightQueue(LightManager& mgr, remixapi_LightHandle handle);
 
-    // Adds a non-null handle to m_persistentExternalLights.
+    // Queues persistent registration in external-light command order.
     // Requires friend access to LightManager (see rtx_light_manager.h).
     // Implementation in rtx_fork_light.cpp.
     void registerPersistentLight(LightManager& mgr, remixapi_LightHandle handle);
 
-    // Removes a non-null handle from m_persistentExternalLights.
+    // Queues persistent unregistration in external-light command order.
     // Requires friend access to LightManager (see rtx_light_manager.h).
     // Implementation in rtx_fork_light.cpp.
     void unregisterPersistentLight(LightManager& mgr, remixapi_LightHandle handle);
 
-    // Queues every persistent light for activation at the next flushPendingLightMutations.
+    // Queues activation of the persistent set at this point in command order.
     // Requires friend access to LightManager (see rtx_light_manager.h).
     // Implementation in rtx_fork_light.cpp.
     void queueAutoInstancePersistent(LightManager& mgr);

@@ -51,7 +51,7 @@ private:
   using fspath = std::filesystem::path;
   template<typename... PathParts>
   static inline fspath join(PathParts... pathParts) {
-    return std::filesystem::absolute((fspath(pathParts) / ...));
+    return (fspath(pathParts) / ...);
   }
   struct PathSpec {
     Id id;

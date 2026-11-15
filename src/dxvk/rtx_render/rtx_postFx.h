@@ -27,12 +27,17 @@
 #include "rtx_objectpicking.h"
 #include "rtx_resources.h"
 #include "rtx_texture.h"
+#include "rtx_screen_lens_drops.h"
 
 #include "../spirv/spirv_code_buffer.h"
 #include "../util/util_matrix.h"
 #include "rtx_options.h"
 
+#include <remix/remix_local_coronas.h>
+
 struct remixapi_LocalStarburstSource;
+struct LensRainArgs;
+struct LensRainDrop;
 
 namespace dxvk {
 
@@ -101,10 +106,29 @@ namespace dxvk {
     void showLensEffectsImguiSettings();
     void showLensRainImguiSettings();
     void dispatchLensRain(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
+    bool dispatchPendingScreenLensDrops(Rc<RtxContext> ctx, const Rc<DxvkImage>& target, bool targetGammaEncoded);
+    void recordScreenLensCameraMedium(Rc<RtxContext> ctx, bool resolved);
+    bool screenLensDropTimingsEnabled() const { return m_screenLensDropTimings; }
+    void reportScreenLensDropTiming(const char* operation, uint32_t count, uint64_t microseconds);
+    bool reserveScreenLensDrops(const ScreenLensDropFrame& frame) { return m_screenLensDrops.reserve(frame); }
+    uint64_t screenLensDropDeviceToken() const { return m_screenLensDrops.deviceToken(); }
+    void setScreenLensDrops(uint32_t renderFrame, uint64_t sceneEpoch, ScreenLensDropFrame&& frame) {
+      m_screenLensDrops.commit(std::move(frame), renderFrame, sceneEpoch);
+    }
+    void cancelScreenLensDrops() { m_screenLensDrops.cancel(); }
     void showNtscImguiSettings();
     void setLocalStarbursts(uint32_t frame, uint64_t sceneEpoch, std::vector<remixapi_LocalStarburstSource>&& sources);
     void dispatchLocalStarbursts(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
     void showLocalStarburstSettings();
+    // Called only after the synchronous core submit capability/validation succeeds.
+    static bool prepareLocalCoronas();
+    bool setLocalCoronas(uint32_t frame, uint64_t sceneEpoch, std::vector<remixapi::local_coronas::Source>&& sources, bool suppressed = false, bool available = true);
+    void showLocalCoronaSettings();
+    uint64_t localCoronaStatus() const { return m_localCoronaStatus.load(); }
+    RTX_OPTION("rtx.localCoronas", bool, localCoronasEnable, false, "Display host-submitted corona cores. With v2 hosts, disabling this filter hides its cores without restoring host geometry.");
+    RTX_OPTION("rtx.localCoronas", float, localCoronasBrightness, 1.0f, "Display-space core brightness multiplier.");
+    RTX_OPTION("rtx.localCoronas", float, localCoronasSize, 1.0f, "Multiplier for the host-supplied core radius.");
+    void dispatchLocalCoronas(Rc<RtxContext> ctx, const Resources::RaytracingOutput& rtOutput);
 
     RTX_OPTION("rtx.starbursts", bool, enabled, false, "Draw local star masks from sources submitted for this game frame.");
     RTX_OPTION("rtx.starbursts", std::string, maskTexture, "", "Star mask texture path relative to the game root or absolute. Empty disables drawing.");
@@ -151,6 +175,10 @@ namespace dxvk {
     RTX_OPTION_ARGS("rtx.postfx", bool, enableVignette, true, "Enables vignette post-processing effect.",
                     args.flags = RtxOptionFlags::UserSetting);
     RTX_OPTION("rtx.lensRain", bool, lensRainEnable, false, "Enable screen-space lens droplets driven by the active rain/storm weather. Runs after upscaling and tonemapping.");
+    RTX_OPTION("rtx.lensRain", bool, gameWaterDropsEnable, false, "Draw native game water droplets submitted through the screen-droplet bridge, independently of rain weather.");
+    RTX_OPTION("rtx.lensRain", bool, gameBloodDropsEnable, false, "Draw native game blood droplets submitted through the screen-droplet bridge. Does not create blood events from ordinary damage.");
+    RTX_OPTION("rtx.lensRain", float, gameDropSizeScale, 1.0f, "Size multiplier for game-submitted lens droplets. Their positions and lifetimes remain controlled by the game.");
+    RTX_OPTION("rtx.lensRain", float, bloodAbsorption, 1.0f, "Blood-droplet color absorption. Zero keeps clear refraction; larger values darken thicker regions.");
     RTX_OPTION("rtx.lensRain", float, forceAmount, -1.0f, "-1: follow weather; 0..1: force a preview amount. Shelter still applies unless respectShelter is disabled.");
     RTX_OPTION("rtx.lensRain", bool, respectShelter, false, "Fade lens rain inside published no-rain cullzones or when the game disables interior precipitation, including forced previews.");
     RTX_OPTION("rtx.lensRain", float, drySeconds, 2.5f, "Time to remove 95 percent of the lens rain after entering shelter or rain stopping.");
@@ -250,9 +278,36 @@ namespace dxvk {
                "Strength of the luma trail to the right of bright edges, from 0 to 1.");
 
   private:
+    std::vector<LensRainDrop> screenLensDropUploads(float aspect) const;
+    bool screenLensCameraInWater(Rc<RtxContext> ctx);
+    uint64_t screenLensWaterMediumHash();
+    void dispatchLensRainImage(Rc<RtxContext> ctx, const Resources::Resource& source,
+      const Resources::Resource& destination, const LensRainArgs& args, const std::vector<LensRainDrop>& gameDrops);
+    Resources::Resource m_screenLensLateSource;
+    Resources::Resource m_screenLensLateOutput;
+    std::string m_screenLensWaterMediumSetting;
+    uint64_t m_screenLensWaterMediumHash = 0;
+    uint32_t m_screenLensMediumFrame = 0;
+    bool m_screenLensMediumResolved = false;
+    bool m_screenLensMediumInWater = false;
+    bool m_screenLensDropTimings = false;
+    std::atomic<uint32_t> m_screenLensDropTimingSamples { 0 };
     Rc<vk::DeviceFn> m_vkd;
     Rc<DxvkBuffer> m_highlightingValues;
     Resources::Resource m_dofFocusState;
+    std::vector<remixapi::local_coronas::Source> m_localCoronas;
+    uint32_t m_localCoronasFrame = 0;
+    uint64_t m_localCoronasEpoch = 0;
+    bool m_localCoronasConsumed = true;
+    bool m_localCoronasSubmitted = false;
+    bool m_localCoronasDispatched = false;
+    uint32_t m_localCoronasDispatchFrame = 0;
+    std::atomic<uint64_t> m_localCoronaStatus { 0 };
+    void recordLocalCoronaStatus(remixapi::local_coronas::State state, uint32_t frame, uint32_t count) {
+      m_localCoronaStatus.store((uint64_t(frame) << 32) | (uint64_t(count) << 8) | uint32_t(state));
+    }
+    Rc<DxvkBuffer> m_localCoronaInputs;
+    Rc<DxvkBuffer> m_localCoronaSprites;
     std::vector<remixapi_LocalStarburstSource> m_localStars;
     uint32_t m_localStarsFrame = 0;
     uint64_t m_localStarsEpoch = 0;
@@ -278,6 +333,7 @@ namespace dxvk {
     VkExtent3D m_dofHalfExtent = { 0, 0, 0 };
     bool m_dofFocusStateReset = true;
 
+    ScreenLensDropState m_screenLensDrops;
     float m_lensRainAmount = 0.0f;
     Vector3 m_lensRainVelocity = Vector3(0.0f);
     uint32_t m_lensRainDropCount = 0;

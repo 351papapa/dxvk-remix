@@ -12,15 +12,20 @@
 // old storage. Every buffer gets a tail pad for that reason.
 
 #include <string>
+#include "rtx_numos_haze_probe.h"
+#include "rtx_numos_cloud_probe.h"
 #include <unordered_map>
 #include <vector>
 
 #include "numos/gpu.h"
+#include "numos/lib/aerial_perspective_light.h"
 #include "numos/shaders.h"
 
 #include "../dxvk_context.h"
 
 namespace dxvk {
+
+  class SceneManager;
 
   class NumosGpu final : public numos::IGpu {
   public:
@@ -29,9 +34,13 @@ namespace dxvk {
 
     // Binds the frame's context; every IGpu call until endFrame records into it.
     void beginFrame(const Rc<DxvkContext>& ctx, uint64_t frameId);
+    // Set before NUMOS records this frame; zero keeps each spotlight's original haze reach.
+    void setHazeSpotlightReach(float reachWorld);
     // Drops the context reference (the context holds the device, which owns this object: holding it
     // past the frame would keep the device alive forever).
-    void endFrame() { m_ctx = nullptr; }
+    void endFrame();
+    // Valid only during dispatchPostDepth, after the frame's TLAS/surface upload.
+    void setCloudProbeScene(const SceneManager* scene) { m_cloudProbeScene = scene; }
 
     // Host resources NUMOS reads (FrameInputs::opaqueTlas, blueNoise, the linearViewZ texture): a
     // fixed handle per kind, re-pointed every frame.
@@ -81,6 +90,7 @@ namespace dxvk {
       numos::BufferDesc desc;
       Rc<DxvkBuffer> buffer;
       bool copied = false;  // Readback: a copy into it was recorded
+      bool hazeLights = false;
     };
     struct Resource {
       enum class Kind { Texture, Buffer, Sampler, Accel, ExternalView } kind;
@@ -93,6 +103,8 @@ namespace dxvk {
     struct Pass {
       bool loaded = false;
       Rc<DxvkShader> shader;
+      Rc<DxvkShader> sceneShader;
+      Rc<DxvkShader> sceneProbeShader;
     };
 
     Resource* find(numos::GpuHandle handle);
@@ -101,6 +113,7 @@ namespace dxvk {
     Rc<DxvkImageView> viewFor(Texture& texture, uint32_t mip, uint32_t mipCount, numos::BindingDim dim, bool storage);
     Rc<DxvkImageView> placeholder(numos::BindingDim dim, bool storage, uint32_t spirvFormat);
     Rc<DxvkShader> shaderFor(uint32_t pass);
+    void prepareHazeShaders();
 
     DxvkDevice* m_device;
     std::string m_spirvDirectory;
@@ -111,6 +124,14 @@ namespace dxvk {
     numos::GpuHandle m_nextHandle = 1;
     std::vector<Pass> m_passes;
     bool m_shaderLoadFailed = false;
+    bool m_hazeChecked = false;
+    std::vector<std::vector<uint32_t>> m_hazeWords;
+    NumosHazeProbe m_hazeProbe;
+    NumosCloudProbe m_cloudProbe;
+    const SceneManager* m_cloudProbeScene = nullptr;
+    float m_hazeSpotlightReachWorld = 0.0f;
+    bool m_hazeUploadWarning = false;
+    std::vector<numos::AerialPerspectiveLight> m_hazeUploadLights;
 
     // Constants ring: one device-local buffer written in the command stream, rewound every frame.
     // Larger than DXVK's 256 KB rename limit, and never written whole, so it is never renamed.

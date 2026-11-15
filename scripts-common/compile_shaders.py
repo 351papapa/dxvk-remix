@@ -39,7 +39,7 @@ args = parser.parse_args()
 # Set to True to generate Slang repro file when compiling shaders
 generateSlangRepro = False
 
-includePaths = ' '.join([f'-I{path}' for path in args.includes])
+includePaths = [f'-I{path}' for path in args.includes]
 slangDll = os.path.join(os.path.dirname(args.slangc), 'slang.dll')
 
 tools = [args.glslang, args.slangc, slangDll, __file__]
@@ -51,12 +51,12 @@ newestTool = max([os.path.getmtime(x) for x in tools])
 # the glslang optimizer actually just enables more optimizations when this option is specified, meaning it is probably good to enable
 # always (assuming that data wouldn't help the actual driver compiler at least, and we've observed it to make a slight speedup overall):
 # https://github.com/KhronosGroup/glslang/blob/master/SPIRV/SpvTools.cpp#L213
-glslangFlags = '--quiet --target-env vulkan1.2 -Os'
+glslangFlags = ['--quiet', '--target-env', 'vulkan1.2', '-Os']
 
 # Note: Debug is used for Debug and DebugOptimized currently, so it does not disable optimizations persay
 # (as otherwise -Od should be passed and be mutually exclusive with -Os), just means to generate debug info.
 if args.debug:
-    glslangFlags += ' -g'
+    glslangFlags.append('-g')
 
 # With -spirvopt, every Slang output gets an extra spirv-opt pass that also strips the debug names, then a spirv-val check.
 # The bindings and spec constants stay as declared, since the C++ side refers to them by number.
@@ -73,9 +73,10 @@ spirvOptPasses = [
   'vector-dce', 'eliminate-dead-inserts', 'eliminate-dead-branches', 'simplify-instructions', 'if-conversion',
   'copy-propagate-arrays', 'reduce-load-size', 'eliminate-dead-code-aggressive', 'merge-blocks', 'redundancy-elimination',
   'eliminate-dead-branches', 'merge-blocks', 'simplify-instructions']
-spirvOptFlags = ' '.join([f'--{p}' for p in spirvOptPasses]) \
-              + ' --strip-debug --strip-nonsemantic --preserve-bindings --preserve-spec-constants --target-env=vulkan1.2 --scalar-block-layout'
-spirvValFlags = '--target-env vulkan1.2 --scalar-block-layout'
+spirvOptFlags = [f'--{p}' for p in spirvOptPasses] + [
+    '--strip-debug', '--strip-nonsemantic', '--preserve-bindings', '--preserve-spec-constants',
+    '--target-env=vulkan1.2', '--scalar-block-layout']
+spirvValFlags = ['--target-env', 'vulkan1.2', '--scalar-block-layout']
 
 os.makedirs(args.output, exist_ok = True)
 
@@ -134,12 +135,14 @@ class Task:
             #print(command)
             timeStart = time.time()
 
-            process = subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+            # Keep executable, include paths, defines and outputs as individual arguments.
+            # A shell string splits Windows paths containing spaces before the compiler sees them.
+            process = subprocess.Popen(command, shell = False, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
             out, err = process.communicate()
 
             duration = time.time() - timeStart
 
-            commandName = os.path.basename(command.split(' ')[0])
+            commandName = os.path.basename(command[0])
             printFromThread(f'[{duration:5.2f}s] {commandName}: {self.getName()}')
 
             combinedOutput = (out + err).decode("utf-8").strip()
@@ -226,10 +229,10 @@ def createGlslangTask(inputFile):
     destFile = os.path.join(args.output, shaderName + destExtension)
     depFile = os.path.join(args.output, shaderName + ".d")
     task = createBasicTask(inputFile, destFile, destFile, depFile)
-    variableName = '' if args.binary else f'--vn {shaderName}'
+    variableName = [] if args.binary else ['--vn', shaderName]
 
-    command = f'{args.glslang} {glslangFlags} {includePaths} -V {variableName} -o {destFile} ' \
-            + f'--depfile {depFile} {inputFile}'
+    command = [args.glslang] + glslangFlags + includePaths + ['-V'] + variableName + [
+        '-o', destFile, '--depfile', depFile, inputFile]
     task.commands = [command]
     return task
 
@@ -240,7 +243,7 @@ def createSlangTask(inputFile, variantSpec):
     inputName, inputType = os.path.splitext(getShaderName(inputFile))
     variantName, variantType = os.path.splitext(variantSpec[0])
 
-    variantDefines = ' '.join([f'-D{x}' for x in variantSpec[1:]])
+    variantDefines = [f'-D{x}' for x in variantSpec[1:]]
     destFile = os.path.join(args.output, variantName + ".spv")
     headerFile = os.path.join(args.output, variantName + ".h")
     depFile = os.path.join(args.output, variantName + ".d")
@@ -254,28 +257,28 @@ def createSlangTask(inputFile, variantSpec):
     if variantName != inputName:
         task.customName = f'{os.path.basename(inputFile)} ({variantName})'
 
-    command1 = f'{args.slangc} -entry main -target spirv -zero-initialize -emit-spirv-directly -verbose-paths {includePaths} ' \
-            + f'-depfile {depFile} {inputFile} -D__SLANG__ {variantDefines} ' \
-            + f'-matrix-layout-column-major ' \
-            + f'-Wno-30081 '
+    command1 = [args.slangc, '-entry', 'main', '-target', 'spirv', '-zero-initialize',
+        '-emit-spirv-directly', '-verbose-paths'] + includePaths + [
+        '-depfile', depFile, inputFile, '-D__SLANG__'] + variantDefines + [
+        '-matrix-layout-column-major', '-Wno-30081']
 
     # Add SER capability only for variants that use Shader Execution Reordering
     if 'RT_SHADER_EXECUTION_REORDERING' in variantSpec:
-        command1 += f'-capability spvShaderInvocationReorderNV '
+        command1 += ['-capability', 'spvShaderInvocationReorderNV']
 
     # Force scalar block layout in shaders - buffers are required to be aligned as such by Neural Radiance Cache
-    command1 += f'-fvk-use-scalar-layout '
+    command1.append('-fvk-use-scalar-layout')
 
     if generateSlangRepro:
       reproFile = os.path.join(args.output, variantName + ".slangRepro")
-      command1 += f'-dump-repro {reproFile}'
+      command1 += ['-dump-repro', reproFile]
 
-    command1 += f'-o {slangOutputFile}'
+    command1 += ['-o', slangOutputFile]
 
     compileCommands = [command1]
     if args.spirvopt:
-        compileCommands.append(f'{args.spirvopt} {spirvOptFlags} {slangOutputFile} -o {destFile}')
-        compileCommands.append(f'{args.spirvval} {spirvValFlags} {destFile}')
+        compileCommands.append([args.spirvopt] + spirvOptFlags + [slangOutputFile, '-o', destFile])
+        compileCommands.append([args.spirvval] + spirvValFlags + [destFile])
 
     # -binary switch just writes the SPV binary
     if args.binary:
@@ -287,7 +290,7 @@ def createSlangTask(inputFile, variantSpec):
         # Command to convert SPV into c array header
         script_dir = os.path.dirname(os.path.realpath(__file__))
         shader_xxd = os.path.join(script_dir, 'shader_xxd.py')
-        command2 = f'"{sys.executable}" {shader_xxd} -i {destFile} -o {headerFile}'
+        command2 = [sys.executable, shader_xxd, '-i', destFile, '-o', headerFile]
 
         task.commands = compileCommands + [command2]
 

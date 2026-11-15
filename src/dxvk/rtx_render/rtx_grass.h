@@ -35,6 +35,16 @@ public:
   RTX_OPTION("rtx.grass", float, maxSlopeDegrees, 45.0f, "Maximum ground slope in degrees.");
   RTX_OPTION("rtx.grass", float, fadeDistance, 5.0f, "Fade local Z inside the range boundary, including the front/rear transition.");
   RTX_OPTION("rtx.grass", float, groundOffset, -0.02f, "Root offset along the ground normal.");
+  RTX_OPTION("rtx.grass", float, windReference, 0.05f, "Cloud wind speed treated as the normal-wind reference. Current NUMOS weather is normalized against this value.");
+  RTX_OPTION("rtx.grass", float, windMaxRadians, 0.45f, "Maximum ambient wind lean in radians, including gusts and the strength multiplier. Contact bending has a separate limit.");
+  RTX_OPTION_ARGS("rtx.grass", float, windStrengthMultiplier, 1.0f,
+               "Scales ambient wind strength before the wind-angle limit. Zero disables wind bending. Contact bending is unchanged.",
+               args.minValue = 0.0f, args.maxValue = 10.0f);
+  RTX_OPTION("rtx.grass", float, gustStrength, 0.35f, "Fractional strength of the travelling wind gust.");
+  RTX_OPTION("rtx.grass", float, gustFrequency, 0.04f, "Traveling gust frequency in hertz.");
+  RTX_OPTION("rtx.grass", float, swayFrequency, 0.03f, "Low-frequency per-clump sway in hertz.");
+  RTX_OPTION("rtx.grass", float, contactRadius, 0.25f, "Extra bend radius around player and vehicle pushers.");
+  RTX_OPTION("rtx.grass", float, contactMaxRadians, 1.40f, "Maximum contact lean. Values near 1.4 flatten the clump without moving its root.");
   RTX_OPTION("rtx.grass", bool, keepInsideSurface, false, "Inset roots by grass bounds at open mesh edges. Shared triangle edges are welded.");
   RTX_OPTION("rtx.grass", int, maxInstances, 256, "Maximum submitted grass clumps (1-512); nearest clumps take priority.");
   RTX_OPTION("rtx.grass", int, reloadVersion, 0, "Increment to reload the grass USD and clear placement caches.");

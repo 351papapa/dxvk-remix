@@ -416,6 +416,14 @@ public:
   const fast_unordered_cache<FogState>& getFogStates() const { return m_fogStates; }
 
   uint32_t getStartInMediumMaterialIndex() { return m_startInMediumMaterialIndex; }
+  // The external request is already a typed translucent cache entry and persists
+  // until explicitly changed or the scene clears. Match prepareSceneData's bounds
+  // check for consumers that must run when full scene preparation was skipped.
+  uint64_t getActiveExternalStartInMediumMaterialSourceHash() const {
+    return m_externalStartInMediumMaterialIndex_inCache != kInvalidMaterialCacheIndex
+      && m_externalStartInMediumMaterialIndex_inCache < m_surfaceMaterialCache.getObjectTable().size()
+      ? m_externalStartInMediumMaterialSourceHash : 0;
+  }
   uint64_t getStartInMediumMaterialSourceHash() const {
     return m_startInMediumMaterialIndex != SURFACE_INDEX_INVALID ? m_startInMediumMaterialSourceHash : 0;
   }

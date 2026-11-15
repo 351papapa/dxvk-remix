@@ -1,0 +1,231 @@
+// Copyright (c) 2026 Remix Plus contributors
+// SPDX-License-Identifier: Apache-2.0
+// Host-owned NUMOS integration: complete conservative light lists, without changing its buffer ABI.
+
+#pragma once
+
+static const uint kApHazeBitsetMarker = 0x80000000u;
+static const uint kApHazeWordCount = 16u;
+static const uint kApHazeBitCount = 512u;
+
+uint apHazeGroupSize(uint lightCount) {
+  return max(lightCount / kApHazeBitCount + uint(lightCount % kApHazeBitCount != 0u), 1u);
+}
+
+// A set bit represents the entire consecutive group, including any conservatively added lights.
+// The header's low bits count actual geometric candidates, NOT the expanded group membership.
+struct ApHazeLightIterator {
+  uint offset;
+  uint lightCount;
+  uint groupSize;
+  uint wordIndex;
+  uint wordMask;
+  uint groupNext;
+  uint groupEnd;
+  uint legacyNext;
+  uint legacyCount;
+  bool bitset;
+};
+
+ApHazeLightIterator apHazeLightIterator(StructuredBuffer<uint> records, uint offset, uint lightCount) {
+  ApHazeLightIterator it;
+  it.offset = offset;
+  it.lightCount = lightCount;
+  it.groupSize = apHazeGroupSize(lightCount);
+  it.wordIndex = 0u;
+  it.wordMask = 0u;
+  it.groupNext = 0u;
+  it.groupEnd = 0u;
+  it.legacyNext = 0u;
+  const uint header = records[offset];
+  it.bitset = (header & kApHazeBitsetMarker) != 0u;
+  it.legacyCount = min(header, kApHazeWordCount);
+  if ((header & ~kApHazeBitsetMarker) == 0u || lightCount == 0u) {
+    it.wordIndex = kApHazeWordCount;
+    it.legacyCount = 0u;
+  }
+  return it;
+}
+
+bool apHazeNextLight(StructuredBuffer<uint> records, inout ApHazeLightIterator it, out uint lightIndex) {
+  lightIndex = 0u;
+  if (!it.bitset) {
+    while (it.legacyNext < it.legacyCount) {
+      const uint index = records[it.offset + 1u + it.legacyNext++];
+      if (index < it.lightCount) {
+        lightIndex = index;
+        return true;
+      }
+    }
+    return false;
+  }
+  if (it.groupNext < it.groupEnd) {
+    lightIndex = it.groupNext++;
+    return true;
+  }
+  while (it.wordMask != 0u || it.wordIndex < kApHazeWordCount) {
+    if (it.wordMask == 0u) {
+      it.wordMask = records[it.offset + 1u + it.wordIndex++];
+      if (it.wordMask == 0u) {
+        continue;
+      }
+    }
+    const uint bit = (it.wordIndex - 1u) * 32u + uint(firstbitlow(it.wordMask));
+    it.wordMask &= it.wordMask - 1u;
+    it.groupNext = bit * it.groupSize;
+    it.groupEnd = min(it.groupNext + it.groupSize, it.lightCount);
+    if (it.groupNext < it.groupEnd) {
+      lightIndex = it.groupNext++;
+      return true;
+    }
+  }
+  return false;
+}
+
+// The source's shaping uses dot(rawAxis, normalizedDirection) >= cosConeAngle. Account for
+// a non-unit axis rather than changing that condition by simply normalizing it. Invalid inputs
+// and boundary-degenerate cones fall back to the sphere test; they must never erase a light.
+bool apHazeCone(AerialPerspectiveLight light, out vec3 axis, out float cosine) {
+  axis = vec3(0.0f);
+  cosine = 0.0f;
+  const float axisSq = dot(light.coneAxis, light.coneAxis);
+  if (!(axisSq > 1e-12f) || !isfinite(axisSq) || !isfinite(light.cosConeAngle)) {
+    return false;
+  }
+  const float invAxisLength = rsqrt(axisSq);
+  axis = light.coneAxis * invAxisLength;
+  cosine = light.cosConeAngle * invAxisLength;
+  return all(isfinite(axis)) && cosine > -0.99999f && cosine < 0.99999f;
+}
+
+// Maximum support of the finite spherical sector along an inward frustum-plane normal.
+// Including the cone apex (support >= 0) is essential for lights behind the plane.
+bool apHazeOutsidePlane(AerialPerspectiveLight light, vec3 relativePosition, vec3 normal) {
+  const float normalLength = length(normal);
+  if (!(normalLength > 1e-8f) || !isfinite(normalLength) ||
+      !all(isfinite(relativePosition)) || !isfinite(light.influenceRadius) || light.influenceRadius < 0.0f) {
+    return false;
+  }
+  normal /= normalLength;
+  float support = 1.0f;
+  vec3 axis;
+  float cosine;
+  if (apHazeCone(light, axis, cosine)) {
+    const float d = clamp(dot(axis, normal), -1.0f, 1.0f);
+    if (d < cosine) {
+      support = max(0.0f, cosine * d + sqrt(max(0.0f, (1.0f - cosine * cosine) * (1.0f - d * d))));
+    }
+  }
+  const float planeDistance = dot(relativePosition, normal);
+  const float tolerance = 2e-5f * (1.0f + length(relativePosition) + abs(light.influenceRadius));
+  return planeDistance + light.influenceRadius * support < -tolerance;
+}
+
+// Distance from the cluster sphere's centre to a solid, infinite, convex cone. For cones wider
+// than a hemisphere the cone is non-convex, so retain the original conservative sphere bound.
+bool apHazeOutsideConeSphere(AerialPerspectiveLight light, vec3 relativeCenter, float radius) {
+  vec3 axis;
+  float cosine;
+  if (!apHazeCone(light, axis, cosine) || cosine < 0.0f || !all(isfinite(relativeCenter)) ||
+      !(radius >= 0.0f) || !isfinite(radius)) {
+    return false;
+  }
+  const float z = dot(relativeCenter, axis);
+  const float radial = length(relativeCenter - z * axis);
+  const float sine = sqrt(max(0.0f, 1.0f - cosine * cosine));
+  const float alongSide = z * cosine + radial * sine;
+  const float distance = alongSide <= 0.0f ? length(relativeCenter) : max(radial * cosine - z * sine, 0.0f);
+  const float tolerance = 2e-5f * (1.0f + length(relativeCenter) + radius);
+  return distance > radius + tolerance;
+}
+
+bool apHazeIntersectsCluster(AerialPerspectiveLight light, vec3 centerWorld, float radius) {
+  const vec3 relativeCenter = centerWorld - light.position;
+  const float reach = radius + light.influenceRadius;
+  const float tolerance = 2e-5f * (1.0f + length(relativeCenter) + abs(reach));
+  if (all(isfinite(relativeCenter)) && isfinite(reach) && reach >= 0.0f &&
+      length(relativeCenter) > reach + tolerance) {
+    return false;
+  }
+  return !apHazeOutsideConeSphere(light, relativeCenter, radius);
+}
+
+// Reject only when the entire ORIGINAL integration interval is outside the light. In particular,
+// this never clips a/b or moves the eight equiangular samples. It is valid for a non-unit ray too.
+// Reuse the caller's toLight vector and reject without common-path square roots.
+// All uncertain/degenerate cases retain the light. Original quadrature bounds/taps are unchanged.
+bool apHazeRayMayContribute(AerialPerspectiveLight light, vec3 toLight, vec3 direction, float a, float b) {
+  vec3 q = direction * a - toLight;
+  vec3 v = direction * (b - a);
+  if (!all(isfinite(q)) || !all(isfinite(v)) || !isfinite(light.influenceRadius) ||
+      light.influenceRadius < 0.0f) {
+    return true;
+  }
+  const float vSq = dot(v, v);
+  const float closest = vSq > 1e-20f ? saturate(-dot(q, v) / vSq) : 0.0f;
+  const vec3 closestPoint = q + closest * v;
+  // L1 >= L2: this roundoff margin is at least as permissive as the original distance margin.
+  const float qL1 = abs(q.x) + abs(q.y) + abs(q.z);
+  const float vL1 = abs(v.x) + abs(v.y) + abs(v.z);
+  const float tolerance = 2e-5f * (1.0f + qL1 + vL1 + light.influenceRadius);
+  const float reach = light.influenceRadius + tolerance;
+  if (dot(closestPoint, closestPoint) > reach * reach) {
+    return false;
+  }
+
+  // Use the shaping predicate dot(rawAxis, direction) >= rawCos directly. A unit axis is
+  // unnecessary for the cone quadratic; this removes the common-path reciprocal square root.
+  vec3 axis = light.coneAxis;
+  float cosine = light.cosConeAngle;
+  float axisSq = dot(axis, axis);
+  if (!(axisSq > 1e-12f) || !isfinite(axisSq) || !isfinite(cosine) || cosine < 0.0f) {
+    return true;
+  }
+  // Rare non-unit inputs are rescaled without a sqrt to keep products finite. The raw shaping
+  // inequality is unchanged because axis and cosine receive the same positive scale.
+  if (axisSq > 4.0f || axisSq < 0.25f) {
+    const float axisScale = max(max(abs(axis.x), abs(axis.y)), abs(axis.z));
+    axis /= axisScale;
+    cosine /= axisScale;
+    axisSq = dot(axis, axis);
+  }
+  const float cc = cosine * cosine;
+  if (!(cc < 0.99998f * axisSq) || !isfinite(cc)) {
+    return true;
+  }
+
+  // A max-component scale replaces two lengths. The enlarged tolerances cover its <=sqrt(3)
+  // difference from the old Euclidean scale, and the raw axis length (squared for the quadratic).
+  const float scale = max(max(max(abs(q.x), abs(q.y)), abs(q.z)),
+                          max(max(max(abs(v.x), abs(v.y)), abs(v.z)), 1.0f));
+  q /= scale;
+  v /= scale;
+  const float z = dot(q, axis);
+  const float dz = dot(v, axis);
+  const float epsilonZ = 8e-5f * (abs(axis.x) + abs(axis.y) + abs(axis.z));
+  const float epsilonQ = 12e-5f * axisSq;
+  if (max(z, z + dz) < -epsilonZ) {
+    return false;
+  }
+  if (cc < 1e-8f * axisSq) {
+    return true;
+  }
+  float lo = 0.0f;
+  float hi = 1.0f;
+  if (dz > epsilonZ) {
+    lo = max(lo, (-epsilonZ - z) / dz);
+  } else if (dz < -epsilonZ) {
+    hi = min(hi, (-epsilonZ - z) / dz);
+  }
+  const float qa = dz * dz - cc * dot(v, v);
+  const float qb = 2.0f * (z * dz - cc * dot(q, v));
+  const float qc = z * z - cc * dot(q, q);
+  float maximum = max((qa * lo + qb) * lo + qc, (qa * hi + qb) * hi + qc);
+  if (qa < -epsilonQ) {
+    const float vertex = clamp(-qb / (2.0f * qa), lo, hi);
+    maximum = max(maximum, (qa * vertex + qb) * vertex + qc);
+  } else if (qa < 0.0f) {
+    maximum += -qa * 0.25f;
+  }
+  return !isfinite(maximum) || maximum >= -epsilonQ;
+}

@@ -62,6 +62,14 @@ float rootFade(GrassRoot root) {
   return saturate((available - margin) / max(0.01, cb.forwardFade.w));
 }
 
+float rootHash01(GrassRoot root) {
+  uint value = root.identityLo ^ (root.identityHi * 747796405u);
+  value ^= value >> 16u;
+  value *= 0x7feb352du;
+  value ^= value >> 15u;
+  return float(value & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
 float4x4 rootTransform(GrassRoot root, float fade) {
   float3 normal = root.normalAngle.xyz;
   float3 helper = abs(normal.z) < 0.99 ? float3(0, 0, 1) : float3(0, 1, 0);
@@ -71,7 +79,43 @@ float4x4 rootTransform(GrassRoot root, float fade) {
   sincos(root.normalAngle.w, s, c);
   float3 x = (tangent * c + bitangent * s) * (cb.dimensions.x * root.positionScale.w);
   float3 y = (-tangent * s + bitangent * c) * (cb.dimensions.x * root.positionScale.w);
-  float3 z = normal * (cb.dimensions.y * root.positionScale.w * fade);
+  float3 rootPosition = root.positionScale.xyz;
+  float3 windDirection = normalize(cb.windDirectionStrength.xyz + float3(0.0001, 0.0001, 0));
+  float phase = rootHash01(root) * 6.28318530718;
+  float2 horizontalRoot = cb.zUp != 0 ? rootPosition.xy : rootPosition.xz;
+  float2 horizontalWind = cb.zUp != 0 ? windDirection.xy : windDirection.xz;
+  float gustWave = 0.5 + 0.5 * sin(dot(horizontalRoot, horizontalWind) * 0.045
+    - cb.windAnimation.x * 6.28318530718 * max(cb.windAnimation.z, 0.00001));
+  float gust = 1.0 + max(cb.windAnimation.y, 0.0) * gustWave;
+  float swayWave = 0.30 * sin(cb.windAnimation.x * 6.28318530718 * cb.windAnimation.w + phase)
+    + 0.06 * sin(cb.windAnimation.x * 6.28318530718 * cb.windAnimation.w * 1.61 + phase * 1.7);
+  float windAngle = saturate(max(cb.windDirectionStrength.w, 0.0)
+    * gust * (0.65 + swayWave) * max(cb.dimensions.w, 0.0)) * cb.windLimits.x;
+
+  float contact = 0.0;
+  float3 push = float3(0.0);
+  uint pusherCount = min(uint(cb.windLimits.w + 0.5), 16u);
+  for (uint i = 0; i < pusherCount; ++i) {
+    float3 delta = rootPosition - cb.pushers[i].xyz;
+    float3 horizontalDelta = cb.zUp != 0 ? float3(delta.xy, 0) : float3(delta.x, 0, delta.z);
+    float verticalDelta = abs(cb.zUp != 0 ? delta.z : delta.y);
+    float bendRadius = max(cb.windLimits.z, 0.01) + cb.pushers[i].w;
+    float distanceToPusher = length(horizontalDelta);
+    if (verticalDelta < 3.0 && distanceToPusher < bendRadius) {
+      float amount = saturate(1.0 - distanceToPusher / bendRadius) * saturate(cb.pusherWeights[i].x);
+      contact = max(contact, amount);
+      push += normalize(horizontalDelta + float3(0.0001, 0.0001, 0)) * amount;
+    }
+  }
+
+  float contactAngle = contact * cb.windLimits.y;
+  float leanAngle = min(sqrt(windAngle * windAngle + contactAngle * contactAngle), max(cb.windLimits.x, cb.windLimits.y));
+  float3 lean = windDirection * windAngle + push * cb.windLimits.y;
+  lean -= normal * dot(lean, normal);
+  float leanLengthSquared = dot(lean, lean);
+  float3 leanDirection = leanLengthSquared > 1e-10 ? lean * rsqrt(leanLengthSquared) : tangent;
+  float3 z = (normal * cos(leanAngle) + leanDirection * sin(leanAngle))
+    * (cb.dimensions.y * root.positionScale.w * fade);
   float3 p = root.positionScale.xyz + normal * cb.dimensions.z;
   return float4x4(x.x, y.x, z.x, p.x, x.y, y.y, z.y, p.y, x.z, y.z, z.z, p.z, 0, 0, 0, 1);
 }

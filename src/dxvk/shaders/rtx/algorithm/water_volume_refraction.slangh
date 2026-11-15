@@ -1,0 +1,51 @@
+// Copyright 2026 Remix Plus contributors
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// Both vectors point toward the source. The interface is the world-Z water plane.
+bool waterRefractToSource(float3 airDirection, float refractiveIndex,
+                         out float3 waterDirection, out float solidAngleJacobian) {
+  waterDirection = airDirection;
+  solidAngleJacobian = 1.0f;
+  const float lengthSquared = dot(airDirection, airDirection);
+  if (!all(isfinite(airDirection)) || !isfinite(lengthSquared) || lengthSquared <= 0.0f
+      || !isfinite(refractiveIndex) || refractiveIndex < 1.0f || refractiveIndex > 3.0f) {
+    return false;
+  }
+  airDirection *= rsqrt(lengthSquared);
+  if (airDirection.z <= 0.000001f) {
+    return false;
+  }
+  if (refractiveIndex == 1.0f) {
+    waterDirection = airDirection;
+    return true;
+  }
+  const float inverseIndex = rcp(refractiveIndex);
+  const float2 tangent = airDirection.xy * inverseIndex;
+  const float inverseIndexSquared = inverseIndex * inverseIndex;
+  const float waterCosine = sqrt(max((1.0f - inverseIndexSquared)
+    + inverseIndexSquared * airDirection.z * airDirection.z, 0.0f));
+  waterDirection = float3(tangent, waterCosine);
+  // dOmegaAir/dOmegaWater follows conservation of optical etendue.
+  solidAngleJacobian = refractiveIndex * refractiveIndex * waterCosine / airDirection.z;
+  return all(isfinite(waterDirection)) && isfinite(solidAngleJacobian) && solidAngleJacobian > 0.0f;
+}
+
+bool waterVolumeCameraMaterial(out float refractiveIndex, out float baseReflectivity) {
+  refractiveIndex = 1.0f;
+  baseReflectivity = 0.0f;
+  if (cb.startInMediumMaterialIndex == SURFACE_INDEX_INVALID
+      || cb.startInMediumMaterialIndex > cb.surfaceCount) {
+    return false;
+  }
+  const MemoryPolymorphicSurfaceMaterial memory = surfaceMaterials[cb.startInMediumMaterialIndex];
+  if ((memory.data[0].x & surfaceMaterialTypeMask) != surfaceMaterialTypeTranslucent) {
+    return false;
+  }
+  const TranslucentSurfaceMaterial material = reinterpret<TranslucentSurfaceMaterial>(memory);
+  refractiveIndex = float(material.refractiveIndex);
+  baseReflectivity = float(material.baseReflectivity);
+  return material.thicknessOrMeasurementDistance >= 0.0f && isfinite(refractiveIndex)
+    && refractiveIndex >= 1.0f && refractiveIndex <= 3.0f && isfinite(baseReflectivity)
+    && baseReflectivity >= 0.0f && baseReflectivity <= 1.0f;
+}

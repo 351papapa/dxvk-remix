@@ -19,8 +19,11 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <deque>
 #include <limits>
 #include <mutex>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <ppl.h>
 #include <intrin.h>
@@ -81,6 +84,53 @@ namespace {
   XXH64_hash_t retainedSpatialMapHashForExternalDrawMesh(remixapi_MeshHandle mesh) {
     return spatialMapHashForExternalDrawMesh(mesh) ^ kRetainedSpatialMapSalt;
   }
+
+  class WindowTextureClassCache {
+  public:
+    void configure() {
+      const bool windowsChanged = m_windows.configure(dxvk::WindowLightOptions::textureNames());
+      const bool lampsChanged = m_lamps.configure(dxvk::WindowLightOptions::streetLampTextureNames());
+      const bool streetLampsEnabled = dxvk::WindowLightOptions::streetLampsEnabled();
+      if (windowsChanged || lampsChanged || streetLampsEnabled != m_streetLampsEnabled) {
+        clear();
+      }
+      m_streetLampsEnabled = streetLampsEnabled;
+    }
+
+    uint8_t classify(std::string_view name) {
+      if (name.empty()) {
+        return 0;
+      }
+      if (const auto cached = m_classes.find(name); cached != m_classes.end()) {
+        return cached->second;
+      }
+
+      if (m_classes.size() >= 16384) {
+        clear();
+      }
+      const auto& key = m_names.emplace_back(name);
+      uint8_t classification = 0;
+      if (m_streetLampsEnabled && m_lamps.matchesTextureName(&key)) {
+        classification = 2;
+      } else if (m_windows.matchesTextureName(&key)) {
+        classification = 1;
+      }
+      m_classes.emplace(key, classification);
+      return classification;
+    }
+
+  private:
+    void clear() {
+      m_classes.clear();
+      m_names.clear();
+    }
+
+    dxvk::WindowLightRules m_windows, m_lamps;
+    // Deque growth preserves the strings referenced by the map.
+    std::deque<std::string> m_names;
+    std::unordered_map<std::string_view, uint8_t> m_classes;
+    bool m_streetLampsEnabled = false;
+  };
 } // namespace
 
 namespace dxvk {
@@ -3150,9 +3200,10 @@ namespace dxvk {
 
     m_graphManager.applySceneOverrides(ctx);
     const bool wetnessEnabled = WetnessOptions::enabled();
+    const bool waterEnabled = WaterSystem::enabled();
     const bool windowsEnabled = WindowLightOptions::enabled();
     bool wetnessRulesChanged = false;
-    if (wetnessEnabled || windowsEnabled || GrassSystem::enabled() || WaterSystem::enabled()) {
+    if (wetnessEnabled || windowsEnabled || GrassSystem::enabled() || waterEnabled) {
       // The executable directory is fixed for the process lifetime. Resolving it
       // through the bridge queries the parent process.
       static const auto captureFolder = [] {
@@ -3345,13 +3396,15 @@ namespace dxvk {
     // surface records, so classifying afterwards leaves the first submitted
     // window record at class 0 and lets the authored emissive through until a
     // later scene upload.
-    if (windowsEnabled) {
-      m_windowLights.beginFrame();
-    }
-    if (wetnessEnabled || WaterSystem::enabled() || windowsEnabled || m_windowLightsWereEnabled) {
+    if (wetnessEnabled || waterEnabled || windowsEnabled || m_windowLightsWereEnabled) {
       const auto classificationStart = std::chrono::steady_clock::now();
       const auto& instances = m_instanceManager.getInstanceTable();
       const auto& textures = textureManager.getTextureTable();
+      // Cache owned names, since captures and replacement texture slots may change between frames.
+      static thread_local WindowTextureClassCache windowClasses;
+      if (windowsEnabled) {
+        windowClasses.configure();
+      }
       uint32_t hidden = 0;
       for (RtInstance* instance : instances) {
         auto& surface = instance->surface;
@@ -3362,7 +3415,7 @@ namespace dxvk {
           continue;
         }
         // Revealed surfaces are classified before the same frame's acceleration/surface upload.
-        if (wetnessEnabled || WaterSystem::enabled()) {
+        if (wetnessEnabled || waterEnabled) {
           surface.wetnessTag = surface.sourceWetnessTag;
           const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
           if (rule == WetnessDffRules::Rule::Disable) {
@@ -3371,18 +3424,27 @@ namespace dxvk {
             surface.wetnessTag |= 0x400u;
           }
         }
+        if (!windowsEnabled || surface.eyeParams) {
+          continue;
+        }
         const auto* material = getSurfaceMaterialOrNull(surface.surfaceMaterialIndex);
-        if (windowsEnabled && !surface.eyeParams && material && material->getType() == RtSurfaceMaterialType::Opaque) {
-          const uint32_t textureIndex = material->getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
-          const char* replacementName = nullptr;
-          if (textureIndex < textures.size()) {
-            const auto& texture = textures[textureIndex].getManagedTexture();
-            if (texture.ptr() && texture->m_assetData.ptr()) {
-              replacementName = texture->m_assetData->info().filename;
+        if (!material || material->getType() != RtSurfaceMaterialType::Opaque) {
+          continue;
+        }
+        const auto* originalName = m_wetnessDffRules.originalTextureName(surface.originalTextureHash);
+        if (originalName) {
+          surface.windowLightClass = windowClasses.classify(*originalName);
+        }
+        // Class 2 (street lamp) takes precedence over class 1 (window).
+        const uint32_t textureIndex = material->getOpaqueSurfaceMaterial().getAlbedoOpacityTextureIndex();
+        if (surface.windowLightClass != 2 && textureIndex < textures.size()) {
+          const auto& texture = textures[textureIndex].getManagedTexture();
+          if (texture.ptr() && texture->m_assetData.ptr()) {
+            const auto* name = texture->m_assetData->info().filename;
+            if (name) {
+              surface.windowLightClass = std::max(surface.windowLightClass, windowClasses.classify(name));
             }
           }
-          surface.windowLightClass = m_windowLights.classify(surface.originalTextureHash,
-            surface.surfaceMaterialIndex, m_wetnessDffRules.originalTextureName(surface.originalTextureHash), replacementName);
         }
       }
       const double classificationMs = std::chrono::duration<double, std::milli>(

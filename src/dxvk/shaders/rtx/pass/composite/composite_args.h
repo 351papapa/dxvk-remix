@@ -146,11 +146,28 @@ struct CompositeArgs {
   uint cameraWaterSurfaceActive;
   float cameraWaterSurfaceHeight;
   uint alphaBlendSearchPad2;
+
+  vec3 nightSkyBackground;
+  float nightStarBrightness;
+  float nightStarMinFlux;
+  float nightMilkyWayBrightness;
+  uint legacyMilkyWay;
+  float legacyMilkyWayBrightness;
+
+  vec3 legacyMilkyWayOuterColor;
+  float legacyMilkyWayDustAmount;
+
+  vec3 legacyMilkyWayCoreColor;
+  float moonDiskBrightness;
 };
 
 #ifdef __cplusplus
 static_assert(offsetof(CompositeArgs, cameraWaterSurfaceActive) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 4);
 static_assert(offsetof(CompositeArgs, cameraWaterSurfaceHeight) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 8);
 static_assert(offsetof(CompositeArgs, alphaBlendSearchPad2) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 12);
-static_assert(sizeof(CompositeArgs) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 16);
+static_assert(offsetof(CompositeArgs, nightSkyBackground) == offsetof(CompositeArgs, stochasticAlphaBlendAverageSearchMatches) + 16);
+static_assert(offsetof(CompositeArgs, legacyMilkyWayOuterColor) == offsetof(CompositeArgs, nightSkyBackground) + 32);
+static_assert(offsetof(CompositeArgs, legacyMilkyWayCoreColor) == offsetof(CompositeArgs, nightSkyBackground) + 48);
+static_assert(offsetof(CompositeArgs, moonDiskBrightness) == offsetof(CompositeArgs, nightSkyBackground) + 60);
+static_assert(sizeof(CompositeArgs) == offsetof(CompositeArgs, nightSkyBackground) + 64);
 #endif

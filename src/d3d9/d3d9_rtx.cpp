@@ -705,10 +705,9 @@ namespace dxvk {
     return false;
   }
 
-  // Caches the texture category lists per texture hash, rebuilt when any option value changes.
+  // Caches the texture category lists per texture hash.
   const D3D9Rtx::TextureListInfo* D3D9Rtx::getTextureListInfo(const XXH64_hash_t& textureHash) {
-    // Any option value change bumps the generation (after the new value is in place): rebuild lazily.
-    const uint64_t generation = g_rtxOptionResolveGeneration.load(std::memory_order_acquire);
+    const uint64_t generation = g_rtxD3D9OptionGeneration.load(std::memory_order_acquire);
     if (generation != m_textureListCacheGeneration) {
       if (!m_textureListCache.empty()) {
         m_textureListCache.clear();
@@ -1870,7 +1869,7 @@ namespace dxvk {
       uint32_t skyByDrawCallId;
       uint32_t raytracedRenderTarget;
     } misc {
-      in.indices.version, in.psBytecode, in.extra, g_rtxOptionResolveGeneration.load(std::memory_order_acquire),
+      in.indices.version, in.psBytecode, in.extra, g_rtxD3D9OptionGeneration.load(std::memory_order_acquire),
       uint32_t(in.flags), (m_parent->m_alphaSwizzleRTs & (1 << kRenderTargetIndex)) ? 1u : 0u,
       m_activeDrawCallState.drawCallID < RtxOptions::skyDrawcallIdThreshold() ? 1u : 0u,
       (m_activeDrawCallState.isUsingRaytracedRenderTarget ? 1u : 0u) | (m_activeDrawCallState.isDrawingToRaytracedRenderTarget ? 2u : 0u)

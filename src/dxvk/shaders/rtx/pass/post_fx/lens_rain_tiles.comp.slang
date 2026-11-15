@@ -10,6 +10,6 @@ layout(push_constant) ConstantBuffer<LensRainArgs> args;
 void main(uint id : SV_DispatchThreadID) {
   uint tileTotal = args.tileCount.x * args.tileCount.y;
   if (id >= tileTotal) { return; }
-  DropTiles[id * 2] = tileTotal * 2 + id * LENS_RAIN_MAX_DROPS;
+  DropTiles[id * 2] = tileTotal * 2 + id * args.tileDropCapacity;
   DropTiles[id * 2 + 1] = 0;
 }

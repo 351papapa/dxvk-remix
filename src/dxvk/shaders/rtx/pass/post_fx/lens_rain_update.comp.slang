@@ -14,9 +14,37 @@ float randomDrop(inout uint seed) {
   return float(seed >> 8) * (1.0f / 16777216.0f);
 }
 
+void appendVisibleDrop(uint id, LensRainDrop visible) {
+  float bound = max(visible.centerRadii.z, visible.centerRadii.w) + 3.0f / args.imageSize.y;
+  if (visible.absorptionKind.w > 0) {
+    const float aa = min(0.25f, 1.5f / (float(args.imageSize.y) * visible.centerRadii.z));
+    // Include the antialiased rim and the widest taper, also for anisotropic native profiles.
+    bound = max(visible.centerRadii.z, visible.centerRadii.w) * (1.0f + aa) / 0.88f;
+  }
+  if (visible.axisOpacityStrength.z <= 0.001f
+      || visible.centerRadii.x + bound < 0 || visible.centerRadii.x - bound > args.aspect
+      || visible.centerRadii.y + bound < 0 || visible.centerRadii.y - bound > 1) { return; }
+  float2 tileScale = float2(args.tileCount) / float2(args.aspect, 1);
+  uint2 lo = uint2(clamp(floor((visible.centerRadii.xy - bound) * tileScale), 0, float2(args.tileCount - 1)));
+  uint2 hi = uint2(clamp(floor((visible.centerRadii.xy + bound) * tileScale), 0, float2(args.tileCount - 1)));
+  uint headerSize = args.tileCount.x * args.tileCount.y * 2;
+  for (uint y = lo.y; y <= hi.y; ++y) {
+    for (uint x = lo.x; x <= hi.x; ++x) {
+      uint tile = y * args.tileCount.x + x;
+      uint slot;
+      InterlockedAdd(DropTiles[tile * 2 + 1], 1, slot);
+      // Each weather or external drop slot visits a tile at most once.
+      DropTiles[headerSize + tile * args.tileDropCapacity + slot] = id;
+    }
+  }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint id : SV_DispatchThreadID) {
+  if (id < args.externalCount) {
+    appendVisibleDrop(LENS_RAIN_MAX_DROPS + id, Drops[LENS_RAIN_MAX_DROPS + id]);
+  }
   if (id >= args.dropCount) { return; }
   LensRainState drop;
   if (id >= args.previousCount) {
@@ -82,18 +110,7 @@ void main(uint id : SV_DispatchThreadID) {
   LensRainDrop visible;
   visible.centerRadii = float4(drop.position, radius, longRadius);
   visible.axisOpacityStrength = float4(drop.axis, life, drop.strength);
+  visible.absorptionKind = float4(0);
   Drops[id] = visible;
-  float2 tileScale = float2(args.tileCount) / float2(args.aspect, 1);
-  uint2 lo = uint2(clamp(floor((drop.position - bound) * tileScale), 0, float2(args.tileCount - 1)));
-  uint2 hi = uint2(clamp(floor((drop.position + bound) * tileScale), 0, float2(args.tileCount - 1)));
-  uint headerSize = args.tileCount.x * args.tileCount.y * 2;
-  for (uint y = lo.y; y <= hi.y; ++y) {
-    for (uint x = lo.x; x <= hi.x; ++x) {
-      uint tile = y * args.tileCount.x + x;
-      uint slot;
-      InterlockedAdd(DropTiles[tile * 2 + 1], 1, slot);
-      // Each of the 1024 drop slots visits a tile at most once.
-      DropTiles[headerSize + tile * LENS_RAIN_MAX_DROPS + slot] = id;
-    }
-  }
+  appendVisibleDrop(id, visible);
 }

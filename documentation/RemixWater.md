@@ -134,16 +134,24 @@ CPU wave-height field is displacement, not a water-level map; it does not set th
 plane. Missing or invalid coverage falls back to the homogeneous light path.
 Changes in boundary availability or height invalidate volume history.
 
-Water-specific shader variants shorten a distant-light sample's virtual position
-to the water-entry plane for the existing Beer calculation and ReSTIR target PDF.
-The native maximum attenuation distance (five authored measurement distances)
-still caps this path; grazing sunlight and very deep samples retain that approximation.
-Shader-local metadata retains the original direction and distance for the same
-full-length visibility ray, preserving occluders above water. Finite local lights
-retain their original sampling and distances. All four ReSTIR stages and three
-integration workgroup layouts have water variants, with and without wetness.
-The directional-distance correction adds no GPU allocation, pass, or visibility
-ray. Atmosphere variants do not contain the water path. Light radiance and cloud shadows still follow the scene.
+Water-specific shader variants refract distant-light samples through the current
+base-Z water plane using the packed camera-medium material's IOR and F0. The
+virtual sample position is the refracted water-entry point, so the existing Beer
+calculation, ReSTIR target and SH scattering direction use the underwater segment.
+The sun-center direction used by volumetric caustics receives the same refraction.
+Finite-cone light samples retain their UVs and transform radiance and solid-angle
+PDF together; their radiance/PDF ratio is multiplied by `(1-F)*cosAir/cosWater`.
+Equal-index material with zero reflectivity preserves the original sample exactly.
+
+Visibility follows two segments: the refracted path to the interface and the
+original air direction from the interface toward the source. Either opaque hit
+occludes the sample. Only visibility copies use a small interface offset; Beer
+distance and sample position retain the true entry point. Cloud-shadow lookup
+starts at that entry point along the air direction. This adds at most one scene
+visibility ray per eligible underwater distant-light sample, without another
+light-selection sample, cloud march, pass or GPU allocation. Finite local lights
+and non-water variants retain their existing paths. The native maximum attenuation
+distance still caps water Beer integration, including at grazing angles/deep samples.
 
 Receiver caustics keep the same world coordinates, scale, speed and dispersion
 on both sides of the waterline. Optional ocean/pool scales describe different
@@ -153,10 +161,13 @@ Reflected caustics read F0 from the actual hit water material, matching its IOR
 for sun and local lights. Transmitted caustics modulate the native direct-light
 solution without another refraction solve or a second medium attenuation.
 
-This matches the homogeneous camera-medium approach, not bounded local water
-volumes: the volume does not clip at the waterline or reconstruct refraction and
-focused sunlight from the wave surface. It cannot model several water media in
-one view. The exactly neutral camera material prevents duplicate camera-path
+This remains a homogeneous camera-medium model with one planar sunlight interface,
+not bounded local water volumes or a wave-surface refraction solve. Wave normals can
+move the surface-path sun image relative to the base-plane volume prediction.
+Multiple water media in one view are not represented. The medium material's IOR
+must match the actual water surface; a surface-only replacement can break that match.
+
+The exactly neutral camera material prevents duplicate camera-path
 attenuation; integrations supplying a colored camera material must neutralize it
 before enabling this profile. Surface materials still shade transmission normally.
 
@@ -169,6 +180,12 @@ causticsSpeed clock, randomized setting and primary UV warp/advection. There is
 no eightfold volume repeat or separate slow envelope translation. Pools, reflected
 caustics and the disabled-feature path retain their existing fine-pattern
 evaluation. No option or default is added or changed.
+
+The field texture, scale, animation and normalization remain shared. The later
+planar volume-refraction correction changes the volume's projected sunlight
+direction; receiver/floor caustic transport is unchanged and is not a complete
+wave-focused energy transport solution. Shared texture coordinates do not imply
+that both paths now reconstruct the same physical wave refraction.
 
 The static R16 cache still stores saturate(source.r)^4 and a full mip chain.
 The shared sampler evaluates one primary field; randomized sampling blends

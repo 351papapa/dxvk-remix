@@ -1063,10 +1063,18 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
     const bool wetnessAllowed = (wetnessTag & 0x800u) == 0u &&
       ((wetnessTag >> 24) != 2u || cb.wetnessArgs.roadOnly == 0u || (wetnessTag & 0x500u) != 0u || roughnessOnly);
     const bool bypassZones = (wetnessTag & 0x400u) != 0u || cb.wetnessArgs.respectNoRainZones == 0u;
-    const float zoneExposure = !wetnessAllowed ? 0.0f
-      : (bypassZones ? 1.0f : wetnessExposure(surfaceInteraction.position));
-    const float wetStrength = resolveWeatherWetness(wetnessTag, cb.wetnessArgs) * zoneExposure;
     const uint wetClass = (wetnessTag >> 24) & 0xFFu;
+    const bool wetWorldGround = wetClass == 2u && wetStaticGround(surface);
+    float zoneExposure = wetnessAllowed ? 1.0f : 0.0f;
+    if (wetnessAllowed && !bypassZones) {
+      // Static pavement can use an alpha-blended material without pooling water.
+      const bool featherWorldSurface = wetClass == 2u && surface.isStatic &&
+        !surface.isParticle && !surface.isAnimatedWater && !surface.isPlayerModel;
+      zoneExposure = featherWorldSurface ? wetGroundExposure(surfaceInteraction.position)
+        : wetnessExposure(surfaceInteraction.position);
+    }
+    const float weatherWetness = resolveWeatherWetness(wetnessTag, cb.wetnessArgs);
+    const float wetStrength = weatherWetness * zoneExposure;
 
     if (wetStrength > 0.0f) {
 
@@ -1076,7 +1084,6 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
       const float dryRoughness = roughness;
       roughness = saturate(lerp(roughness, roughness * wetRoughnessScale, wetBlend));
 
-      const bool wetWorldGround = wetClass == 2u && wetStaticGround(surface);
       if (wetWorldGround) {
         roughness = max(roughness, min(dryRoughness, cb.wetnessArgs.worldGroundMinRoughness));
       }
@@ -1089,7 +1096,8 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
         const float distFade = 1.0f - smoothstep(25.0f * units, 40.0f * units, camDist);
         const float flatness = saturate((zNormal - 0.55f) / 0.45f);
         const bool needsRainExposure = rain > 0.0f && distFade > 0.001f && flatness > 0.05f && wetBlend > 0.05f;
-        const WetPuddleSample puddle = wetEvaluatePuddle(surfaceInteraction.position, zNormal, wetStrength, needsRainExposure);
+        const WetPuddleSample puddle = wetEvaluatePuddle(surfaceInteraction.position, zNormal,
+          weatherWetness, zoneExposure, needsRainExposure);
         const float wetPuddleMask = puddle.coverage;
 #if defined(RAY_PIPELINE) || (defined(GBUFFER_FEATURE_DEBUG_VIEW) && GBUFFER_FEATURE_DEBUG_VIEW)
         if (cb.debugView == DEBUG_VIEW_WETNESS_PUDDLES) {

@@ -51,13 +51,39 @@ Offsets belong to each uploaded surface slot, including split meshes, rather
 than being overwritten on a shared CPU instance. Serial, parallel, incremental
 and GPU point-instancer uploads all use the same record format.
 
-Island roots are cached by geometry content. Exact equal positions join
-duplicated quad vertices, and the shader adds the integer UV tile to the random
-identity. Float32 positions and uint16/uint32 indices are read with byte bounds
-checks. Unmappable or unsupported source formats fall back to one island per
-triangle; two-triangle window quads then require CPU-readable source geometry
-to stay together. This limitation is inherited from the original CPU topology
-approach and is explicit rather than reading GPU-local memory as CPU data.
+Island roots join triangles across a complete shared edge. Both endpoints must
+match in object-space position and raw UV, allowing reversed endpoint order and
+duplicated vertex indices. Matching uses neighboring spatial buckets followed by
+actual distance comparisons. The position tolerance is 1e-5 times the median
+valid edge length, capped per candidate at 1e-4 times its shorter edge. UV tolerance
+is 1e-5 per component. These tolerances do not grow with absolute world position.
+Faces must have consistent, nearly coplanar normals and opposite third vertices
+across the edge. Corner-only contacts, UV seams, overlapping faces and ambiguous
+non-manifold edges remain separate.
+
+Roots are cached by position, UV and index content, primitive topology, buffer
+formats, strides, offsets and CPU-readable span lengths. Newly readable buffers
+retry an earlier fallback. Float32 positions and UVs and uint16/uint32 indices
+are read with byte bounds checks. Triangle lists, strips and fans use the same
+primitive ordering as the renderer, retaining degenerate primitive slots.
+Malformed triangles never contribute a partial edge. Excessive candidate counts
+or unsafe numerical ranges conservatively retain separate triangle roots.
+
+Unmappable or unsupported source formats still fall back to one island per
+triangle. GPU-only vertex-shader output cannot be replaced with its untransformed
+input to infer connectivity. No synchronous GPU readback is added. The shader
+still adds the integer tile of its transformed, interpolated UV to the random
+identity, preserving independent windows in repeated wall textures. Grouping
+therefore does not force different UV tiles or separate geometry draws to share
+one switch.
+
+`[WindowTopology] built` and `fallback` log lines report the source geometry hash,
+triangle/group counts, matched/ambiguous edges, tolerances and buffer readability.
+They use the existing logger repeat limit. Status values are 0 complete,
+1 missing positions, 2 missing UVs, 3 missing indices, 4 unsupported layout,
+5 partially invalid triangles, 6 candidate limit and 7 numerical range limit.
+Fallback lines may describe partially usable data: valid triangles can still
+form groups when only some triangles are malformed.
 
 The emission gate is a small uniform branch and integer hash in the existing
 material evaluator; it does not introduce a new tracing pass or texture read.
@@ -68,6 +94,9 @@ performance improvement is claimed without a scene benchmark.
 
 `test_window_light` covers midnight/day changes, missing clock values, lamp
 weather override, packed ABI isolation, name rules, duplicated vertices,
-16/32-bit indices and truncated buffers. `tests/rtx/apps/D3D9WindowLighting`
+16/32-bit indices and truncated buffers. `test_window_topology` covers duplicated
+quad vertices with position/UV perturbations, adjacent bucket boundaries, UV
+seams, corner-only contacts, overlapping/non-manifold faces, triangle strips/fans,
+malformed buffers and conservative limits. `tests/rtx/apps/D3D9WindowLighting`
 contains the GPU fixture: eight independent quads in one retained D3D9 draw.
 The migration validation manifest records which GPU/bridge cases were run.

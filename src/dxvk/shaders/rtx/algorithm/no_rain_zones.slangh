@@ -46,3 +46,45 @@ bool noRainZonesIntersectSegment(StructuredBuffer<WetnessZoneNode> zones, uint c
   }
   return false;
 }
+
+#ifdef ENABLE_SURFACE_WETNESS
+float noRainGroundExposure(StructuredBuffer<WetnessZoneNode> zones, uint count, float3 position, bool zUp,
+                           float feather, float cornerRadius) {
+  const float fadeEnd = cornerRadius + feather;
+  const float fadeEndSquared = fadeEnd * fadeEnd;
+  const float cornerSquared = cornerRadius * cornerRadius;
+  const float height = zUp ? position.z : position.y;
+  float nearestSquared = fadeEndSquared;
+  uint index = 0;
+  while (index < count) {
+    const WetnessZoneNode node = zones[index];
+    const float bottom = zUp ? node.lower.z : node.lower.y;
+    const float top = zUp ? node.upper.z : node.upper.y;
+    if (height <= bottom || height >= top) {
+      index = uint(node.lower.w);
+      continue;
+    }
+
+    // The nearest horizontal AABB distance bounds the distance to each child.
+    const float3 offset = max(max(node.lower.xyz - position, position - node.upper.xyz), 0.0f);
+    const float2 horizontal = zUp ? offset.xy : offset.xz;
+    const float distanceSquared = dot(horizontal, horizontal);
+    if (distanceSquared > nearestSquared) {
+      index = uint(node.lower.w);
+      continue;
+    }
+    if (node.upper.w > 0.5f) {
+      if (distanceSquared <= cornerSquared) {
+        return 0.0f;
+      }
+      nearestSquared = distanceSquared;
+    }
+    ++index;
+  }
+
+  if (nearestSquared == fadeEndSquared || feather <= 0.0f) {
+    return 1.0f;
+  }
+  return smoothstep(cornerRadius, fadeEnd, sqrt(nearestSquared));
+}
+#endif

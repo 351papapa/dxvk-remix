@@ -1,0 +1,96 @@
+// Catalogue star profile adapted from NUMOS night_sky.slangh.
+// Copyright 2026 Kim2091 (Sparkles)
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+#include "legacy_milky_way.slangh"
+
+// A signed correction to the catalogue stars already carried by the G-buffer.
+vec3 nightStarAdjustment(vec3 viewDir, vec3 equatorial, AtmosphereArgs args, float gain, float minFlux) {
+  if (minFlux <= 0.0f) {
+    return gain == 1.0f ? vec3(0.0f) : (gain - 1.0f) * evalNightSkyStars(viewDir, args);
+  }
+
+  const uint cell = nightSkyStarCell(equatorial, args.starCellsPerFace);
+  const uint begin = NightSkyStarCells[cell];
+  const uint end = NightSkyStarCells[cell + 1u];
+  const float sigma = clamp(0.5f * args.skyPixelAngle, 2.9e-4f, 1.75e-3f);
+  const float sigmaWing = min(4.0f * sigma, 1.75e-3f);
+  const float invTwoSigma2 = 1.0f / (2.0f * sigma * sigma);
+  const float invTwoSigmaWing2 = 1.0f / (2.0f * sigmaWing * sigmaWing);
+  const float core = (1.0f - 0.04f) / (2.0f * kPi * sigma * sigma);
+  const float wing = 0.04f / (2.0f * kPi * sigmaWing * sigmaWing);
+  const float airMass = nightSkyAirMass(viewDir.y);
+  const float scint = min(0.1f * args.starScintillation * pow(airMass, 1.75f), 0.6f);
+  const vec3 chroma = vec3(0.12f, 0.0f, -0.12f) * saturate((airMass - 2.0f) * 0.1f);
+
+  vec3 adjustment = vec3(0.0f);
+  for (uint i = begin; i < end; ++i) {
+    const vec4 star = NightSkyStars[2u * i + 1u];
+    const float flux = dot(star.rgb, vec3(0.2126f, 0.7152f, 0.0722f));
+    const float gainDelta = flux >= minFlux ? gain - 1.0f : -1.0f;
+    if (gainDelta == 0.0f) {
+      continue;
+    }
+    const vec3 offset = equatorial - NightSkyStars[2u * i].xyz;
+    const float theta2 = dot(offset, offset);
+    const float psf = core * exp(-theta2 * invTwoSigma2) + wing * exp(-theta2 * invTwoSigmaWing2);
+    if (psf < 1e-3f * core) {
+      continue;
+    }
+    vec3 twinkle = vec3(1.0f);
+    if (scint > 0.0f) {
+      const float phase = star.w * 6.2831853f;
+      const float f1 = 3.0f + 4.0f * star.w;
+      const float f2 = 7.3f + 5.0f * frac(star.w * 7.13f);
+      const vec3 t = args.timeSeconds + chroma;
+      twinkle = max(vec3(1.0f) + scint * 1.4f
+        * (0.6f * sin(6.2831853f * f1 * t + phase) + 0.4f * sin(6.2831853f * f2 * t + 2.3f * phase)), vec3(0.0f));
+    }
+    adjustment += star.rgb * (psf * twinkle * gainDelta);
+  }
+  return adjustment;
+}
+
+vec3 numosNightAppearanceAdjustment(vec3 worldDirection, vec3 skyThroughput) {
+  const bool adjustStars = cb.nightStarBrightness != 1.0f || cb.nightStarMinFlux > 0.0f;
+  const float milkyWayDelta = cb.legacyMilkyWay ? -1.0f : cb.nightMilkyWayBrightness - 1.0f;
+  const bool adjustMilkyWay = milkyWayDelta != 0.0f;
+  const bool adjustCatalogue = (adjustStars || adjustMilkyWay) && (skyArgs.nightSkyFlags & 11u) == 11u;
+  const float fade = smoothstep(0.0871557f, 0.207912f, -skyArgs.sunDirection.y);
+  const vec3 background = cb.nightSkyBackground * fade;
+  const float legacyFade = cb.legacyMilkyWayBrightness * smoothstep(0.02f, 0.15f, -skyArgs.sunDirection.y);
+  if (!adjustCatalogue && !any(background > 0.0f) && legacyFade == 0.0f) {
+    return vec3(0.0f);
+  }
+
+  const vec3 direction = normalize(worldToAtmosphereYUp(worldDirection, skyArgs.isZUp != 0u, skyArgs.flipUpAxis != 0u));
+  vec3 transmittance;
+  if (!skyAboveHorizon(direction, skyArgs, transmittance)) {
+    return vec3(0.0f);
+  }
+
+  float aboveMoon;
+  evalSkyDisksYUp(direction, skyArgs, transmittance, aboveMoon);
+  vec3 adjustment = background;
+  if (adjustCatalogue) {
+    const vec3 equatorial = nightSkyLocalToEquatorial(direction, skyArgs);
+    vec3 catalogue = vec3(0.0f);
+    if (adjustStars) {
+      catalogue += nightStarAdjustment(direction, equatorial, skyArgs, cb.nightStarBrightness, cb.nightStarMinFlux);
+    }
+    if (adjustMilkyWay) {
+      catalogue += milkyWayDelta * sampleNightSkyMilkyWay(equatorial, skyArgs);
+    }
+    // The low-frequency catalogue share in the sky-view LUT still cancels the stock subtraction.
+    adjustment += catalogue * skyArgs.sunIlluminance * (skyArgs.nightSkyGain / (kNightSkyAssetScale * cb.skyRadianceScale));
+  }
+  adjustment *= transmittance;
+  const float legacyVisibility = legacyFade * smoothstep(-0.02f, 0.1f, direction.y);
+  if (legacyVisibility > 0.0f) {
+    adjustment += evalLegacyMilkyWay(direction, cb.legacyMilkyWayOuterColor, cb.legacyMilkyWayCoreColor,
+      cb.legacyMilkyWayDustAmount) * legacyVisibility;
+  }
+  return adjustment * aboveMoon * skyThroughput;
+}

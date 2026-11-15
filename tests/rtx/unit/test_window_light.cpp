@@ -77,8 +77,11 @@ namespace dxvk {
   }
   void testTopology() {
     const std::array<float, 27> positions {0,0,0, 1,0,0, 0,1,0, 0,1,0, 1,0,0, 1,1,0, 3,0,0, 4,0,0, 3,1,0};
+    const std::array<float, 18> texcoords {0,0, 1,0, 0,1, 0,1, 1,0, 1,1, 0,0, 1,0, 0,1};
     WindowTopologyInput input;
     input.positions = {reinterpret_cast<const uint8_t*>(positions.data()), sizeof(positions)};
+    input.texcoords = {reinterpret_cast<const uint8_t*>(texcoords.data()), sizeof(texcoords)};
+    input.texcoordStride = 8;
     input.vertexCount = 9; input.positionStride = 12; input.triangleCount = 3;
     auto roots = buildWindowIslandRoots(input);
     require(roots == std::vector<uint32_t>({0,0,2}), "Duplicated quad vertices split, or separate windows joined");
@@ -100,12 +103,14 @@ namespace dxvk {
     require(buildWindowIslandRoots(input) == std::vector<uint32_t>({0,1,2}), "Unmappable topology fallback failed");
     // A true 32-bit vertex index must not alias its low 16 bits.
     std::vector<float> largePositions(65539 * 3, 0);
+    std::vector<float> largeTexcoords(65539 * 2, 0);
     largePositions[3] = 1; largePositions[7] = 1;
     largePositions[65536 * 3] = 10;
     largePositions[65537 * 3] = 11;
     largePositions[65538 * 3] = 10; largePositions[65538 * 3 + 1] = 1;
     const uint32_t wideIndices[] {0,1,2, 65536,65537,65538};
     input.positions = {reinterpret_cast<const uint8_t*>(largePositions.data()), largePositions.size() * sizeof(float)};
+    input.texcoords = {reinterpret_cast<const uint8_t*>(largeTexcoords.data()), largeTexcoords.size() * sizeof(float)};
     input.indices = {reinterpret_cast<const uint8_t*>(wideIndices), sizeof(wideIndices)};
     input.vertexCount = 65539; input.indexCount = 6; input.triangleCount = 2;
     require(buildWindowIslandRoots(input) == std::vector<uint32_t>({0,1}), "32-bit index was truncated");

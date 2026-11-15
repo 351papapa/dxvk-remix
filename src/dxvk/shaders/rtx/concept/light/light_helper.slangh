@@ -36,7 +36,7 @@ struct LightSample
   // Note: 32 bit floating point used to avoid precision issues with some kinds of sampling on lights.
   float solidAnglePdf;
 #if VOLUME_WATER_SURFACE_LIGHTING
-  // Initialized by every RAB light-sample wrapper used by the water-volume variants.
+  // Air-side direction and reach after the water-entry sample. Zero w keeps one straight segment.
   float4 volumeVisibilityRay;
 #endif
 };
