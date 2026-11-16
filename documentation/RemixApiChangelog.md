@@ -1,5 +1,11 @@
 ## Remix API Changelog
 
+## 2026-11-17 — Vice City frame and lighthouse data
+
+`__lensDrops.submissionCapability_v1` exposes the D3D9 submission frame without a command-stream drain and uses the existing lens snapshot format. `__vc.wetness.globalStrengthVersion` advertises ordered frame-level writes to `__vc.wetness.globalStrength` for the native wetness tag.
+
+`__vc.lighthouse.localBeamVersion` is `1` when NUMOS local light compositing can render the host's lighthouse beam. Mesh and light submissions continue through the existing API.
+
 ## 2026-11-08 — Local corona v2 filter ownership
 
 ### Added

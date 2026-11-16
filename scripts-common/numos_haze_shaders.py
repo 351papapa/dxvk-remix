@@ -93,12 +93,56 @@ def split_haze_tap_geometry(source):
         '      const vec3 radiance = apHazeFinishTapRadiance(light, geometry, dirWorld, apPhaseMixAt(m), args);')
 
 
+def add_finite_spot_beam(source, clip_source):
+    # The last float of the packed light is zero for ordinary lights. A positive value selects a
+    # finite spot beam and supplies its minimum scattering coefficient in inverse kilometres.
+    source = replace_once(source,
+        'bool apHazeEvaluateTapGeometry(AerialPerspectiveLight light, vec3 worldPosition, out ApHazeTapGeometry geometry)',
+        'bool apHazeEvaluateTapGeometry(AerialPerspectiveLight light, vec3 worldPosition, bool narrowBeam, out ApHazeTapGeometry geometry)')
+    source = replace_once(source,
+        '  const float solidAngle = 2.0f * kPi * (1.0f - sqrt(max(0.0f, 1.0f - sinThetaSq)));\n\n'
+        '  geometry.directionToLight = directionToLight;',
+        '  const float cosTheta = sqrt(max(0.0f, 1.0f - sinThetaSq));\n'
+        "  // Rationalize the beam's solid angle so a distant small emitter does not round to zero.\n"
+        '  const float solidAngle = 2.0f * kPi * (narrowBeam ? sinThetaSq / (1.0f + cosTheta) : 1.0f - cosTheta);\n\n'
+        '  geometry.directionToLight = directionToLight;')
+    source = replace_once(source, 'vec3 apLocalLightAirlight(', clip_source + '\nvec3 apLocalLightAirlight(')
+    source = replace_once(source,
+        '    const float a = max(startWorld, t0 - light.influenceRadius);\n'
+        '    const float b = min(endWorld, t0 + light.influenceRadius);',
+        '    float a = max(startWorld, t0 - light.influenceRadius);\n'
+        '    float b = min(endWorld, t0 + light.influenceRadius);')
+    source = replace_once(source,
+        '    if (!apHazeRayMayContribute(light, toLight, dirWorld, a, b)) {',
+        '    const bool narrowBeam = light.padLight1 > 0.0f;\n'
+        '    const bool contributes = narrowBeam\n'
+        '      ? apClipSpotBeam(light, toLight, dirWorld, t0, a, b)\n'
+        '      : apHazeRayMayContribute(light, toLight, dirWorld, a, b);\n'
+        '    if (!contributes) {')
+    return replace_once(source,
+        '      if (!apHazeEvaluateTapGeometry(light, p, geometry)) {\n'
+        '        continue;\n'
+        '      }\n'
+        '      const ApMediumSample m = apSampleMedium(p, args);',
+        '      if (!apHazeEvaluateTapGeometry(light, p, narrowBeam, geometry)) {\n'
+        '        continue;\n'
+        '      }\n'
+        '      ApMediumSample m = apSampleMedium(p, args);\n'
+        '      if (narrowBeam) {\n'
+        "        // Add just enough neutral scattering for this light's shaft. Camera transmittance below\n"
+        '        // still uses the global medium, so this never changes scene fog or other lights.\n'
+        '        const float meanScattering = dot(m.atmosphere.scattering, vec3(1.0f / 3.0f)) + m.fogScattering;\n'
+        '        m.fogScattering += max(light.padLight1 - meanScattering, 0.0f);\n'
+        '      }')
+
+
 def generate_haze_overlay(numos, overlay):
     numos, overlay = map(pathlib.Path, (numos, overlay))
     # Validate every dependency before publishing any changed generated include.
     lights, cull, froxel = [checked_source(numos, relative) for relative in SOURCE_HASHES]
-    helper_path = pathlib.Path(__file__).resolve().parent.parent / 'src/dxvk/shaders/numos_haze/numos_haze_helpers.slangh'
-    helper = helper_path.read_text(encoding='utf-8')
+    shader_dir = pathlib.Path(__file__).resolve().parent.parent / 'src/dxvk/shaders/numos_haze'
+    helper = (shader_dir / 'numos_haze_helpers.slangh').read_text(encoding='utf-8')
+    beam_clip = (shader_dir / 'numos_spot_beam.slangh').read_text(encoding='utf-8')
     lights = replace_once(lights, '#include "numos/lib/aerial_perspective_light.h"',
                           '#include "numos/lib/aerial_perspective_light.h"\n'
                           '#include "numos/lib/numos_haze_helpers.slangh"')
@@ -119,7 +163,7 @@ def generate_haze_overlay(numos, overlay):
         '      continue;\n'
         '    }\n'
         + h_line + '    const float thetaA = atan((a - t0) / h);')
-    lights = split_haze_tap_geometry(lights)
+    lights = add_finite_spot_beam(split_haze_tap_geometry(lights), beam_clip)
 
     cull = replace_once(cull,
         '  const uint lightCount = args.apLocalLightCount;\n'

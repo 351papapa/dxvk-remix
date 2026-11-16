@@ -19,6 +19,7 @@
 * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 * DEALINGS IN THE SOFTWARE.
 */
+#include <charconv>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -34,6 +35,7 @@
 #include "rtx_fork_hooks.h"
 #include "rtx_fork_material_census.h"
 #include "rtx_fork_core_material.h"
+#include "rtx_fork_game_state.h"
 #include "rtx_scene_manager.h"
 #include "rtx_water.h"
 #include "rtx_water_medium.h"
@@ -3400,6 +3402,17 @@ namespace dxvk {
       const auto classificationStart = std::chrono::steady_clock::now();
       const auto& instances = m_instanceManager.getInstanceTable();
       const auto& textures = textureManager.getTextureTable();
+      const bool classifyWetness = wetnessEnabled || waterEnabled;
+      constexpr uint32_t globalStrengthFlag = 0x00100000u;
+      constexpr uint32_t strengthMask = 0xffu;
+      uint32_t globalStrength = 0;
+      if (classifyWetness) {
+        std::string strength;
+        if (fork_game_state::GameStateStore::get().tryGet("__vc.wetness.globalStrength", strength)) {
+          // SetGameValue has already validated the decimal byte.
+          std::from_chars(strength.data(), strength.data() + strength.size(), globalStrength);
+        }
+      }
       // Cache owned names, since captures and replacement texture slots may change between frames.
       static thread_local WindowTextureClassCache windowClasses;
       if (windowsEnabled) {
@@ -3415,8 +3428,12 @@ namespace dxvk {
           continue;
         }
         // Revealed surfaces are classified before the same frame's acceleration/surface upload.
-        if (wetnessEnabled || waterEnabled) {
+        if (classifyWetness) {
           surface.wetnessTag = surface.sourceWetnessTag;
+          if ((surface.wetnessTag & globalStrengthFlag) != 0) {
+            // Keep the submitted render state stable and restore the legacy shader tag on upload.
+            surface.wetnessTag = (surface.wetnessTag & ~(globalStrengthFlag | strengthMask)) | globalStrength;
+          }
           const auto rule = m_wetnessDffRules.rule(surface.wetnessMeshHash);
           if (rule == WetnessDffRules::Rule::Disable) {
             surface.wetnessTag |= 0x800u;

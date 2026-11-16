@@ -681,6 +681,7 @@ numos_haze_headers = custom_target(
   output: ['_numos_haze_headers.txt'],
   depend_files: files('../../scripts-common/numos_haze_shaders.py',
     'shaders/numos_haze/numos_haze_helpers.slangh',
+    'shaders/numos_haze/numos_spot_beam.slangh',
     '../../submodules/numos/shaders/numos/lib/aerial_perspective_lights.slangh'),
   command: [python_interpreter, numos_haze_script, 'emit-overlay', numos_root, numos_haze_overlay],
   capture: true
@@ -708,30 +709,33 @@ numos_shaders = custom_target(
   depend_files: files('../../submodules/numos/src/generated/passes.inc',
     '../../scripts-common/numos_shaders.py', '../../scripts-common/numos_scene_shaders.py',
     '../../scripts-common/compile_shaders.py', '../../scripts-common/numos_haze_shaders.py',
-    'shaders/numos_haze/numos_haze_helpers.slangh'),
+    'shaders/numos_haze/numos_haze_helpers.slangh',
+    'shaders/numos_haze/numos_spot_beam.slangh'),
   command: numos_shader_command
 )
+
+subdir('numos_renderer_overlay')
 
 numos_lib = static_library('numos', files([
     '../../submodules/numos/src/celestial.cpp',
     '../../submodules/numos/src/ground_field.cpp',
     '../../submodules/numos/src/layout.cpp',
     '../../submodules/numos/src/log.cpp',
-    '../../submodules/numos/src/renderer.cpp',
-    '../../submodules/numos/src/renderer_api.cpp',
     '../../submodules/numos/src/seed.cpp',
     '../../submodules/numos/src/settings.cpp',
     '../../submodules/numos/src/shaders.cpp',
     '../../submodules/numos/src/weather.cpp',
-  ]),
-  include_directories : include_directories('../../submodules/numos/include', '../../submodules/numos/shaders', '../../submodules/numos/src'),
+  ]) + numos_renderer_overlay_sources,
+  include_directories : [ numos_renderer_overlay_headers,
+    include_directories('../../submodules/numos/include', '../../submodules/numos/shaders', '../../submodules/numos/src') ],
   override_options    : ['cpp_std='+dxvk_cpp_std],
   cpp_args            : dxvk_is_msvc ? ['/D_CRT_SECURE_NO_WARNINGS'] : []
 )
 
 numos_dep = declare_dependency(
   link_with           : [ numos_lib ],
-  include_directories : include_directories('../../submodules/numos/include', '../../submodules/numos/shaders')
+  include_directories : [ numos_renderer_overlay_headers,
+    include_directories('../../submodules/numos/include', '../../submodules/numos/shaders') ]
 )
 # NV-DXVK end
 

@@ -1,0 +1,81 @@
+// Intersect the camera interval with the reach sphere and the forward half of the spot cone.
+// Solve in reach-scaled coordinates around the point nearest the emitter. Its perpendicular
+// offset gives a stable discriminant, including when the ray passes directly through the apex.
+bool apClipSpotBeam(AerialPerspectiveLight light, vec3 toLight, vec3 rayDir, float closestT,
+                    inout float lo, inout float hi) {
+  const float radius = light.influenceRadius;
+  const float coneCos = light.cosConeAngle;
+  if (!(radius > 0.0f && coneCos > 0.0f && coneCos < 1.0f)) {
+    return false;
+  }
+  const vec3 closest = rayDir * closestT - toLight;
+  const float sphereDisc = radius * radius - dot(closest, closest);
+  if (sphereDisc <= 0.0f) {
+    return false;
+  }
+  const float sphereSpan = sqrt(sphereDisc);
+  lo = max(lo, closestT - sphereSpan);
+  hi = min(hi, closestT + sphereSpan);
+  if (!(hi > lo)) {
+    return false;
+  }
+
+  const vec3 offset = closest / radius;
+  float begin = (lo - closestT) / radius;
+  float end = (hi - closestT) / radius;
+  const float height = dot(offset, light.coneAxis);
+  const float directionHeight = dot(rayDir, light.coneAxis);
+  const float beginHeight = height + directionHeight * begin;
+  const float endHeight = height + directionHeight * end;
+  if (max(beginHeight, endHeight) <= 0.0f) {
+    return false;
+  }
+  if (beginHeight < 0.0f) {
+    begin = -height / directionHeight;
+  } else if (endHeight < 0.0f) {
+    end = -height / directionHeight;
+  }
+
+  // height(t)^2 - cos(halfAngle)^2 * |offset(t)|^2 >= 0 is inside the cone.
+  const float cosSq = coneCos * coneCos;
+  const float offsetSq = dot(offset, offset);
+  const float A = directionHeight * directionHeight - cosSq;
+  const float B = height * directionHeight;
+  const float C = height * height - cosSq * offsetSq;
+  if (abs(A) < 1e-6f) {
+    if (abs(B) < 1e-7f) {
+      if (C < 0.0f) {
+        return false;
+      }
+    } else if (B > 0.0f) {
+      begin = max(begin, -C / (2.0f * B));
+    } else {
+      end = min(end, -C / (2.0f * B));
+    }
+  } else {
+    const float discriminant = cosSq * (height * height + A * offsetSq);
+    if (discriminant <= 0.0f) {
+      if (A < 0.0f) {
+        return false;
+      }
+    } else {
+      const float root = sqrt(discriminant);
+      const float q = -B - (B < 0.0f ? -root : root);
+      const float root0 = q / A;
+      const float root1 = C / q;
+      const float nearRoot = min(root0, root1);
+      const float farRoot = max(root0, root1);
+      if (A < 0.0f) {
+        begin = max(begin, nearRoot);
+        end = min(end, farRoot);
+      } else if (min(end, nearRoot) - begin > end - max(begin, farRoot)) {
+        end = min(end, nearRoot);
+      } else {
+        begin = max(begin, farRoot);
+      }
+    }
+  }
+  lo = closestT + begin * radius;
+  hi = closestT + end * radius;
+  return hi > lo;
+}

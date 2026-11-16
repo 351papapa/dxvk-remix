@@ -21,6 +21,7 @@
 #include "rtx_debug_view.h"
 #include "rtx_light_manager.h"
 #include "rtx_fork_camera_origin.h"
+#include "rtx_fork_game_state.h"
 #include "rtx/pass/common_binding_indices.h"
 #include "rtx/pass/composite/composite_binding_indices.h"
 #include "rtx/pass/raytrace_args.h"
@@ -40,6 +41,9 @@ namespace dxvk {
     constexpr uint32_t kBlueNoiseView = 1;
 
     constexpr float kMinDistantHalfAngle = 0.0005f;
+    constexpr uint64_t kVcLighthouseLight = 0x56434c4947485448ull;
+    constexpr float kVcLighthouseReachMeters = 450.0f;
+    constexpr float kVcLighthouseScatteringPerKm = 1.0f;
 
     static_assert(sizeof(Camera) == sizeof(numos::Camera), "Remix's Camera and NUMOS's copy of it differ");
     static_assert(sizeof(numos::Camera::viewToWorld) == 16 * sizeof(float), "NUMOS mat4 is not 16 floats");
@@ -58,8 +62,16 @@ namespace dxvk {
     numos::Renderer renderer;
     std::vector<numos::LocalLight> localLights;
     RtLight* lights[numos::kMaxMoons + 2] = {};
+    bool lighthouseBeamAvailable = false;
 
     explicit Impl(DxvkDevice* device) : gpu(device, env::getDllDirectory() + "/numos/spirv") { }
+
+    void setLighthouseBeamAvailable(bool available) {
+      if (available != lighthouseBeamAvailable) {
+        lighthouseBeamAvailable = available;
+        fork_game_state::GameStateStore::get().set("__vc.lighthouse.localBeamVersion", available ? "1" : "0");
+      }
+    }
   };
 
   RtxNumos::RtxNumos(DxvkDevice* device)
@@ -78,6 +90,7 @@ namespace dxvk {
   }
 
   RtxNumos::~RtxNumos() {
+    m_impl->setLighthouseBeamAvailable(false);
     m_impl->renderer.releaseGpuResources(m_impl->gpu);
   }
 
@@ -141,8 +154,10 @@ namespace dxvk {
     const float cameraRange = NumosHazeLights::worldDistance(NumosHazeLights::hazeLightDistanceMeters(), unitsPerMeter);
     const float cameraFade = NumosHazeLights::worldDistance(NumosHazeLights::hazeLightFadeMeters(), unitsPerMeter);
     const numos::Vector3 cameraPosition = toNumos(ctx.getSceneManager().getCamera().getPosition(/*freecam=*/true));
+    const auto& lightManager = ctx.getSceneManager().getLightManager();
+    const auto* lighthouse = lightManager.findExternalLight(reinterpret_cast<remixapi_LightHandle>(kVcLighthouseLight));
     m_impl->localLights.clear();
-    for (const RtLight* light : ctx.getSceneManager().getLightManager().getLinearizedLights()) {
+    for (const RtLight* light : lightManager.getLinearizedLights()) {
       if (light == nullptr || std::find(std::begin(m_impl->lights), std::end(m_impl->lights), light) != std::end(m_impl->lights)) {
         continue;  // NUMOS's own lights (the lightning sphere) are not local lights of the scene
       }
@@ -191,7 +206,11 @@ namespace dxvk {
         // Distant lights light the air through NUMOS's own sun and sky terms.
         continue;
       }
-      if (cameraRange > 0.0f) {
+      const bool isLighthouseBeam = light == lighthouse && shaping != nullptr && shaping->getEnabled();
+      if (isLighthouseBeam) {
+        l.beamReach = NumosHazeLights::worldDistance(kVcLighthouseReachMeters, unitsPerMeter);
+        l.beamScatteringFloor = kVcLighthouseScatteringPerKm;
+      } else if (cameraRange > 0.0f) {
         const numos::Vector3 relative = l.position - cameraPosition;
         const float distance = std::hypot(relative.x, relative.y, relative.z);
         const float weight = NumosHazeLights::cameraWeight(distance, cameraRange, cameraFade);
@@ -226,6 +245,7 @@ namespace dxvk {
     }
 
     if (!active()) {
+      m_impl->setLighthouseBeamAvailable(false);
       if (RtxOptions::skyMode() == SkyMode::Numos) {
         // NUMOS was chosen but cannot run (its shaders did not load): the shaders must not treat the
         // sky as NUMOS's either, or every miss would read args nobody wrote.
@@ -245,7 +265,9 @@ namespace dxvk {
     loadNightSky();
     // The user's settings with the weather presets blended over them (rtx_numos_weather.h). The weather
     // reaches NUMOS inside the settings, so FrameInputs::weather stays null.
-    m_impl->renderer.setSettings(ctx.getCommonObjects()->metaNumosWeather().current());
+    const auto& weather = ctx.getCommonObjects()->metaNumosWeather();
+    m_impl->renderer.setSettings(weather.current());
+    m_impl->renderer.setWeatherBlending(weather.isBlending());
 
     Rc<DxvkContext> dxvkCtx = &ctx;
     const uint32_t deviceFrame = ctx.getDevice()->getCurrentFrameId();
@@ -317,6 +339,10 @@ namespace dxvk {
     in.localLights = m_impl->localLights.data();
     in.localLightCount = uint32_t(m_impl->localLights.size());
     in.hostSkyOverride = scene.getLightManager().getDomeLightArgs().active;
+    const auto& settings = weather.current();
+    m_impl->setLighthouseBeamAvailable(!in.hostSkyOverride && settings.aerialPerspective &&
+      settings.aerialPerspectiveLocalLights && settings.aerialPerspectiveLocalLightMaxCount > 0 &&
+      settings.aerialPerspectiveLocalLightIntensity > 0.0f);
     m_hostSkyOverride = in.hostSkyOverride;
     in.volumetricsHandoffWorldUnits = RtxGlobalVolumetrics::enable()
       ? ctx.getCommonObjects()->metaNumosWeather().volumetricState(RtxGlobalVolumetrics::baseWeatherState()).froxelMaxDistanceMeters * RtxOptions::getMeterToWorldUnitScale() : 0.0f;

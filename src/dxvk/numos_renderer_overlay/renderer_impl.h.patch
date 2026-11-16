@@ -1,0 +1,16 @@
+base-sha256 de4d8064a426d21d2fdc8f7583a7c2cc297bb0571526fa310a8b514f48138051
+--- a/src/renderer_impl.h
++++ b/src/renderer_impl.h
+@@ -205 +205 @@
+-  void resolveCloudInterleave(bool cloudInputsChanged);
++  void resolveCloudInterleave(bool cloudInputsChanged, bool cloudTopologyChanged);
+@@ -330,0 +331,2 @@
++    uint32_t nextSlabCascade = 0;
++    uint32_t slabRefreshRemaining = 0;
+@@ -384,0 +387,3 @@
++  bool     m_weatherBlending = false;
++  uint32_t m_cloudDomeTopology = 0;
++  uint32_t m_cloudDomeNvdf = 0;
+@@ -495,0 +501,2 @@
++  float m_skyLutBakeAgeSeconds = 0.0f;
++  bool m_skyLutWasBlending = false;

@@ -128,6 +128,10 @@ public:
   // the packed buffer: the shader-side decode lives behind rtx/concept/light, whose include chain
   // reaches cb-dependent headers that standalone compute passes have no constant buffer for.
   const std::vector<RtLight*>& getLinearizedLights() const { return m_linearizedLights; }
+  const RtLight* findExternalLight(remixapi_LightHandle handle) const {
+    const auto light = m_externalLights.find(handle);
+    return light != m_externalLights.end() ? &light->second : nullptr;
+  }
   const DomeLightArgs& getDomeLightArgs();
 
   void clear();

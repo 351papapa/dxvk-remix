@@ -1,0 +1,11 @@
+base-sha256 3c7b5d4fda0ab716df4c9831cfaab0fb3a7b212c2ae71650de4c7a685832c9f2
+--- a/include/numos/renderer.h
++++ b/include/numos/renderer.h
+@@ -71,0 +72,3 @@
++  // Optional finite beam, with a local in-scattering floor independent of the global haze.
++  float   beamReach = 0.0f;
++  float   beamScatteringFloor = 0.0f;
+@@ -242,0 +246,3 @@
++  // A continuous weather blend may reuse the cloud bakes from nearby frames.
++  // Set before beginFrame. A hard preset change should pass false.
++  void setWeatherBlending(bool blending);

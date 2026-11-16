@@ -1,0 +1,8 @@
+base-sha256 d01fb90d9d556fdd64033fa46e8b511860defa4d7829174f92be203a3fa16a7b
+--- a/src/renderer_api.cpp
++++ b/src/renderer_api.cpp
+@@ -16,0 +17,4 @@
++}
++
++void Renderer::setWeatherBlending(bool blending) {
++  m_impl->m_weatherBlending = blending;

@@ -118,6 +118,9 @@ namespace dxvk {
     // (and any held seed weather) applied and blended over `base`.
     const numos::Settings& update(const numos::Settings& base, float deltaSeconds);
 
+    // Whether update() last applied an in-progress weather blend.
+    bool isBlending() const;
+
     // The weather fields of what update() last returned (for seeds).
     const numos::WeatherSnapshot* currentSnapshot() const;
     WaterWeatherState waterState() const;

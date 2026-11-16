@@ -501,6 +501,17 @@ extern "C" {
 namespace dxvk {
   namespace remix_api {
 
+    bool getD3D9SubmissionFrame(RemixApiDevice& device, uint32_t& frame) {
+      auto* host = dynamic_cast<ApiD3D9Device*>(&device);
+      if (host == nullptr) {
+        return false;
+      }
+      auto* nativeDevice = host->device();
+      const D3D9DeviceLock lock = nativeDevice->LockDevice();
+      frame = nativeDevice->RTX().GetSubmissionFrameIndex();
+      return true;
+    }
+
     void fillDeviceEntries(remixapi_Interface& interf) {
       interf.Startup = remixapi_Startup;
       interf.dxvk_CreateD3D9 = remixapi_dxvk_CreateD3D9_legacy;

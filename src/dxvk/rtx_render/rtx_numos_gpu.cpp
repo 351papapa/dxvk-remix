@@ -409,7 +409,7 @@ namespace dxvk {
         std::memcpy(m_hazeUploadLights.data(), data, size);
         for (numos::AerialPerspectiveLight& light : m_hazeUploadLights) {
           // NUMOS uses a zero axis for unshaped lights, including its lightning flash.
-          if (light.coneAxis.x != 0.0f || light.coneAxis.y != 0.0f || light.coneAxis.z != 0.0f) {
+          if (light.padLight1 == 0.0f && (light.coneAxis.x != 0.0f || light.coneAxis.y != 0.0f || light.coneAxis.z != 0.0f)) {
             light.influenceRadius = NumosHazeLights::cappedReach(light.influenceRadius, m_hazeSpotlightReachWorld);
           }
         }

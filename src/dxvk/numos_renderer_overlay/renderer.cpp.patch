@@ -1,0 +1,179 @@
+base-sha256 81fe63a9743bc107fa1049660b2919291f7f54263242cfe0075ea5d92dd65afd
+--- a/src/renderer.cpp
++++ b/src/renderer.cpp
+@@ -1511,3 +1511,17 @@
+-  if (!m_settings.debugDispatchSkyLuts) {
+-    // Frozen: skip all three bakes and leave the caches alone so the next enabled frame
+-    // re-evaluates the gates.
++  constexpr float kSkyLutBlendBakeIntervalSeconds = 1.0f / 12.0f;
++  m_skyLutBakeAgeSeconds = std::min(kSkyLutBlendBakeIntervalSeconds,
++      m_skyLutBakeAgeSeconds + std::max(m_inputs.deltaSeconds, 0.0f));
++  const bool weatherSettled = m_skyLutWasBlending && !m_weatherBlending;
++  const bool forceSkyBake = m_lutsNeedRecompute || weatherSettled;
++  const bool lightningActive = m_lightningEnvelope > 0.0f || m_lightningEnvelopePrevious > 0.0f;
++  // Keep the last coherent set of LUTs during smooth changes. The live weather and flash still
++  // update each frame. Bake the exact final weather immediately, including within a quantized bin.
++  const bool deferSkyBake = m_weatherBlending && !forceSkyBake && !lightningActive
++      && !m_inputs.cameraCut && !m_cloudAnchorCutThisFrame && !m_inputs.worldChanged
++      && m_radianceScale == m_prevRadianceScale
++      && m_skyLutBakeAgeSeconds < kSkyLutBlendBakeIntervalSeconds;
++  if (m_settings.debugDispatchSkyLuts) {
++    m_skyLutWasBlending = m_weatherBlending;
++  }
++  if (!m_settings.debugDispatchSkyLuts || deferSkyBake) {
++    // Keep the cache keys for the last bake until the next complete update.
+@@ -1525 +1539 @@
+-    const bool tmsDirty = m_lutsNeedRecompute
++    const bool tmsDirty = forceSkyBake
+@@ -1551,2 +1565,3 @@
+-    }
+-  } else if (needsLutRecompute()) {
++      m_skyLutBakeAgeSeconds = 0.0f;
++    }
++  } else if (forceSkyBake || needsLutRecompute()) {
+@@ -1572,0 +1588 @@
++    m_skyLutBakeAgeSeconds = 0.0f;
+@@ -1583,0 +1600 @@
++  bool cloudTopologyChanged = false;
+@@ -1585,0 +1603,9 @@
++    const float coverage = voxelKey.cloudLayer2Enable
++      ? std::max(voxelKey.cloudCoverageMean, voxelKey.cloudLayer2CoverageMean)
++      : voxelKey.cloudCoverageMean;
++    const bool marchClouds = cloudsEnabled && coverage >= 0.01f && voxelKey.cloudViewSamples != 0;
++    const uint32_t topology = (voxelKey.cloudKeyLight << 2u)
++      | (voxelKey.cloudLayer2Enable != 0u ? 2u : 0u) | (marchClouds ? 1u : 0u);
++    cloudTopologyChanged = topology != m_cloudDomeTopology || m_cloudNvdfPublishCount != m_cloudDomeNvdf;
++    m_cloudDomeTopology = topology;
++    m_cloudDomeNvdf = m_cloudNvdfPublishCount;
+@@ -1599 +1625 @@
+-  resolveCloudInterleave(voxelKeyChanged);
++  resolveCloudInterleave(voxelKeyChanged, cloudTopologyChanged);
+@@ -1641 +1667 @@
+-void Renderer::Impl::resolveCloudInterleave(bool cloudInputsChanged) {
++void Renderer::Impl::resolveCloudInterleave(bool cloudInputsChanged, bool cloudTopologyChanged) {
+@@ -1647,3 +1673,12 @@
+-  m_cloudDomeResetThisFrame = cameraJumped || !m_cloudDomeHistoryValid;
+-  m_cloudDomePeriodThisFrame = (cloudInputsChanged || cameraJumped || !m_cloudDomeHistoryValid)
+-    ? 1u : cloudInterleavePeriod(m_settings.cloudSecondaryLutInterleaveMode);
++  const bool flash = m_weatherBlending && (m_lightningEnvelope > 0.0f || m_lightningEnvelopePrevious > 0.0f);
++  const bool blendBakes = m_weatherBlending && !flash;
++  m_cloudDomeResetThisFrame = cameraJumped || !m_cloudDomeHistoryValid
++    || (m_weatherBlending && (cloudTopologyChanged || m_inputs.worldChanged));
++  const uint32_t requested = cloudInterleavePeriod(m_settings.cloudSecondaryLutInterleaveMode);
++  if (m_cloudDomeResetThisFrame || flash || (cloudInputsChanged && !blendBakes)) {
++    m_cloudDomePeriodThisFrame = 1u;
++  } else {
++    // Keep one cadence for the whole blend, including frames where the quantized key did not
++    // change. Switching periods on those frames can repeatedly skip the same rows.
++    m_cloudDomePeriodThisFrame = blendBakes ? std::min(requested, 2u) : requested;
++  }
+@@ -1870 +1905,2 @@
+-    const float influenceRadius = std::min(
++    const bool finiteBeam = sceneLight->shaped && sceneLight->beamReach > 0.0f && sceneLight->beamScatteringFloor > 0.0f;
++    const float influenceRadius = std::min(finiteBeam ? sceneLight->beamReach :
+@@ -1890,0 +1927 @@
++    entry.padLight1 = finiteBeam ? sceneLight->beamScatteringFloor : 0.0f;
+@@ -2320,0 +2358 @@
++  constexpr uint32_t kCascadeCount = 2u * kCloudShadowMapCascades;
+@@ -2330,5 +2368,6 @@
+-  if (!sm.keyValid || memcmp(key, sm.key, sizeof(key)) != 0) {
+-    // A different slab or window size changes every window, and a new key light (sun -> moon at dusk)
+-    // every direction: re-bake at once, not in turn.
+-    const bool geometryChanged = !sm.keyValid || key[0] != sm.key[0] || key[1] != sm.key[1]
+-                              || key[2] != sm.key[2] || key[9] != sm.key[9] || key[12] != sm.key[12];
++  const bool cut = m_inputs.cameraCut || m_cloudAnchorCutThisFrame || m_inputs.worldChanged;
++  const bool interruptedRefresh = cut && sm.slabRefreshRemaining != 0;
++  if (interruptedRefresh || !sm.keyValid || memcmp(key, sm.key, sizeof(key)) != 0) {
++    const bool slabChanged = key[1] != sm.key[1] || key[2] != sm.key[2];
++    const bool reset = interruptedRefresh || !sm.keyValid || key[0] != sm.key[0] || key[9] != sm.key[9]
++                    || key[12] != sm.key[12] || (slabChanged && (!m_weatherBlending || cut));
+@@ -2338 +2377 @@
+-        if (geometryChanged) {
++        if (reset) {
+@@ -2343 +2382,7 @@
+-    if (geometryChanged) {
++    if (reset) {
++      sm.nextSlabCascade = 0;
++      sm.slabRefreshRemaining = 0;
++    } else if (slabChanged) {
++      sm.slabRefreshRemaining = kCascadeCount;
++    }
++    if (reset || slabChanged) {
+@@ -2379,0 +2425,29 @@
++  }
++
++  // Keep the sun's per-frame speed current during a slab rotation so the inherited
++  // row budget does not mistake the entire blend for a single jump at the end.
++  {
++    const Vector3 sunNow = cloudShadowCascadeFor(0u, 0u, current).dir;
++    const Vector3 prev = sm.lastSunDir;
++    const float cosTurn = std::clamp(sunNow.x * prev.x + sunNow.y * prev.y + sunNow.z * prev.z, -1.0f, 1.0f);
++    const float turnDeg = (prev.x == 0.0f && prev.y == 0.0f && prev.z == 0.0f)
++                        ? 0.0f : std::acos(cosTurn) / kDegreesToRadians;
++    sm.sunDegreesPerFrame += (std::min(turnDeg, 5.0f) - sm.sunDegreesPerFrame) * 0.1f;
++    sm.lastSunDir = sunNow;
++  }
++
++  if (sm.slabRefreshRemaining) {
++    // Use one set of inputs for all rows of a changing slab. The slot and projection
++    // are published together, and the rotation reaches every cascade as weather changes.
++    const uint32_t map = sm.nextSlabCascade / kCloudShadowMapCascades;
++    const uint32_t k = sm.nextSlabCascade % kCloudShadowMapCascades;
++    CloudShadowCascade& cc = sm.cascade[map][k];
++    CloudShadowCascade replacement = cloudShadowCascadeFor(map, k, current);
++    replacement.slot = sm.spare[map];
++    rec.barrier();
++    dispatchCloudShadowMapRows(rec, map, k, replacement, replacement.slot, 0u, kCloudShadowMapSize);
++    sm.spare[map] = cc.slot;
++    cc = replacement;
++    sm.nextSlabCascade = (sm.nextSlabCascade + 1u) % kCascadeCount;
++    --sm.slabRefreshRemaining;
++    return;
+@@ -2409,13 +2483,2 @@
+-  // With a fast-moving sun, bake enough rows per frame that the cascades of both maps (re-baked in
+-  // turn; the horizon map turns with the sun's azimuth) stay within cloudShadowMapMaxLagDegrees.
+-  // Measured with the viewer's --sun-speed, a fixed 32 rows let a 1 deg/s sunset light the deck for
+-  // a sun about a degree higher than it was.
+-  {
+-    const Vector3 sunNow = cloudShadowCascadeFor(0u, 0u, current).dir;
+-    const Vector3 prev = sm.lastSunDir;
+-    const float cosTurn = std::clamp(sunNow.x * prev.x + sunNow.y * prev.y + sunNow.z * prev.z, -1.0f, 1.0f);
+-    const float turnDeg = (prev.x == 0.0f && prev.y == 0.0f && prev.z == 0.0f)
+-                        ? 0.0f : std::acos(cosTurn) / kDegreesToRadians;
+-    sm.sunDegreesPerFrame += (std::min(turnDeg, 5.0f) - sm.sunDegreesPerFrame) * 0.1f;
+-    sm.lastSunDir = sunNow;
+-  }
++  // With a fast-moving sun, increase the row budget to keep both maps within
++  // cloudShadowMapMaxLagDegrees as the cascades are re-baked in turn.
+@@ -2649 +2712 @@
+-  AtmosphereArgs args = getAtmosphereArgs();
++  const AtmosphereArgs args = getAtmosphereArgs();
+@@ -2652 +2715 @@
+-  return m_cachedNvdfKey.cellSizeKm      != m_settings.cloudCellSizeKm
++  if (m_cachedNvdfKey.cellSizeKm      != m_settings.cloudCellSizeKm
+@@ -2661 +2723,0 @@
+-      || m_cachedNvdfKey.billowSizeKm    != cloudNvdfBillowSizeKm(args.cloudBodyBillowSizeKm)
+@@ -2663 +2725,22 @@
+-      || m_cachedNvdfKey.deckType        != cloudNvdfDeckType(desiredNominalCoverage, args.cloudTypeMean);
++      || m_cachedNvdfKey.deckType        != cloudNvdfDeckType(desiredNominalCoverage, args.cloudTypeMean)) {
++    return true;
++  }
++
++  const float billowSizeKm = cloudNvdfBillowSizeKm(args.cloudBodyBillowSizeKm);
++  const float bakedSizeKm = m_cachedNvdfKey.billowSizeKm;
++  if (billowSizeKm == bakedSizeKm) {
++    return false;
++  }
++  if (!m_weatherBlending || m_inputs.cameraCut || m_cloudAnchorCutThisFrame || m_inputs.worldChanged) {
++    return true;
++  }
++
++  // The occupancy shader rounds tile / size to periodic Worley cycles. Within one cycle count,
++  // size only scales the displacement, so coalesce those amplitude-only steps during a blend.
++  const float tileKm = std::max(args.cloudNoiseTileKm, 1e-3f);
++  const auto cycles = [tileKm](float sizeKm) {
++    return std::max(1.0f, std::round(tileKm / std::max(sizeKm, 0.05f)));
++  };
++  constexpr float kBillowAmplitudeTolerance = 0.10f;
++  return cycles(billowSizeKm) != cycles(bakedSizeKm)
++      || std::abs(billowSizeKm - bakedSizeKm) > kBillowAmplitudeTolerance * bakedSizeKm;

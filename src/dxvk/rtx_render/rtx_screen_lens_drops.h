@@ -13,6 +13,7 @@ namespace dxvk {
   constexpr const char* kScreenLensDropFrameKey = "__lensDrops.frame_v1";
   constexpr const char* kScreenLensDropCapabilityKey = "__lensDrops.capability_v1";
   constexpr const char* kScreenLensDropOrderedCapabilityKey = "__lensDrops.orderedCapability_v1";
+  constexpr const char* kScreenLensDropSubmissionCapabilityKey = "__lensDrops.submissionCapability_v1";
 
   struct ScreenLensDrop {
     uint32_t id = 0;

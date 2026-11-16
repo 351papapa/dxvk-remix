@@ -152,6 +152,9 @@ namespace dxvk {
     // Returns null before a device registers and after remixapi_Shutdown.
     RemixApiDevice* registeredDevice();
 
+    // Reads the current submission frame under the D3D9 device lock. Other host APIs return false.
+    bool getD3D9SubmissionFrame(RemixApiDevice& device, uint32_t& frame);
+
     // Registers the API's D3D9 device. outputWidth and outputHeight are its swapchain's size, which a recording keeps.
     void registerDevice(std::unique_ptr<RemixApiDevice> device, uint32_t outputWidth, uint32_t outputHeight);
 

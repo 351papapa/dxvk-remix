@@ -79,6 +79,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -3255,6 +3256,24 @@ extern "C"
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
 
+    if (std::strcmp(key, "__vc.wetness.globalStrength") == 0) {
+      const std::string_view strength(value);
+      uint32_t amount = 0;
+      const auto end = strength.data() + strength.size();
+      const auto parsed = std::from_chars(strength.data(), end, amount);
+      if (parsed.ec != std::errc() || parsed.ptr != end || amount > 255) {
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      }
+      auto* device = tryAsDxvk();
+      if (!device) { return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED; }
+      auto lock = device->LockDevice();
+      // Apply the strength on the same command stream as the frame using it.
+      device->EmitCs([amount](dxvk::DxvkContext*) {
+        dxvk::fork_game_state::GameStateStore::get().set("__vc.wetness.globalStrength", std::to_string(amount));
+      });
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+
     if (std::strcmp(key, remixapi::local_coronas::submitKey) == 0 || std::strcmp(key, remixapi::local_coronas::submitKeyV2) == 0) {
       const bool version2 = std::strcmp(key, remixapi::local_coronas::submitKeyV2) == 0;
       std::vector<remixapi::local_coronas::Source> snapshot;
@@ -3343,13 +3362,26 @@ extern "C"
     if (std::strcmp(key, "__remix.starbursts.bridgeVersion") == 0) {
       return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
     }
-    if (std::strcmp(key, dxvk::kScreenLensDropCapabilityKey) == 0
-        || std::strcmp(key, dxvk::kScreenLensDropOrderedCapabilityKey) == 0) {
+    if (std::strcmp(key, "__vc.wetness.globalStrengthVersion") == 0) {
+      if (!tryAsDxvk()) { return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED; }
+      value = "1";
+    } else if (std::strcmp(key, dxvk::kScreenLensDropCapabilityKey) == 0
+        || std::strcmp(key, dxvk::kScreenLensDropOrderedCapabilityKey) == 0
+        || std::strcmp(key, dxvk::kScreenLensDropSubmissionCapabilityKey) == 0) {
       auto* device = tryAsDxvk();
       if (!device) { return REMIXAPI_ERROR_CODE_REMIX_DEVICE_WAS_NOT_REGISTERED; }
+      auto& postFx = device->GetDXVKDevice()->getCommon()->metaPostFx();
       struct Stamp { uint32_t frame = 0; uint64_t token = 0; };
       Stamp stamp;
-      if (std::strcmp(key, dxvk::kScreenLensDropOrderedCapabilityKey) == 0) {
+      if (std::strcmp(key, dxvk::kScreenLensDropSubmissionCapabilityKey) == 0) {
+        const auto started = std::chrono::steady_clock::now();
+        if (!dxvk::remix_api::getD3D9SubmissionFrame(*device, stamp.frame)) {
+          return REMIXAPI_ERROR_CODE_INCOMPATIBLE_VERSION;
+        }
+        stamp.token = postFx.screenLensDropDeviceToken();
+        postFx.reportScreenLensDropTiming("SubmissionGet", 0,
+          uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count()));
+      } else if (std::strcmp(key, dxvk::kScreenLensDropOrderedCapabilityKey) == 0) {
         const auto started = std::chrono::steady_clock::now();
         auto result = std::make_shared<Stamp>();
         {

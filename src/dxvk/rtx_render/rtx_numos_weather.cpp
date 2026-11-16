@@ -756,12 +756,14 @@ namespace dxvk {
     WaterWeatherState waterFrom, waterCurrent;
     float elapsed = 0.0f;
     float duration = 0.0f;
+    float lastGameBlendFactor = -1.0f;
     bool hasCurrent = false;
+    bool blending = false;
     bool held = false;
     bool snap = false;  // the next change of target shows at once
     uint32_t lastSnapRequest = 0;
     Preset heldPreset;
-    std::string lastGameWeather, lastManualPreset, lastLegacyFile;
+    std::string lastGameWeather, lastGameBlendOutgoing, lastManualPreset, lastLegacyFile;
     numos::Settings tuneBaseline, tuneStart;  // the user's settings, and the look written over them
   };
 
@@ -1412,6 +1414,7 @@ namespace dxvk {
   const numos::Settings& NumosWeather::update(const numos::Settings& base, float deltaSeconds) {
     ensureLoaded();
     State& s = *m_state;
+    s.blending = false;
     const uint32_t snapRequestValue = snapRequest();
     if (snapRequestValue != s.lastSnapRequest) {
       s.lastSnapRequest = snapRequestValue;
@@ -1465,6 +1468,7 @@ namespace dxvk {
       s.current = base;
       s.hasCurrent = true;
       s.elapsed = s.duration = 0.0f;
+      s.lastGameBlendFactor = -1.0f;
       m_targetName.clear();
       s.snapshot = numos::weatherFromSettings(s.current);
       return s.current;
@@ -1472,7 +1476,8 @@ namespace dxvk {
 
     const std::string gameId = gameWeather();
     const std::string manual = preset();
-    if (gameId != s.lastGameWeather || manual != s.lastManualPreset) {
+    const bool gameWeatherChanged = gameId != s.lastGameWeather;
+    if (gameWeatherChanged || manual != s.lastManualPreset) {
       s.held = false;  // a new weather from the game or the menu replaces a held seed
       s.lastGameWeather = gameId;
       s.lastManualPreset = manual;
@@ -1501,17 +1506,26 @@ namespace dxvk {
     const float gameBlend = gameWeatherBlend();
     if (previewPreset == nullptr && !s.held && gamePreset != nullptr && gameBlend >= 0.0f) {
       const float blendFactor = s.snap ? 1.0f : std::clamp(gameBlend, 0.0f, 1.0f);
+      const auto& outgoingId = gameWeatherOutgoing();
+      const auto* outgoingPreset = boundPreset(outgoingId);
+      const bool continuing = s.hasCurrent && !s.snap && !gameWeatherChanged && targetName == m_targetName
+                           && outgoingId == s.lastGameBlendOutgoing && s.lastGameBlendFactor >= 0.0f
+                           && blendFactor >= s.lastGameBlendFactor;
+      s.blending = continuing && blendFactor > 0.0f
+                && (blendFactor < 1.0f || (s.lastGameBlendFactor > 0.0f && s.lastGameBlendFactor < 1.0f));
+      s.lastGameBlendFactor = s.snap ? -1.0f : blendFactor;
+      s.lastGameBlendOutgoing = outgoingId;
       numos::Settings outgoing = base;
-      applyPreset(boundPreset(gameWeatherOutgoing()), outgoing);
+      applyPreset(outgoingPreset, outgoing);
       numos::Settings incoming = base;
       applyPreset(gamePreset, incoming);
       blend(outgoing, incoming, blendFactor, s.current);
-      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(boundPreset(gameWeatherOutgoing())), wetnessFor(gamePreset), blendFactor);
-      s.waterCurrent = WaterWeatherState::blend(waterFor(boundPreset(gameWeatherOutgoing())), waterFor(gamePreset), blendFactor);
-      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(boundPreset(gameWeatherOutgoing())), precipitationFor(gamePreset), blendFactor);
-      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(boundPreset(gameWeatherOutgoing())), volumetricFor(gamePreset), blendFactor);
+      s.wetnessCurrent = WetnessPreset::blend(wetnessFor(outgoingPreset), wetnessFor(gamePreset), blendFactor);
+      s.waterCurrent = WaterWeatherState::blend(waterFor(outgoingPreset), waterFor(gamePreset), blendFactor);
+      s.precipitationCurrent = PrecipitationPreset::blend(precipitationFor(outgoingPreset), precipitationFor(gamePreset), blendFactor);
+      s.volumetricCurrent = VolumetricWeatherPreset::blend(volumetricFor(outgoingPreset), volumetricFor(gamePreset), blendFactor);
       const auto nightIncoming = nightFor(gamePreset);
-      s.nightCurrent = NumosNightAppearancePreset::blend(nightFor(boundPreset(gameWeatherOutgoing())), nightIncoming, blendFactor);
+      s.nightCurrent = NumosNightAppearancePreset::blend(nightFor(outgoingPreset), nightIncoming, blendFactor);
       if (!s.hasCurrent || targetName != m_targetName) {
         logNightAppearance(targetName, nightIncoming);
       }
@@ -1523,6 +1537,7 @@ namespace dxvk {
       return s.current;
     }
 
+    s.lastGameBlendFactor = -1.0f;
     numos::Settings goal = base;
     applyPreset(target, goal);
     const WetnessArgs wetnessGoal = wetnessFor(target);
@@ -1530,7 +1545,8 @@ namespace dxvk {
     const auto precipitationGoal = precipitationFor(target);
     const auto volumetricGoal = volumetricFor(target);
     const auto nightGoal = nightFor(target);
-    if (!s.hasCurrent || targetName != m_targetName || s.snap) {
+    const bool resetTransition = !s.hasCurrent || targetName != m_targetName || s.snap;
+    if (resetTransition) {
       if (!s.hasCurrent || targetName != m_targetName) {
         logNightAppearance(targetName, nightGoal);
       }
@@ -1547,8 +1563,10 @@ namespace dxvk {
       s.snap = false;
       m_targetName = targetName;
     }
+    const bool wasBlending = !resetTransition && s.duration > 0.0f && s.elapsed < s.duration;
     s.elapsed += std::max(deltaSeconds, 0.0f);
     const float t = s.duration > 0.0f ? s.elapsed / s.duration : 1.0f;
+    s.blending = !s.held && (t < 1.0f || wasBlending);
     s.wetnessCurrent = WetnessPreset::blend(s.wetnessFrom, wetnessGoal, smoothstep01(t));
     s.waterCurrent = WaterWeatherState::blend(s.waterFrom, waterGoal, smoothstep01(t));
     s.precipitationCurrent = PrecipitationPreset::blend(s.precipitationFrom, precipitationGoal, smoothstep01(t));
@@ -1593,6 +1611,10 @@ namespace dxvk {
 
   const numos::WeatherSnapshot* NumosWeather::currentSnapshot() const {
     return m_state->hasCurrent ? &m_state->snapshot : nullptr;
+  }
+
+  bool NumosWeather::isBlending() const {
+    return m_state->blending;
   }
 
   float NumosWeather::transitionProgress() const {

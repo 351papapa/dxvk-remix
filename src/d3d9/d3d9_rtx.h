@@ -178,6 +178,9 @@ namespace dxvk {
       */
     void EndFrame(const Rc<DxvkImage>& targetImage, bool callInjectRtx = true);
 
+    // The caller holds the native device lock. The serial follows queued EndFrame boundaries.
+    uint32_t GetSubmissionFrameIndex() const { return m_d3d9FrameIndex; }
+
     /**
       * \brief: Records whether the game window is inactive or minimized, where a game may keep drawing without presenting.
       * Safe to call from any thread. Under the bridge the window procedure runs on the message-channel thread,

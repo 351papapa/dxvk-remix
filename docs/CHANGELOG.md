@@ -1,5 +1,14 @@
 # Remix Plus changelog
 
+## 2026-11-17 — Smooth Vice City weather and render the lighthouse beam
+
+Native screen drops query the D3D9 submission frame without draining the command stream, and changing rain strength no longer invalidates static draw cache entries. NUMOS coalesces intermediate sky and cloud bakes during a weather blend and applies the exact final settings.
+
+RemixCoreVC can replace the rotating lighthouse beam with a shaped RTX light. NUMOS clips the volume to the cone and applies local scattering out to 450 m. Global haze range and intensity are unchanged.
+
+- In a fixed harbor fog-to-rain replay with frame generation off, average base FPS over the first ten seconds rose from 17.1 to 37.8.
+- The Runtime builds the adjusted NUMOS renderer from the pinned submodule and host-owned overlays.
+
 ## 2026-11-15 — Port Path Tracing Performance and SHARC pipeline prewarm
 
 Path Tracing Performance adds a lower-cost indirect path, an optional rasterized first hit and sparse shading with Ray Reconstruction. The SHARC update and query dispatches select a compatible path on each supported GPU. Startup prewarm registers the opacity micromap variants used during rendering and reports late compiles.
