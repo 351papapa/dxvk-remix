@@ -1,5 +1,17 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Reuse fixed-function draws with disabled texture transforms
+
+The D3D9 frontend skips disabled texture matrices when it checks whether a
+fixed-function draw can reuse its prepared state. Some games update these
+matrices as the camera moves. The transform flags and the matrices of enabled
+stages still participate in the check.
+
+- Across two daytime Vice City drives per build, early misses fell from
+  2,771 to 233 per frame. D3D9 thread time fell from 20.95 to 12.68 ms per
+  frame in complete 300-frame driving windows. Average base FPS rose from
+  37.62 to 39.42. P99 varied across the two pairs.
+
 ## 2026-11-18 — Stage managed vertex buffer uploads before the first draw
 
 `d3d9.stageManagedVertexUploads` enables transient uploads for managed,

@@ -1881,7 +1881,12 @@ namespace dxvk {
     h = XXH3_64bits_withSeed(&s.material, sizeof(s.material), h);
     // Vertex capture: the VS constants in use and the matrices the capture constants invert (fillFrontendIdentity).
     h = XXH3_64bits_withSeed(&in.vsConstants, sizeof(in.vsConstants), h);
-    for (uint32_t i = 0; i < 8; ++i) {
+    // A disabled fixed-function stage passes its coordinates through. Games may leave
+    // a changing matrix installed there. The flags themselves are part of textureStages above.
+    const bool fixedFunction = !m_parent->UseProgrammableVS() && !m_parent->UseProgrammablePS();
+    for (uint32_t i = 0; i < caps::TextureStageCount; ++i) {
+      if (fixedFunction && s.textureStages[i][DXVK_TSS_TEXTURETRANSFORMFLAGS] == D3DTTFF_DISABLE)
+        continue;
       const Matrix4& t = s.transforms[GetTransformIndex(D3DTRANSFORMSTATETYPE(D3DTS_TEXTURE0 + i))];
       h = XXH3_64bits_withSeed(&t, sizeof(t), h);
     }
