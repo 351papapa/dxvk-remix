@@ -69,6 +69,7 @@
 #include "rtx_scene_manager.h"
 #include "rtx_frontend_interface.h"
 #include "rtx_retained_scene.h"
+#include "rtx_retained_world_status.h"
 #include "rtx_scene_transient.h"
 #include "rtx_sparse_rendering.h"
 
@@ -1014,6 +1015,7 @@ namespace dxvk {
     if (callInjectRtx) {
       // Fallback inject (is a no-op if already injected this frame, or no valid RT scene)
       injectRTX(cachedReflexFrameId, targetImage);
+      publishRetainedWorldStatus(m_device.ptr(), m_rayTracingSupported);
     }
 
     if (callInjectRtx && targetImage != nullptr) {

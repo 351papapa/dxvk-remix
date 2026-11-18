@@ -1,5 +1,12 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Publish retained WorldMesh readiness through the Bridge
+
+The Runtime publishes a timestamped readiness and fault word for the local
+WorldMesh client. The retained path becomes ready when ray tracing is active,
+the camera is valid and shader compilation is ready. The client can keep the
+native draw path while the status is unavailable or stale.
+
 ## 2026-11-18 — Soften stochastic water caustic seams
 
 Stochastic water caustics blend neighboring samples with a distance-based

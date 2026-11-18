@@ -28,6 +28,7 @@
 #include <remix/remix_legacy_surface_validation.h>
 #include <remix/remix_game_surface.h>
 #include "rtx_retained_compat.h"
+#include "rtx_retained_world_status.h"
 #include "rtx_asset_data_manager.h"
 #include "rtx_asset_replacer.h"
 #include "rtx_light_manager.h"
@@ -85,6 +86,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -98,6 +100,57 @@ namespace dxvk {
 }
 
 namespace {
+  struct RetainedWorldMapping {
+    std::atomic<bool> active { false };
+    std::mutex mutex;
+    dxvk::DxvkDevice* device = nullptr;
+    std::string name;
+    HANDLE handle = nullptr;
+    volatile LONG* value = nullptr;
+
+    ~RetainedWorldMapping() {
+      if (value) {
+        InterlockedExchange(value, 0);
+        UnmapViewOfFile(const_cast<const LONG*>(value));
+      }
+      if (handle) CloseHandle(handle);
+    }
+
+    std::string openFor(dxvk::DxvkDevice* owner) {
+      std::lock_guard lock { mutex };
+      if (!value) {
+        LARGE_INTEGER nonce{};
+        QueryPerformanceCounter(&nonce);
+        char nameBuffer[96]{};
+        std::snprintf(nameBuffer, sizeof(nameBuffer), "Local\\RTXVC.RetainedWorld.v1.%lu.%llx",
+          GetCurrentProcessId(), static_cast<unsigned long long>(nonce.QuadPart));
+        const std::string newName = nameBuffer;
+        const std::wstring wideName(newName.begin(), newName.end());
+        const HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+          0, sizeof(LONG), wideName.c_str());
+        if (!mapping) return {};
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+          CloseHandle(mapping);
+          return {};
+        }
+        value = static_cast<volatile LONG*>(MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(LONG)));
+        if (!value) {
+          CloseHandle(mapping);
+          return {};
+        }
+        handle = mapping;
+        name = newName;
+      }
+      if (device != owner) {
+        InterlockedExchange(value, 0);
+        device = owner;
+      }
+      active.store(true, std::memory_order_release);
+      return name;
+    }
+  };
+  RetainedWorldMapping s_retainedWorldMapping;
+
   // Where host texture imports went, reported every 256 imports so a log shows how
   // much texture memory sharing and the mip cap are saving. "Not duplicated"
   // is the game image's size: what a copy would have cost.
@@ -3067,6 +3120,27 @@ namespace {
   }
 }
 
+namespace dxvk {
+  void publishRetainedWorldStatus(DxvkDevice* device, bool hardwareReady) {
+    auto& mapping = s_retainedWorldMapping;
+    if (!mapping.active.load(std::memory_order_acquire)) return;
+    std::lock_guard lock { mapping.mutex };
+    if (mapping.device != device) return;
+
+    auto* common = device->getCommon();
+    auto& scene = common->getSceneManager();
+    const bool fault = scene.retainedScene().compat().status().lastError != 0;
+    const uint32_t frame = device->getCurrentFrameId();
+    const auto& camera = scene.getCamera();
+    const bool cameraReady = camera.isValid(frame) || (frame != 0 && camera.isValid(frame - 1));
+    const bool shadersReady = !RtxOptions::Shader::enableAsyncCompilation()
+      || common->pipelineManager().remixShaderCompilationCount() == 0;
+    const bool ready = hardwareReady && !fault && RtxOptions::enableRaytracing() && cameraReady && shadersReady;
+    const uint32_t stamp = ((GetTickCount() & 0x3FFFFFFFu) << 2) | (fault ? 2u : 0u) | (ready ? 1u : 0u);
+    InterlockedExchange(mapping.value, static_cast<LONG>(stamp));
+  }
+}
+
 extern "C"
 {
   REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SubmitLocalStarbursts(
@@ -3428,6 +3502,15 @@ extern "C"
         std::strcmp(key, "vc.api.retainedOrderedVersion") == 0 ||
         std::strcmp(key, "__remix.lightDefinitions.version") == 0) {
       value = "1";
+    } else if (std::strcmp(key, "vc.api.retainedWorldMapping") == 0) {
+      const auto* device = tryAsDxvk();
+      if (device) {
+        value = s_retainedWorldMapping.openFor(device->GetDXVKDevice().ptr());
+      }
+      if (value.empty()) {
+        *out_actual_size = 0;
+        return REMIXAPI_ERROR_CODE_SUCCESS;
+      }
     } else if (std::strcmp(key, remixapi_retained::runtimeDeltaKey) == 0) {
       value = "1";
     } else if (std::strcmp(key, remixapi_retained::runtimeVisibilityKey) == 0) {
