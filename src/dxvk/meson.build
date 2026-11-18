@@ -708,6 +708,8 @@ numos_shaders = custom_target(
   output: ['_numos_shaders.txt'],
   depend_files: files('../../submodules/numos/src/generated/passes.inc',
     '../../scripts-common/numos_shaders.py', '../../scripts-common/numos_scene_shaders.py',
+    '../../scripts-common/numos_renderer_overlay.py', 'numos_renderer_overlay/cloud_march_common.slangh.patch',
+    'numos_renderer_overlay/cloud_reference.slangh.patch',
     '../../scripts-common/compile_shaders.py', '../../scripts-common/numos_haze_shaders.py',
     'shaders/numos_haze/numos_haze_helpers.slangh',
     'shaders/numos_haze/numos_spot_beam.slangh'),

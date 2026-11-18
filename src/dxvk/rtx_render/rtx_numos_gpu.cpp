@@ -561,6 +561,17 @@ namespace dxvk {
       m_shaderLoadFailed = true;
       return nullptr;
     }
+    const auto passId = numos::PassId(pass);
+    if (passId == numos::PassId::cloud_render || passId == numos::PassId::cloud_render_fast ||
+        passId == numos::PassId::cloud_render_reference || passId == numos::PassId::cloud_secondary_lut) {
+      auto airWords = loadSidecarSpirv(info, m_spirvDirectory, ".air.spv");
+      if (!airWords.empty()) {
+        words = std::move(airWords);
+        Logger::info(str::format("NUMOS: finite cloud transport ready for ", info.name));
+      } else {
+        Logger::warn(str::format("NUMOS: missing or stale finite-air sidecar for ", info.name));
+      }
+    }
     if (!m_hazeWords[pass].empty()) {
       words = std::move(m_hazeWords[pass]);
     }

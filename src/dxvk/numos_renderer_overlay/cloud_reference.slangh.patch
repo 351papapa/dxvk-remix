@@ -1,0 +1,6 @@
+base-sha256 8c0d459c8ab49ac6b479427fa18cb1b5f513dc104019dbc6c82c1ff25acf335a
+--- a/shaders/numos/lib/cloud_reference.slangh
++++ b/shaders/numos/lib/cloud_reference.slangh
+@@ -222 +222 @@
+-    if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm, args.cloudAltitude,
++    if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm, ctx.groundEyeRadiusKm, args.cloudAltitude,

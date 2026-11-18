@@ -1,0 +1,75 @@
+base-sha256 8ccfb58dd114b44ceca4722d62299fe91e2993a16b59245a33ec534b0e093d42
+--- a/shaders/numos/lib/cloud_march_common.slangh
++++ b/shaders/numos/lib/cloud_march_common.slangh
+@@ -74,0 +75 @@
++  float groundEyeRadiusKm;   // Physical eye radius in the sky frame, independent of cloud translation.
+@@ -662 +663 @@
+-  const vec3 planetCenterEye = getCloudPlanetCenter(args);
++  const vec3 planetCenterEye = getPlanetCenter(args);
+@@ -699,0 +701,16 @@
++// Integrate only the finite camera-to-cloud segment when the two top-of-atmosphere
++// transmittances are too small to recover their ratio. This path is for grazing
++// optically thick rays; unlike division of two fp16 LUT texels it gives T(0) = 1.
++vec3 cloudFiniteAirTransmittance(float tKm, float startAltitude, float endAltitude,
++                                 float viewUp, AtmosphereArgs args) {
++  const float midpoint = 0.5f * tKm;
++  const float eyeRadius = args.planetRadius + startAltitude;
++  const float delta = midpoint * (2.0f * eyeRadius * viewUp + midpoint);
++  const float midAltitude = max(0.0f, startAltitude + delta /
++    (sqrt(max(0.0f, eyeRadius * eyeRadius + delta)) + eyeRadius));
++  const vec3 sigma = sampleAtmosphereMedium(startAltitude, args).extinction
++                   + 4.0f * sampleAtmosphereMedium(midAltitude, args).extinction
++                   + sampleAtmosphereMedium(endAltitude, args).extinction;
++  return exp(-sigma * (tKm / 6.0f));
++}
++
+@@ -703 +720 @@
+-  const vec3 rel = ctx.viewDirYUp * tKm - getCloudPlanetCenter(args);
++  const vec3 rel = ctx.viewDirYUp * tKm - getPlanetCenter(args);
+@@ -711,0 +729 @@
++  vec3 numerator, denominator;
+@@ -713,2 +731,2 @@
+-    airT = sampleTransmittanceLut(AtmosphereTransmittanceLut, AtmosphereSkyViewSampler, alt, -mu, args)
+-         / max(ctx.airTransmittanceEye, vec3(1e-6f));
++    numerator = sampleTransmittanceLut(AtmosphereTransmittanceLut, AtmosphereSkyViewSampler, alt, -mu, args);
++    denominator = ctx.airTransmittanceEye;
+@@ -716,5 +734,11 @@
+-    airT = ctx.airTransmittanceAll
+-         / max(sampleTransmittanceLut(AtmosphereTransmittanceLut, AtmosphereSkyViewSampler, alt, mu, args),
+-               vec3(1e-6f));
+-  }
+-  airT = saturate(airT);
++    numerator = ctx.airTransmittanceAll;
++    denominator = sampleTransmittanceLut(AtmosphereTransmittanceLut, AtmosphereSkyViewSampler, alt, mu, args);
++  }
++  airT = saturate(numerator / max(denominator, vec3(1e-30f)));
++  // Blend over the last two stops above fp16's normal range, independently per channel.
++  const vec3 ratioWeight = smoothstep(vec3(0.00006103515625f), vec3(0.000244140625f), denominator);
++  if (any(ratioWeight < vec3(1.0f))) {
++    const vec3 finiteT = cloudFiniteAirTransmittance(tKm, max(args.cameraAltitudeKm, 0.0f),
++                                                     alt, ctx.viewDirYUp.y, args);
++    airT = lerp(finiteT, airT, ratioWeight);
++  }
+@@ -878,0 +903 @@
++  ctx.groundEyeRadiusKm   = args.planetRadius + max(args.cameraAltitudeKm, 0.0f);
+@@ -975 +1000 @@
+-    const float rEye = args.planetRadius + args.cameraWorldPosYUpKm.y;
++    const float rEye = ctx.groundEyeRadiusKm;
+@@ -1334 +1359 @@
+-bool cloudSlabSpan(vec3 rayDirYUp, vec3 planetCenter, float planetRadiusKm,
++bool cloudSlabSpan(vec3 rayDirYUp, vec3 planetCenter, float planetRadiusKm, float groundEyeRadiusKm,
+@@ -1376,3 +1401,5 @@
+-  if (intersectSphere(vec3(0.0f), rayDirYUp, planetCenter, planetRadiusKm, tPlanet0, tPlanet1)
+-      && tPlanet0 > 0.0f) {
+-    tExit = min(tExit, tPlanet0);
++  // Moving a cloud deck must not move the planet that occludes it. Match the sky ground hit.
++  if (rayDirYUp.y < 0.0f
++      && cloudShadowSphereRoots(groundEyeRadiusKm, rayDirYUp.y, planetRadiusKm, tPlanet0, tPlanet1)
++      && tPlanet1 > 0.0f) {
++    tExit = min(tExit, max(tPlanet0, 0.0f));
+@@ -1434 +1461 @@
+-  if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm,
++  if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm, ctx.groundEyeRadiusKm,
+@@ -1850 +1877 @@
+-      if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm, slabs[layer].altitudeKm,
++      if (!cloudSlabSpan(viewDirYUp, ctx.planetCenterKm, ctx.planetRadiusKm, ctx.groundEyeRadiusKm, slabs[layer].altitudeKm,

@@ -14,6 +14,8 @@ import subprocess
 import importlib.util
 import sys
 
+from numos_renderer_overlay import apply_overlay
+
 
 def replace_once(source, old, new):
     if source.count(old) != 1:
@@ -192,7 +194,16 @@ def build_scene_shaders(numos, slangc, out, spirvopt=None, spirvval=None):
     overlay = out / 'scene_source'
     lib = overlay / 'numos' / 'lib'
     lib.mkdir(parents=True, exist_ok=True)
-    source = (numos / 'shaders/numos/lib/cloud_march_common.slangh').read_text(encoding='utf-8')
+    # Compile the same pinned transport for the camera, its no-TLAS fallback, and reflections.
+    air_overlay = out / 'cloud_air_source'
+    air_lib = air_overlay / 'numos/lib'
+    air_lib.mkdir(parents=True, exist_ok=True)
+    patches = pathlib.Path(__file__).resolve().parent.parent / 'src/dxvk/numos_renderer_overlay'
+    for name in ('cloud_march_common.slangh', 'cloud_reference.slangh'):
+        original = (numos / 'shaders/numos/lib' / name).read_text(encoding='utf-8')
+        patch = (patches / (name + '.patch')).read_text(encoding='utf-8')
+        (air_lib / name).write_text(apply_overlay(original, patch), encoding='utf-8')
+    source = (air_lib / 'cloud_march_common.slangh').read_text(encoding='utf-8')
     source = replace_once(source, '// SPDX-License-Identifier: Apache-2.0\n',
         '// SPDX-License-Identifier: Apache-2.0\n' + SCENE_VISIBILITY + '\n')
     source = replace_once(source, '// density only, no light, with the march\'s own density field (cloudMarchDensity, the same span and',
@@ -278,17 +289,29 @@ def build_scene_shaders(numos, slangc, out, spirvopt=None, spirvval=None):
     spec = importlib.util.spec_from_file_location('numos_pass_reflection', numos / 'tools/gen_pass_table.py')
     reflection = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reflection)
-    for name, defines in [('cloud_render', []), ('cloud_render_fast', ['-DCLOUD_SUN_BEER_MAP=1'])]:
+    passes = numos / 'shaders/numos/passes'
+    standard = [('cloud_render', 'cloud_render', []),
+                ('cloud_render_fast', 'cloud_render', ['-DCLOUD_SUN_BEER_MAP=1']),
+                ('cloud_render_reference', 'cloud_render', ['-DCLOUD_REFERENCE_PATH_TRACE=1']),
+                ('cloud_secondary_lut', 'cloud_secondary_lut', [])]
+    variants = [(name, entry, overlay, 'scene', defines) for name, _, defines in standard[:2]]
+    variants += [(name, passes / (src + '.comp.slang'), air_overlay, 'air', defines)
+                 for name, src, defines in standard]
+    for name, shader_entry, shader_overlay, kind, defines in variants:
         original = out / (name + '.comp.spv')
-        target = out / (name + '.comp.scene.spv')
-        subprocess.run([str(slangc), str(entry), '-I', str(overlay), '-I', str(numos / 'shaders'),
+        target = out / (name + '.comp.' + kind + '.spv')
+        subprocess.run([str(slangc), str(shader_entry), '-I', str(shader_overlay), '-I', str(numos / 'shaders'),
                         *flags, *defines, '-o', str(target)], check=True)
         payload = target.read_bytes()
         if len(payload) % 4 or struct.unpack_from('<I', payload)[0] != 0x07230203:
             raise ValueError(f'Invalid scene SPIR-V: {target}')
         local, push, bindings = reflection.reflect(original)
         scene_local, scene_push, scene_bindings = reflection.reflect(target)
-        expected = bindings + [(30, 0, 'AccelerationStructure', 'None', 0, 'cloudSceneTlas')]
+        expected = list(bindings)
+        if kind == 'scene':
+            expected.append((30, 0, 'AccelerationStructure', 'None', 0, 'cloudSceneTlas'))
+        if specialization_constants(original) != specialization_constants(target):
+            raise ValueError(f'NUMOS cloud specialization constants changed: {target}')
         if (local, push, sorted(expected)) != (scene_local, scene_push, scene_bindings):
             raise ValueError(f'NUMOS scene shader ABI changed: {target}')
         if spirvopt:
@@ -297,7 +320,7 @@ def build_scene_shaders(numos, slangc, out, spirvopt=None, spirvval=None):
         # Original ABI hash, then final payload hash; checked by the runtime before use.
         target.with_suffix('.meta').write_text(
             f'{fnv1a(original.read_bytes()):016x} {fnv1a(payload):016x}\n', encoding='ascii')
-        print(f'Built scene visibility: {target.name}')
+        print(f'Built NUMOS cloud pass: {target.name}')
 
 
 if __name__ == '__main__':
