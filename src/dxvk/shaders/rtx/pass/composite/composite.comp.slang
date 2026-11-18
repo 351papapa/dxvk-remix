@@ -57,7 +57,14 @@
 #include "rtx/pass/sparse_rendering/sparse_rendering.slangh"
 #include "rtx/pass/sparse_rendering/compact_active_pixels.slangh"
 // The host include overlay reads both grouped HAZE bitsets and legacy light indices.
+#if COMPOSITE_SKY_PROVIDER
+#include "rtx/pass/composite/composite_haze_cache.slangh"
+#define apLocalLightAirlight compositeLocalLightAirlight
+#endif
 #include "numos/host/numos_host.slangh"
+#if COMPOSITE_SKY_PROVIDER
+#undef apLocalLightAirlight
+#endif
 #ifdef COMPOSITE_NIGHT_APPEARANCE
 #include "rtx/pass/composite/numos_night_appearance.slangh"
 #endif

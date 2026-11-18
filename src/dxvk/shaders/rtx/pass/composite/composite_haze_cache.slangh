@@ -1,0 +1,33 @@
+// The color output and the upscaler's sky mask both composite the same air along
+// this camera ray. NUMOS integrates local lights from apStartDistance to an end
+// distance clamped to its froxel range. All inputs except that end distance are
+// constant within this invocation of the composite shader, including the tile,
+// camera ray and the read-only clustered light and visibility buffers.
+//
+// Slang lowers these to per-invocation state. A different surface depth always
+// recomputes the integral. Nothing survives a pixel or frame boundary.
+#pragma once
+
+#include "numos/lib/aerial_perspective_lights.slangh"
+
+static uint previousAirlightEnd;
+static float3 previousAirlight;
+static bool hasPreviousAirlight = false;
+
+float3 compositeLocalLightAirlight(StructuredBuffer<AerialPerspectiveLight> lights, StructuredBuffer<uint> clusters,
+                                   Texture3D<float4> froxelAux, SamplerState volumeSampler, AtmosphereArgs args,
+                                   float2 screenUv, float3 direction, float forwardPerDistance,
+                                   float startWorld, float endWorld) {
+  if (args.apLocalLightCount == 0u || !(endWorld > startWorld))
+    return float3(0.0f);
+
+  uint endBits = asuint(endWorld);
+  if (hasPreviousAirlight && endBits == previousAirlightEnd)
+    return previousAirlight;
+
+  previousAirlight = apLocalLightAirlight(lights, clusters, froxelAux, volumeSampler, args,
+    screenUv, direction, forwardPerDistance, startWorld, endWorld);
+  previousAirlightEnd = endBits;
+  hasPreviousAirlight = true;
+  return previousAirlight;
+}

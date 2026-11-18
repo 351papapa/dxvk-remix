@@ -21,6 +21,7 @@
 */
 #include "rtx_pre_exposure.h"
 #include "rtx_composite.h"
+#include "../../util/util_env.h"
 #include "dxvk_device.h"
 #include "rtx/pass/composite/composite_binding_indices.h"
 #include "rtx/pass/composite/composite_args.h"
@@ -635,7 +636,20 @@ namespace dxvk {
     {
       ScopedGpuProfileZone(ctx, "Composition");
       ctx->setFramePassStage(RtxFramePassStage::Composition);
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getCompositeShader(compositeArgs.skyProviderActive != 0, nightAppearance));
+      Rc<DxvkShader> compositeShader = getCompositeShader(compositeArgs.skyProviderActive != 0, nightAppearance);
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, compositeShader);
+      static const bool traceAirlight = env::getEnvVar("RTX_VC_RAIN_AIRLIGHT_BIND") == "1";
+      if (traceAirlight) {
+        static thread_local const DxvkShader* previous = nullptr;
+        static thread_local uint32_t last = 0;
+        const auto frame = ctx->getDevice()->getCurrentFrameId();
+        if (previous != compositeShader.ptr() || frame - last >= 120u) {
+          previous = compositeShader.ptr();
+          last = frame;
+          Logger::info(str::format("[RainAirlightBind] frame=", frame, " shader=", compositeShader->debugName(),
+            " key=", compositeShader->getShaderKey().toString(), " biasMask=", unsigned(compositeArgs.skyWriteBiasMask)));
+        }
+      }
       ctx->dispatch(workgroups.width, workgroups.height, workgroups.depth);
     }
 

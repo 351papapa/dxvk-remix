@@ -1,5 +1,17 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Reuse local-light scattering in the sky bias mask
+
+The NUMOS composite reuses a pixel’s local-light scattering when the scene
+colour and the upscaler’s sky mask trace the same camera ray to the same
+depth. Each distinct depth still integrates its lights with the original
+samples and visibility.
+
+Across four alternating 46.5-second rainy-night drives in Vice City, source
+frame rate rose from 28.95 to 31.44 FPS on an RTX 5070. P99 frame time fell
+from 50.85 to 46.31 ms. The two original runs recorded 39 frames over 50 ms
+in total, and the two updated runs recorded 7.
+
 ## 2026-11-18 — Skip unused thin-leaf transmission samples in direct shadow rays
 
 The Full wetness ray-query compute shader now checks the existing visibility
