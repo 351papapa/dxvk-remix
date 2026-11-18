@@ -1,5 +1,16 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Stage managed vertex buffer uploads before the first draw
+
+`d3d9.stageManagedVertexUploads` enables transient uploads for managed,
+write-only vertex buffers with a CPU mapping buffer. The game can reuse its
+mapping buffer while the GPU reads a snapshot of the dirty range. The setting
+defaults to off and is read from the device's startup configuration.
+
+- Across two matched Vice City driving replays per setting, waits of at least
+  2.5 ms for these locks fell from 55 to 0. Source frames above 50 ms fell from
+  30 to 12.
+
 ## 2026-11-18 — Publish retained WorldMesh readiness through the Bridge
 
 The Runtime publishes a timestamped readiness and fault word for the local

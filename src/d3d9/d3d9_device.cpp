@@ -666,7 +666,14 @@ namespace dxvk {
 
     try {
       const Com<D3D9VertexBuffer> buffer = new D3D9VertexBuffer(this, &desc);
-      m_initializer->InitBuffer(buffer->GetCommonBuffer());
+      D3D9CommonBuffer* pBuffer = buffer->GetCommonBuffer();
+      if (Pool == D3DPOOL_MANAGED && (Usage & D3DUSAGE_WRITEONLY) &&
+          pBuffer->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_BUFFER && !pBuffer->WasWrittenByGPU() &&
+          m_parent->GetInstance()->config().getOption<bool>("d3d9.stageManagedVertexUploads", false)) {
+        // Select staged uploads before any draw can retain the mapping buffer.
+        pBuffer->EnableStagingBufferUploads();
+      }
+      m_initializer->InitBuffer(pBuffer);
       *ppVertexBuffer = buffer.ref();
       return D3D_OK;
     }
