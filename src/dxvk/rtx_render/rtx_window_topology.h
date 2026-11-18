@@ -114,6 +114,7 @@ namespace dxvk {
     };
     std::vector<Triangle> triangles(input.triangleCount);
     std::vector<double> edgeLengths;
+    edgeLengths.reserve(size_t(input.triangleCount) * 3);
     Point origin {};
     for (uint32_t triangle = 0; triangle < input.triangleCount; ++triangle) {
       auto& parsed = triangles[triangle];
@@ -211,6 +212,24 @@ namespace dxvk {
     std::vector<ReverseFace> reverseFaces(input.triangleCount);
     std::vector<Edge> edges;
     std::unordered_map<Bucket, std::vector<size_t>, BucketHash> buckets;
+    // Keep a small, contiguous membership filter in front of the sparse spatial map.
+    // An unset bit proves that the bucket has never received an edge. Collisions
+    // go through the original lookup, in the original traversal order.
+    const size_t edgeCount = size_t(stats.trianglesValid) * 3;
+    edges.reserve(edgeCount);
+    buckets.reserve(edgeCount);
+    size_t words = 1;
+    while (words < edgeCount / 4 && words < (1u << 18)) {
+      words *= 2;
+    }
+    std::vector<uint64_t> occupied(words);
+    const size_t bitMask = words * 64 - 1;
+    auto filterBit = [bitMask](const Bucket& cell) {
+      uint64_t hash = BucketHash{}(cell);
+      hash ^= hash >> 33;
+      hash *= 0xff51afd7ed558ccdULL;
+      return size_t(hash ^ (hash >> 32)) & bitMask;
+    };
     auto endpointsMatch = [&](const Vertex& a, const Vertex& b, double tolerance) {
       const Point delta = subtract(a.position, b.position);
       return dot(delta, delta) <= tolerance * tolerance &&
@@ -239,6 +258,10 @@ namespace dxvk {
           for (int y = -1; y <= 1; ++y) {
             for (int z = -1; z <= 1; ++z) {
               const Bucket neighbor {bucket[0] + x, bucket[1] + y, bucket[2] + z};
+              const size_t bit = filterBit(neighbor);
+              if (!(occupied[bit / 64] & (uint64_t(1) << (bit % 64)))) {
+                continue;
+              }
               const auto found = buckets.find(neighbor);
               if (found == buckets.end()) {
                 continue;
@@ -287,6 +310,8 @@ namespace dxvk {
             }
           }
         }
+        const size_t bit = filterBit(bucket);
+        occupied[bit / 64] |= uint64_t(1) << (bit % 64);
         buckets[bucket].push_back(edges.size());
         edges.push_back(edge);
       }

@@ -48,7 +48,9 @@
 #include "rtx_vram_budget.h"
 #include "rtx_fork_d3d9_alpha.h"
 #include "rtx_fork_sccr_shell.h"
-#include "rtx_window_topology.h"
+#include "rtx_window_topology_cache.h"
+#include "rtx_window_topology_oracle.h"
+#include "../../util/util_filesys.h"
 
 #include "rtx/pass/instance_definitions.h"
 #include "rtx/concept/billboard.h"
@@ -3995,7 +3997,141 @@ namespace dxvk {
     }
   }
 
+  namespace {
+    using WindowCacheClock = std::chrono::steady_clock;
+
+    struct WindowCacheStats {
+      uint32_t frame = ~0u;
+      uint32_t frames = 0;
+      uint64_t localMisses = 0;
+      uint64_t hits = 0;
+      uint64_t persistedHits = 0;
+      uint64_t verified = 0;
+      uint64_t mismatches = 0;
+      uint64_t incomplete = 0;
+      uint64_t builtTriangles = 0;
+      uint64_t avoidedTriangles = 0;
+      uint64_t uploads = 0;
+      uint64_t largeUploads = 0;
+      uint64_t uploadBytes = 0;
+      size_t largestPayload = 0;
+      double totalMs = 0;
+      double peakMs = 0;
+    };
+
+    bool verifyWindowCache() {
+      static const bool enabled = env::getEnvVar("RTX_VC_WINDOW_TOPOLOGY_CACHE_VERIFY") == "1";
+      return enabled;
+    }
+
+    WindowCacheStats* windowCacheStats(uint32_t frame) {
+      static const bool enabled = verifyWindowCache() || env::getEnvVar("RTX_VC_WINDOW_TOPOLOGY_CACHE_STATS") == "1";
+      if (!enabled) return nullptr;
+      static thread_local WindowCacheStats stats;
+      if (stats.frame != frame) {
+        if (stats.frames >= 240) {
+          Logger::info(str::format("[WindowTopologyCache] frame=", frame, " frames=", stats.frames,
+            " localMisses=", stats.localMisses, " hits=", stats.hits, " persistedHits=", stats.persistedHits,
+            " verified=", stats.verified, " mismatches=", stats.mismatches, " incomplete=", stats.incomplete,
+            " builtTriangles=", stats.builtTriangles, " avoidedTriangles=", stats.avoidedTriangles,
+            " uploads=", stats.uploads, " largeUploads=", stats.largeUploads, " uploadBytes=", stats.uploadBytes,
+            " largestPayload=", stats.largestPayload, " totalMs=", stats.totalMs, " peakMs=", stats.peakMs));
+          stats = {};
+        }
+        stats.frame = frame;
+        ++stats.frames;
+      }
+      return &stats;
+    }
+
+    struct WindowCacheTime {
+      explicit WindowCacheTime(WindowCacheStats* output) : stats(output) {
+        if (stats) start = WindowCacheClock::now();
+      }
+      ~WindowCacheTime() {
+        if (!stats) return;
+        const double ms = std::chrono::duration<double, std::milli>(WindowCacheClock::now() - start).count();
+        stats->totalMs += ms;
+        stats->peakMs = std::max(stats->peakMs, ms);
+      }
+      WindowCacheStats* stats;
+      WindowCacheClock::time_point start;
+    };
+
+    window_topology_cache::Cache* windowCache() {
+      static const auto cache = []() -> window_topology_cache::Cache* {
+        try {
+          if (env::getEnvVar("RTX_VC_WINDOW_TOPOLOGY_CACHE") == "0") return nullptr;
+          const auto overridePath = env::getEnvVar("RTX_VC_WINDOW_TOPOLOGY_CACHE_FILE");
+          std::filesystem::path path;
+          if (overridePath.empty() && util::RtxFileSys::isInitialized()) {
+            path = util::RtxFileSys::rootPath() / "rtx-remix" / "cache" / "window-topology-v1.bin";
+          } else if (!overridePath.empty() && overridePath != "none") {
+            path = std::filesystem::u8path(overridePath);
+          }
+          // D3D9 is held for the process lifetime. Periodic saves keep the cache
+          // current without joining a worker during DllMain/loader-lock teardown.
+          return new window_topology_cache::Cache(std::move(path));
+        } catch (...) {
+          return nullptr;
+        }
+      }();
+      return cache;
+    }
+
+    bool prepareWindowRoots(window_topology_cache::Cache* cache, const WindowTopologyInput& input,
+                            std::vector<uint32_t>& output, WindowTopologyDiagnostics& diagnostics,
+                            WindowCacheStats* stats) {
+      if (stats) ++stats->localMisses;
+      std::optional<window_topology_cache::CanonicalInput> canonical;
+      window_topology_cache::Hit hit;
+      if (cache) {
+        try {
+          canonical = window_topology_cache::snapshot(input);
+          if (canonical) hit = cache->find(canonical->key);
+        } catch (const std::bad_alloc&) { }
+      }
+      if (hit.roots && hit.roots->size() == input.triangleCount) {
+        if (stats) {
+          ++stats->hits;
+          stats->persistedHits += hit.persisted;
+        }
+        if (!verifyWindowCache()) {
+          output = *hit.roots;
+          if (stats) stats->avoidedTriangles += input.triangleCount;
+          return false;
+        }
+      }
+
+      // Canonical input preserves the order and every component used by the
+      // original algorithm. Read its original spans if canonical capture failed.
+      if (hit.roots && verifyWindowCache()) {
+        output = buildWindowIslandRootsOriginal(input, diagnostics);
+      } else {
+        output = buildWindowIslandRoots(canonical ? canonical->view() : input, &diagnostics);
+      }
+      if (stats) {
+        stats->builtTriangles += input.triangleCount;
+        stats->incomplete += diagnostics.status != WindowTopologyStatus::Complete;
+      }
+      if (hit.roots) {
+        if (stats) ++stats->verified;
+        if (*hit.roots != output) {
+          if (stats) ++stats->mismatches;
+          Logger::err("[WindowTopologyCache] Cached roots differ from the original; regenerated the entry");
+        }
+      }
+      if (canonical && diagnostics.status == WindowTopologyStatus::Complete) {
+        try { cache->remember(canonical->key, output); } catch (const std::bad_alloc&) { }
+      }
+      return true;
+    }
+  }
+
   void AccelManager::prepareWindowIslands(const Rc<DxvkContext>& ctx) {
+    auto* cache = windowCache();
+    WindowCacheStats* stats = windowCacheStats(m_device->getCurrentFrameId());
+    WindowCacheTime measured(stats);
     const bool enabled = WindowLightOptions::enabled();
     m_windowSurfaceRecords.clear();
     std::vector<uint32_t> ids;
@@ -4054,14 +4190,14 @@ namespace dxvk {
         const uint64_t key = XXH64(layoutParts, sizeof(layoutParts), 0);
         if (!blas->windowIslandRootsValid || blas->windowIslandRootsHash != key) {
           WindowTopologyDiagnostics diagnostics;
-          blas->windowIslandRoots = buildWindowIslandRoots(input, &diagnostics);
+          const bool built = prepareWindowRoots(cache, input, blas->windowIslandRoots, diagnostics, stats);
           if (input.topology == WindowPrimitiveTopology::Unsupported) {
             diagnostics.status = WindowTopologyStatus::UnsupportedLayout;
           }
           blas->windowIslandRootsHash = key;
           // Availability is part of the key, so newly readable buffers retry a cached fallback.
           blas->windowIslandRootsValid = true;
-          if (RtxPerfLog::detailedLogging()) {
+          if (built && RtxPerfLog::detailedLogging()) {
             const auto groups = input.triangleCount - diagnostics.mergedTriangles;
             Logger::info(str::format("[WindowTopology] ", diagnostics.status == WindowTopologyStatus::Complete ? "built" : "fallback",
               " geometry=", instance.surface.associatedGeometryHash,
@@ -4094,6 +4230,9 @@ namespace dxvk {
     if (ids.empty()) {
       ids.push_back(0); // A valid descriptor even with the feature disabled or no matching surfaces.
     }
+    if (stats) {
+      stats->largestPayload = std::max(stats->largestPayload, ids.size() * sizeof(uint32_t));
+    }
     if (m_windowIslandBuffer.ptr() && ids == m_uploadedWindowIslandIds) {
       return;
     }
@@ -4106,7 +4245,13 @@ namespace dxvk {
       m_windowIslandBuffer = m_device->createBuffer(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         DxvkMemoryStats::Category::RTXAccelerationStructure, "Window Island IDs");
     }
-    ctx->updateBuffer(m_windowIslandBuffer, 0, info.size, ids.data());
+    // writeToBuffer records a staging copy for payloads above the inline Vulkan update limit.
+    ctx->writeToBuffer(m_windowIslandBuffer, 0, info.size, ids.data());
+    if (stats) {
+      ++stats->uploads;
+      stats->uploadBytes += info.size;
+      stats->largeUploads += info.size >= 65536;
+    }
     m_uploadedWindowIslandIds = std::move(ids);
   }
 

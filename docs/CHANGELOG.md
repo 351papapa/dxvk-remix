@@ -1,5 +1,17 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Cache emissive window topology across frames and sessions
+
+Window lighting reuses topology derived from canonical mesh data. A bounded
+disk cache is populated asynchronously, and larger topology uploads use
+staging buffers.
+
+- In a matched Vice City driving replay, average base FPS rose from 39.54 to
+  41.41, P99 frame time fell from 62.83 ms to 45.83 ms, and frames over 50 ms
+  fell from 110 to 23 across two runs per build.
+- Independent runtime validation compared 2,493 cache hits with the reference
+  grouping and found identical roots in both driving and nighttime captures.
+
 ## 2026-11-17 — Smooth Vice City weather and render the lighthouse beam
 
 Native screen drops query the D3D9 submission frame without draining the command stream, and changing rain strength no longer invalidates static draw cache entries. NUMOS coalesces intermediate sky and cloud bakes during a weather blend and applies the exact final settings.
