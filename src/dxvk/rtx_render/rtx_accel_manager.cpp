@@ -555,6 +555,8 @@ namespace dxvk {
     return m_scratchBuffer;
   }
 
+#include "rtx_blas_storage.inl"
+
   Rc<PooledBlas> AccelManager::createPooledBlas(size_t bufferSize, const char* name) const {
     auto newBlas = new PooledBlas();
 
@@ -563,7 +565,7 @@ namespace dxvk {
     bufferCreateInfo.access = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
     bufferCreateInfo.stages = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     bufferCreateInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    newBlas->accelStructure = m_device->createAccelStructure(bufferCreateInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, name);
+    newBlas->accelStructure = new BlasStorage(m_device, bufferCreateInfo, name);
 
     newBlas->accelerationStructureReference = newBlas->accelStructure->getAccelDeviceAddress();
 
@@ -2256,6 +2258,8 @@ namespace dxvk {
         selectedBlas->builtPose = blasEntry->skinnedPose;
         selectedBlas->uncompactedSize = 0; // never compacted here: compacted ones are replaced above
         selectedBlas->hasOmm = boundOpacityMicromapHash != kEmptyHash;
+        replaceBlasMicromaps(ctx, storage(*selectedBlas),
+          optHoldBoundOmms ? m_dynamicOmmScratch[uniqueBlasIdx].buffers : nullptr);
         selectedBlas->boundOmms.clear();
         if (optHoldBoundOmms && m_dynamicOmmScratch[uniqueBlasIdx].buffers != nullptr) {
           selectedBlas->boundOmms.push_back({ boundOpacityMicromapHash, Rc<DxvkResource>(m_dynamicOmmScratch[uniqueBlasIdx].buffers) });
@@ -3215,9 +3219,15 @@ namespace dxvk {
           // A refit keeps whatever the structure was built with: keep holding its micromaps
           // (rtx.ommHoldBoundMicromaps) and its OMM flag, and add any bound now.
           selectedBlas->hasOmm = selectedBlas->hasOmm || bucket->hasOmmInstances;
-          selectedBlas->boundOmms.insert(selectedBlas->boundOmms.end(), bucket->boundOmms.begin(), bucket->boundOmms.end());
+          if (!bucket->boundOmms.empty()) {
+            auto combined = selectedBlas->boundOmms;
+            combined.insert(combined.end(), bucket->boundOmms.begin(), bucket->boundOmms.end());
+            replaceBucketMicromaps(ctx, *selectedBlas, combined);
+            selectedBlas->boundOmms = std::move(combined);
+          }
         } else {
           selectedBlas->hasOmm = bucket->hasOmmInstances;
+          replaceBucketMicromaps(ctx, *selectedBlas, bucket->boundOmms);
           selectedBlas->boundOmms = bucket->boundOmms; // rtx.ommHoldBoundMicromaps
         }
         // Use the selected BLAS for the build
@@ -5095,6 +5105,10 @@ namespace dxvk {
     // the command lists that used them).
     for (size_t i = 0; i < m_retiredAccelStructures.size();) {
       if (m_retiredAccelStructures[i].second + kRetireFrames <= currentFrame) {
+        // The previous TLAS may have been traced by submissions recorded after
+        // the copy. Release the old VA and its micromaps after those GPU reads,
+        // even if the host has advanced eight frames before the queue completes.
+        ctx->getCommandList()->trackResource<DxvkAccess::None>(m_retiredAccelStructures[i].first);
         m_retiredAccelStructures[i] = std::move(m_retiredAccelStructures.back());
         m_retiredAccelStructures.pop_back();
         continue;
@@ -5169,8 +5183,7 @@ namespace dxvk {
           bufferCreateInfo.access = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
           bufferCreateInfo.stages = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
           bufferCreateInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-          Rc<DxvkAccelStructure> compactedAs = m_device->createAccelStructure(bufferCreateInfo,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, "BLAS Compacted");
+          Rc<BlasStorage> compactedAs = new BlasStorage(m_device, bufferCreateInfo, "BLAS Compacted");
 
           if (!barrierEmitted) {
             // Builds (this frame's included) before the copies read their sources.
@@ -5192,6 +5205,7 @@ namespace dxvk {
 
           const uint64_t oldReference = blas->accelerationStructureReference;
           const uint64_t newReference = compactedAs->getAccelDeviceAddress();
+          compactedAs->micromaps = storage(*blas).micromaps;
           m_retiredAccelStructures.emplace_back(std::move(blas->accelStructure), currentFrame);
           blas->accelStructure = std::move(compactedAs);
           blas->accelerationStructureReference = newReference;
@@ -5342,8 +5356,7 @@ namespace dxvk {
       bufferCreateInfo.access = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
       bufferCreateInfo.stages = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
       bufferCreateInfo.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-      Rc<DxvkAccelStructure> copy = m_device->createAccelStructure(bufferCreateInfo,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, "BLAS Relocated");
+      Rc<BlasStorage> copy = new BlasStorage(m_device, bufferCreateInfo, "BLAS Relocated");
       if (copy == nullptr || copy->getBufferHandle().memory.isInDrainingChunk()) {
         // Only draining chunks had room. Moving would not empty anything.
         break;
@@ -5361,6 +5374,7 @@ namespace dxvk {
       const uint64_t newReference = copy->getAccelDeviceAddress();
       movedBytes += bufferCreateInfo.size;
       // The previous-frame TLAS still names the old structure.
+      copy->micromaps = storage(*blas).micromaps;
       m_retiredAccelStructures.emplace_back(std::move(blas->accelStructure), currentFrame);
       blas->accelStructure = std::move(copy);
       blas->accelerationStructureReference = newReference;

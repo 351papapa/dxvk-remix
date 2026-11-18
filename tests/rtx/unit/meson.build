@@ -30,6 +30,9 @@ foreach external_dll : external_dll_paths
 endforeach
 
 tests = []
+exe = executable('test_blas_micromap_lifetime', files('test_blas_micromap_lifetime.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
+test('test_blas_micromap_lifetime', exe, env: test_env)
+tests += exe
 exe = executable('test_window_topology', files('test_window_topology.cpp'), win_subsystem : 'console', override_options: ['cpp_std='+dxvk_cpp_std])
 test('test_window_topology', exe, env: test_env)
 tests += exe

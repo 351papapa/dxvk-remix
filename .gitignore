@@ -61,6 +61,7 @@ tests/*
 tests/rtx/*
 !tests/rtx/unit/
 tests/rtx/unit/*
+!tests/rtx/unit/test_blas_micromap_lifetime.cpp
 !tests/rtx/unit/test_external_effect_manifest.cpp
 !tests/rtx/unit/test_retained_compat_policy.cpp
 !tests/rtx/unit/test_retained_static_batch.cpp
