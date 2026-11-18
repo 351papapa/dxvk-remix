@@ -363,6 +363,7 @@ namespace dxvk {
           XXH64_hash_t legacyHash0 = 0; // the legacy asset hashes submitDrawState also tracks (0 = rule off)
           XXH64_hash_t legacyHash1 = 0;
           XXH64_hash_t fogHash = 0;     // 0 = no fog
+          uint32_t rawFactor = 0xffffffffu;
           XXH64_hash_t described = 0;   // descriptionKey of the last description
           AxisAlignedBoundingBox bounds;
           Matrix4 objectToWorld;
@@ -522,7 +523,14 @@ namespace dxvk {
         // hash acquireGeometry reuses geometry by), the bones, both materials, the texture transform, the categories, the
         // camera, the fog and the resolver's replacement (ReplacementQuery::version). The world matrix is compared with
         // Object::objectToWorld, which follows the moves applied since the description.
-        static XXH64_hash_t descriptionKey(const DrawCallState& state, const MaterialData& material, uint64_t replacement) {
+        uint32_t factorCandidates = 0, factorApplied = 0;
+
+        static bool factorUpdatesEnabled() {
+          static const bool enabled = env::getEnvVar("RTX_VC_TFACTOR_UPDATE") != "0";
+          return enabled;
+        }
+        static XXH64_hash_t descriptionKey(const DrawCallState& state, const MaterialData& material, uint64_t replacement,
+                                            const LegacyMaterialData* previousFactorMaterial = nullptr) {
           const DrawCallTransforms& transforms = state.getTransformData();
           const struct {
             XXH64_hash_t geometry, bones, material, legacyMaterial, fog;
@@ -530,7 +538,7 @@ namespace dxvk {
             uint32_t categories, cameraType, texgenMode, wetnessTag;
           } k = {
             state.getGeometryData().getHashForRule<rules::FullGeometryHash>(), state.getSkinningState().boneHash,
-            material.getHash(), state.getMaterialData().computeIdentityHash(),
+            material.getHash(), (previousFactorMaterial ? *previousFactorMaterial : state.getMaterialData()).computeIdentityHash(),
             state.getFogState().mode != frontend::FogMode::None ? state.getFogState().getHash() : 0,
             replacement, state.getCategoryFlags().raw(), uint32_t(state.cameraType),
             uint32_t(transforms.texgenMode), state.wetnessTag
@@ -1040,6 +1048,23 @@ namespace dxvk {
                 }
               }
             }
+            if (!verify && factorUpdatesEnabled() && sameWorld && !sameDescription && !kept.captureSession &&
+                !kept.usesVertexShader && !kept.dynamicSource && !kept.vertexBlend && !kept.getSkinningState().numBones &&
+                !previous->second.releasing && previous->second.reprepareEpoch == reprepareEpoch &&
+                previous->second.rawFactor != kept.getMaterialData().tFactor) {
+              LegacyMaterialData originalFactor = kept.getMaterialData();
+              originalFactor.tFactor = previous->second.rawFactor;
+              if (descriptionKey(kept, material, replacement.version, &originalFactor) == previous->second.described) {
+                ++factorCandidates;
+                if (scene.trySetUnusedTextureFactor(handle, originalFactor.tFactor, kept.getMaterialData().tFactor)) {
+                  previous->second.described = described;
+                  previous->second.rawFactor = kept.getMaterialData().tFactor;
+                  previous->second.frameLastSeen = scene.frameIndex();
+                  ++factorApplied;
+                  return;
+                }
+              }
+            }
             if (previous != objects.end() && !previous->second.releasing && sameDescription && sameWorld) {
               previous->second.frameLastSeen = scene.frameIndex();
               totals.unchangedUpdates++;
@@ -1087,6 +1112,7 @@ namespace dxvk {
           object.categories = kept.getCategoryFlags().raw();
           object.frameCreated = frame;
           object.frameLastSeen = frame;
+          object.rawFactor = kept.getMaterialData().tFactor;
           object.described = described;
           object.reprepareEpoch = reprepareEpoch;
           if (kept.getFogState().mode != frontend::FogMode::None) {
@@ -1341,6 +1367,10 @@ namespace dxvk {
 
           // Events that affect the scene's copies: a scene clear, replacement
           // assets changed, or draw translation changed.
+          static const bool traceFactors = env::getEnvVar("RTX_VC_TFACTOR_TRACE") == "1";
+          if (traceFactors && factorCandidates >= 100)
+            Logger::info(str::format("[FactorUpdate] frame=",frame," candidates=",factorCandidates," applied=",factorApplied));
+          factorCandidates = factorApplied = 0;
           const uint32_t events = sceneInterface.takeSceneEvents();
           const bool clearChanged = (events & frontend::kSceneEventCleared) != 0;
           const bool modsChanged = (events & frontend::kSceneEventModsChanged) != 0;

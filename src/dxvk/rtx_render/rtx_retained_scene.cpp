@@ -466,6 +466,79 @@ namespace dxvk {
     }
   }
 
+  bool RetainedScene::trySetUnusedTextureFactor(uint64_t handle, uint32_t before, uint32_t after) {
+    const auto found = m_entries.find(handle);
+    if (found == m_entries.end() || before == after) return false;
+    Entry& entry = found->second;
+    if (!entry.frontend || entry.lane != Lane::Direct || !entry.hasDesc || !entry.built || entry.queued ||
+        entry.inLegacy || entry.replacement || entry.stamped || entry.mergedPass ||
+        entry.desc.drawCall.getMaterialData().tFactor != before ||
+        (entry.desc.legacySurface && entry.desc.legacySurface->tFactor != before) ||
+        entry.desc.optionalParticleDesc || entry.desc.materialOverride || !entry.desc.gpuInstancingTransforms.empty() ||
+        (entry.expansion && (!entry.expansion->lightTemplates.empty() || !entry.expansion->graphTemplates.empty()))) return false;
+
+    static const bool permitCutout = env::getEnvVar("RTX_VC_TFACTOR_CUTOUT") != "0";
+    const uint32_t changed = before ^ after;
+    const auto readsFactor = [](DxvkRtTextureOperation op, RtTextureArgSource first, RtTextureArgSource second) {
+      switch (op) {
+      case DxvkRtTextureOperation::Disable: return false;
+      case DxvkRtTextureOperation::SelectArg1: return first == RtTextureArgSource::TFactor;
+      case DxvkRtTextureOperation::SelectArg2: return second == RtTextureArgSource::TFactor;
+      case DxvkRtTextureOperation::Modulate:
+      case DxvkRtTextureOperation::Modulate2x:
+      case DxvkRtTextureOperation::Modulate4x:
+      case DxvkRtTextureOperation::Force_Modulate2x:
+      case DxvkRtTextureOperation::Add: return first == RtTextureArgSource::TFactor || second == RtTextureArgSource::TFactor;
+      default: return true;
+      }
+    };
+    // Validate every drawn USD part before writing any of them. Its material, categories and alpha
+    // policy may differ from the host draw's. A real change of cutout coverage takes the full update.
+    for (size_t i = 0; i < entry.subs.size(); ++i) {
+      if (const auto* p = submeshPart(entry.desc, i)) {
+        if (p->particleSystem || (p->material && p->material->getParticleSystemDesc()) ||
+            (p->instancesToObject && !p->instancesToObject->empty())) return false;
+      }
+      const auto* inst = entry.subs[i].instance;
+      if (!inst) continue;
+      const auto& s = inst->surface;
+      if (inst->isMarkedForGC() || inst->getSceneOwnedHandle() != handle ||
+          inst->getMaterialType() != MaterialDataType::Opaque || inst->usesUnorderedApproximations() ||
+          inst->getBillboardCount() || s.instancesToObject || s.tFactor != before ||
+          s.alphaState.isDecal || s.alphaState.isParticle || s.alphaState.emissiveBlend ||
+          s.isPlayerModel || s.isAnimatedWater || inst->isAnimated() ||
+          inst->testCategoryFlags(InstanceCategories::WorldUI) || inst->testCategoryFlags(InstanceCategories::Terrain)) return false;
+      if (!s.alphaState.isFullyOpaque) {
+        const auto* geo = entry.subs[i].geometry;
+        // checkSharedBlasOmm compares every raw tFactor, even if the cutout shader does not read it.
+        // No other real or renderer-created instance may be using this hardware geometry.
+        if (!permitCutout || !geo || geo->users != 1 || geo->retired || geo->queuedForFree ||
+            inst->isViewModel() || inst->isPlayerModelInstance() || inst->isCreatedByRenderer() ||
+            inst->getBlas() != &geo->blas || geo->blas.getLinkedInstances().size() != 1 ||
+            !geo->blas.getLinkedInstances().count(const_cast<RtInstance*>(inst)) ||
+            m_scene.m_instanceManager.hasLiveRendererCopyOf(geo->blas) ||
+            !OpacityMicromapManager::cutoutFactorKeepsRequest(*inst, changed)) return false;
+      }
+      if ((changed & 0x00ffffffu) && (s.isTextureFactorBlend ||
+          readsFactor(s.textureColorOperation, s.textureColorArg1Source, s.textureColorArg2Source))) return false;
+      if ((changed & 0xff000000u) &&
+          readsFactor(s.textureAlphaOperation, s.textureAlphaArg1Source, s.textureAlphaArg2Source)) return false;
+    }
+
+    // Preserve the actual game value for surface upload, asset capture and subsequent rebuilds.
+    entry.desc.drawCall.modifyMaterialData().tFactor = after;
+    if (entry.desc.legacySurface) entry.desc.legacySurface->tFactor = after;
+    auto* omm = m_scene.getOpacityMicromapManager();
+    for (const auto& sub : entry.subs) if (auto* inst = sub.instance) {
+      inst->surface.tFactor = after;
+      // The normal retained settle pass services texture residency, newly eligible instances and
+      // delayed texel-density work. Leave all request, source-donor and cache state intact.
+      if (omm && !inst->surface.alphaState.isFullyOpaque &&
+          (omm->waitsForOmmRequest(*inst) || OpacityMicromapManager::needsPreserveUpdate(*inst))) m_settle.push_back(inst);
+    }
+    return true;
+  }
+
   void RetainedScene::setTextureTransform(uint64_t handle, const Matrix4& textureTransform, TexGenMode texgenMode) {
     const auto found = m_entries.find(handle);
     if (found == m_entries.end()) {

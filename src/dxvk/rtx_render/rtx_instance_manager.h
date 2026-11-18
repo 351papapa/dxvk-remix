@@ -376,6 +376,17 @@ public:
   }
 
   // Return a list of instances currently active in the scene
+  // Renderer-created copies bypass BlasEntry::linkInstance. Expired copies leave these maps only after
+  // being marked for collection, at which point the acceleration-structure pass ignores them.
+  bool hasLiveRendererCopyOf(const BlasEntry& geometry) const {
+    const auto references = [&](const auto& copies) {
+      for (const auto& p : copies)
+        if (p.second && !p.second->isMarkedForGC() && p.second->getBlas() == &geometry) return true;
+      return false;
+    };
+    return references(m_persistentViewModelInstances) || references(m_persistentVirtualViewModelInstances) ||
+           references(m_persistentPlayerModelClones);
+  }
   const std::vector<RtInstance*>& getInstanceTable() const { return m_instances; }
 
   // Returns the active number of instances in scene

@@ -560,6 +560,7 @@ namespace dxvk {
     void onBlasBuild(Rc<DxvkContext> ctx);
 
     static bool usesOpacityMicromap(const RtInstance& instance);
+    static bool cutoutFactorKeepsRequest(const RtInstance& instance, uint32_t changed);
     static bool usesSplitBillboardOpacityMicromap(const RtInstance& instance);
     static bool useStagingNumTexelsPerMicroTriangleObject(const RtInstance& instance);
     // Whether onInstanceUpdated has any work for this instance on the preserve path (the texel

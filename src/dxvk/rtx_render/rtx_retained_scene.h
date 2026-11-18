@@ -84,6 +84,7 @@ namespace dxvk {
     // Scene-interface commands (terrain; usable by any host): the texture-coordinate transform and texgen
     // mode of the entry's instances, written in place (no rebuild; the surface record is uploaded every frame), and the
     // entry's resolved material, replaced with a rebuild of the entry. Both are kept in the description.
+    bool trySetUnusedTextureFactor(uint64_t handle, uint32_t before, uint32_t after);
     void setTextureTransform(uint64_t handle, const Matrix4& textureTransform, TexGenMode texgenMode);
     void setResolvedMaterial(uint64_t handle, std::shared_ptr<const MaterialData> material);
     // A second draw of the entry's object in one frame, which the per-draw D3D9 path merges into the first draw's instance

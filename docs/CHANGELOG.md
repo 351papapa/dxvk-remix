@@ -1,5 +1,20 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Keep retained geometry across unused D3D9 texture-factor changes
+
+The D3D9 frontend updates a retained instance's raw texture factor in place when
+every rendered submesh ignores the changed channels and the world transform,
+geometry, material and replacement are otherwise identical. Draws that use the
+factor for colour, opacity or LOD fades keep their regular update path. Cutouts
+also require exclusive geometry and an unchanged opacity-micromap request.
+Ordinary meshes whose opacity bake reads vertex alpha keep the previous cache
+key behaviour, because the request does not yet identify their vertex alpha.
+
+On four interleaved 46.5-second Vice City drives with production settings, the
+two baseline runs had 7 and 6 source frames over 50 ms. The two updated runs
+had zero each. P99 went from 42.68 and 44.01 ms to 35.19 and 34.90 ms.
+Average source FPS moved from 39.67–39.78 to 39.98–40.25.
+
 ## 2026-11-18 — Reuse opacity micromaps when the bake ignores texture-factor alpha
 
 The micromap cache now checks which operands the opacity operation reads.

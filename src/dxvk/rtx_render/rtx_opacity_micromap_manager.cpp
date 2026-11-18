@@ -307,7 +307,7 @@ namespace dxvk {
 
   // Mirrors applyVertexAndTextureOperationsToOpacity/chooseTextureOperationAlpha in the OMM baker.
   // The RGB texture operation never supplies the baked opacity, including luminance blend modes.
-  static bool ommBakeReadsTextureFactorAlpha(const RtInstance& instance) {
+  static bool ommBakeReadsAlphaSource(const RtInstance& instance, RtTextureArgSource source) {
     if (instance.getMaterialType() != MaterialDataType::Opaque ||
         !OpacityMicromapOptions::Building::enableVertexAndTextureOperations())
       return false;
@@ -318,18 +318,36 @@ namespace dxvk {
     case DxvkRtTextureOperation::Force_Modulate2x: // Only implemented for RGB; alpha keeps the sampled value.
       return false;
     case DxvkRtTextureOperation::SelectArg1:
-      return surface.textureAlphaArg1Source == RtTextureArgSource::TFactor;
+      return surface.textureAlphaArg1Source == source;
     case DxvkRtTextureOperation::SelectArg2:
-      return surface.textureAlphaArg2Source == RtTextureArgSource::TFactor;
+      return surface.textureAlphaArg2Source == source;
     case DxvkRtTextureOperation::Modulate:
     case DxvkRtTextureOperation::Modulate2x:
     case DxvkRtTextureOperation::Modulate4x:
     case DxvkRtTextureOperation::Add:
-      return surface.textureAlphaArg1Source == RtTextureArgSource::TFactor ||
-             surface.textureAlphaArg2Source == RtTextureArgSource::TFactor;
+      return surface.textureAlphaArg1Source == source ||
+             surface.textureAlphaArg2Source == source;
     default:
       return true; // A new operation could depend on the factor implicitly.
     }
+  }
+
+  // Non-billboard requests do not yet hash vertex opacity. Two meshes can share material, UVs and
+  // topology but carry different vertex alphas. Until that input is keyed, preserve the original
+  // factor byte for these requests rather than allowing additional cross-mesh cache hits.
+  static bool keepRawOmmFactorAlpha(const RtInstance& instance, bool billboard) {
+    return ommBakeReadsAlphaSource(instance, RtTextureArgSource::TFactor) ||
+      (!billboard && ommBakeReadsAlphaSource(instance, RtTextureArgSource::VertexColor0));
+  }
+
+  bool OpacityMicromapManager::cutoutFactorKeepsRequest(const RtInstance& instance, uint32_t changed) {
+    const auto& alpha = instance.surface.alphaState;
+    // No luminance blending or portal/particle thresholds. The only factor component that enters
+    // OmmRequest is alpha, using the same shader-consumption check as the source-hash constructor.
+    return instance.getMaterialType() == MaterialDataType::Opaque && alpha.isBlendingDisabled &&
+           !alpha.isFullyOpaque && !alpha.isParticle && !alpha.isDecal && !alpha.emissiveBlend &&
+           alpha.alphaTestType != AlphaTestType::kAlways &&
+           (!(changed & 0xff000000u) || !keepRawOmmFactorAlpha(instance, false));
   }
 
   OmmRequest::OmmRequest(const RtInstance& _instance, const InstanceManager& instanceManager, uint32_t _quadSliceIndex)
@@ -348,7 +366,7 @@ namespace dxvk {
       hashSourceData.textureAlphaArg1Source = instance.surface.textureAlphaArg1Source;
       hashSourceData.textureAlphaArg2Source = instance.surface.textureAlphaArg2Source;
       hashSourceData.textureAlphaOperation = instance.surface.textureAlphaOperation;
-      hashSourceData.tFactorAlpha = ommBakeReadsTextureFactorAlpha(instance) ? uint8_t(instance.surface.tFactor >> 24) : 0;
+      hashSourceData.tFactorAlpha = keepRawOmmFactorAlpha(instance, isBillboardOmmRequest()) ? uint8_t(instance.surface.tFactor >> 24) : 0;
       hashSourceData.textureTransform = instance.surface.textureTransform;
     }
 

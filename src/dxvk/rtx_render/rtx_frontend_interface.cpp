@@ -408,6 +408,11 @@ namespace dxvk {
                   uint32_t(TexGen::CascadedViewPositions) == uint32_t(TexGenMode::CascadedViewPositions) &&
                   uint32_t(TexGen::ViewNormals) == uint32_t(TexGenMode::ViewNormals));
 
+    bool SceneInterface::trySetUnusedTextureFactor(InstanceHandle handle, uint32_t before, uint32_t after) {
+      auto& sceneManager = m_ctx.getSceneManager();
+      return live(sceneManager, handle) && sceneManager.retainedScene().trySetUnusedTextureFactor(handle, before, after);
+    }
+
     void SceneInterface::setTextureTransform(InstanceHandle handle, const Matrix4& textureTransform, TexGen texgen) {
       SceneManager& sceneManager = m_ctx.getSceneManager();
       if (!live(sceneManager, handle)) {

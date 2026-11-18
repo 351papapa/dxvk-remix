@@ -436,6 +436,7 @@ namespace dxvk {
       // A hidden instance stays registered, so a frontend's own culling can drop it for a frame without a new describe.
       void setVisible(InstanceHandle handle, bool visible);
       // Per-entry updates of an instance described with buildInstance, which keep the rest of its description.
+      bool trySetUnusedTextureFactor(InstanceHandle handle, uint32_t before, uint32_t after);
       void setTextureTransform(InstanceHandle handle, const Matrix4& textureTransform, TexGen texgen);
       // The material every submesh is shaded with, such as RasterResult::material.
       void setResolvedMaterial(InstanceHandle handle, const MaterialData& material);
