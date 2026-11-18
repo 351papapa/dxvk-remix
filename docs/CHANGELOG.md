@@ -1,5 +1,17 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Reuse opacity micromaps when the bake ignores texture-factor alpha
+
+The micromap cache now checks which operands the opacity operation reads.
+Changing the texture-factor alpha keeps the same request if the bake samples
+opacity independently of that factor. Fades that multiply the texture by the
+factor still update as the factor changes.
+
+- On an Ocean Beach driving replay, 15,392 changes to an unused factor kept
+  the same verified request and binding during complete measurement windows.
+  Genuine changes to UVs, indices, triangle counts and alpha operations
+  continued to produce distinct requests.
+
 ## 2026-11-18 — Reuse fixed-function draws with disabled texture transforms
 
 The D3D9 frontend skips disabled texture matrices when it checks whether a

@@ -305,6 +305,33 @@ namespace dxvk {
   void OpacityMicromapManager::onDestroy() {
   }
 
+  // Mirrors applyVertexAndTextureOperationsToOpacity/chooseTextureOperationAlpha in the OMM baker.
+  // The RGB texture operation never supplies the baked opacity, including luminance blend modes.
+  static bool ommBakeReadsTextureFactorAlpha(const RtInstance& instance) {
+    if (instance.getMaterialType() != MaterialDataType::Opaque ||
+        !OpacityMicromapOptions::Building::enableVertexAndTextureOperations())
+      return false;
+
+    const RtSurface& surface = instance.surface;
+    switch (surface.textureAlphaOperation) {
+    case DxvkRtTextureOperation::Disable:
+    case DxvkRtTextureOperation::Force_Modulate2x: // Only implemented for RGB; alpha keeps the sampled value.
+      return false;
+    case DxvkRtTextureOperation::SelectArg1:
+      return surface.textureAlphaArg1Source == RtTextureArgSource::TFactor;
+    case DxvkRtTextureOperation::SelectArg2:
+      return surface.textureAlphaArg2Source == RtTextureArgSource::TFactor;
+    case DxvkRtTextureOperation::Modulate:
+    case DxvkRtTextureOperation::Modulate2x:
+    case DxvkRtTextureOperation::Modulate4x:
+    case DxvkRtTextureOperation::Add:
+      return surface.textureAlphaArg1Source == RtTextureArgSource::TFactor ||
+             surface.textureAlphaArg2Source == RtTextureArgSource::TFactor;
+    default:
+      return true; // A new operation could depend on the factor implicitly.
+    }
+  }
+
   OmmRequest::OmmRequest(const RtInstance& _instance, const InstanceManager& instanceManager, uint32_t _quadSliceIndex)
     : instance(_instance)
     , quadSliceIndex(_quadSliceIndex) {
@@ -321,7 +348,7 @@ namespace dxvk {
       hashSourceData.textureAlphaArg1Source = instance.surface.textureAlphaArg1Source;
       hashSourceData.textureAlphaArg2Source = instance.surface.textureAlphaArg2Source;
       hashSourceData.textureAlphaOperation = instance.surface.textureAlphaOperation;
-      hashSourceData.tFactorAlpha = instance.surface.tFactor >> 24;
+      hashSourceData.tFactorAlpha = ommBakeReadsTextureFactorAlpha(instance) ? uint8_t(instance.surface.tFactor >> 24) : 0;
       hashSourceData.textureTransform = instance.surface.textureTransform;
     }
 
