@@ -1,5 +1,12 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Soften stochastic water caustic seams
+
+Stochastic water caustics blend neighboring samples with a distance-based
+falloff so brightness and its gradient agree across the triangle edges.
+Receiver lighting and volumetric caustics use the same blend with three
+texture samples.
+
 ## 2026-11-18 — Cache emissive window topology across frames and sessions
 
 Window lighting reuses topology derived from canonical mesh data. A bounded

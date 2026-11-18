@@ -32,15 +32,27 @@ void waterCausticStochasticSamples(Sampler2D pattern, float2 uv, float lod,
   float2 v1;
   float2 v2;
   if (f.x + f.y < 1.0f) {
-    v0 = cell; v1 = cell + float2(1, 0); v2 = cell + float2(0, 1);
-    weights = float3(1.0f - f.x - f.y, f.x, f.y);
+    v0 = float2(0, 0);
+    v1 = float2(1, 0);
+    v2 = float2(0, 1);
   } else {
-    v0 = cell + 1.0f; v1 = cell + float2(0, 1); v2 = cell + float2(1, 0);
-    weights = float3(f.x + f.y - 1.0f, 1.0f - f.x, 1.0f - f.y);
+    v0 = float2(1, 1);
+    v1 = float2(0, 1);
+    v2 = float2(1, 0);
   }
-  weights = weights * weights * weights;
-  weights /= max(dot(weights, float3(1)), 0.0001f);
-  samples = float3(waterCausticTile(pattern, uv, v0, lod), waterCausticTile(pattern, uv, v1, lod), waterCausticTile(pattern, uv, v2, lod));
+
+  // In the triangular lattice the unit axes meet at 60 degrees. The radial
+  // falloff reaches zero with zero slope at the opposite edge of each vertex.
+  // Neighboring triangles therefore agree on both weight and slope at the seam.
+  float3 dx = f.x - float3(v0.x, v1.x, v2.x);
+  float3 dy = f.y - float3(v0.y, v1.y, v2.y);
+  float3 distanceSquared = dx * dx + dy * (dy + dx);
+  float3 fade = saturate(1.0f - (4.0f / 3.0f) * distanceSquared);
+  weights = fade * fade * fade;
+  weights /= dot(weights, float3(1));
+  samples = float3(waterCausticTile(pattern, uv, cell + v0, lod),
+                   waterCausticTile(pattern, uv, cell + v1, lod),
+                   waterCausticTile(pattern, uv, cell + v2, lod));
 }
 
 float waterCausticStochastic(Sampler2D pattern, float2 uv, float lod) {
