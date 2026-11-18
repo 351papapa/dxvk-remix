@@ -20,6 +20,7 @@
 * DEALINGS IN THE SOFTWARE.
 */
 #include "rtx_pathtracer_integrate_direct.h"
+#include "../../util/util_env.h"
 #include "dxvk_device.h"
 #include "rtx_shader_manager.h"
 // Surface wetness is selected independently of the pass feature matrix.
@@ -418,7 +419,20 @@ namespace dxvk {
         sparseRendering.dispatchLaunch(*ctx, sparseArgs, COMPACT_ACTIVE_PIXELS_LAUNCH_INTEGRATE_DIRECT, workgroups);
         break;
       }
-      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, getComputeShader(deferredNrcTrainingSetup, slimLevel));
+      Rc<DxvkShader> directShader = getComputeShader(deferredNrcTrainingSetup, slimLevel);
+      ctx->bindShader(VK_SHADER_STAGE_COMPUTE_BIT, directShader);
+      static const bool traceBoundDirect = env::getEnvVar("RTX_VC_SSS_LEAF_BIND") == "1";
+      if (traceBoundDirect) {
+        static thread_local const DxvkShader* previous = nullptr;
+        static thread_local uint32_t lastSample = 0;
+        const uint32_t frame = ctx->getDevice()->getCurrentFrameId();
+        if (previous != directShader.ptr() || frame - lastSample >= 120) {
+          previous = directShader.ptr();
+          lastSample = frame;
+          Logger::info(str::format("[SssLeafBind] frame=", frame,
+            " shader=", directShader->debugName(), " key=", directShader->getShaderKey().toString()));
+        }
+      }
     }
       if (RtxOptions::FrameFeatures::validate() && !deferredNrcTrainingSetup) {
         noteFrameFeaturesValidateKernel(FrameFeaturesValidateKernel::Direct);

@@ -22,6 +22,7 @@
 */
 
 //!variant integrate_direct_rayquery.comp
+//!>       DIRECT_DEFER_LOW_ALPHA_SUBSURFACE=1
 
 //!variant integrate_direct_rayquery_raygen.rgen
 //!>       RAY_PIPELINE
@@ -81,6 +82,10 @@
 //!>       LIGHT_BVH_DEDICATED_SUN=1 FRAME_FEATURES_VALIDATE=1
 
 //!end-variants
+// The wetness feature expands each base permutation. Only the Full wetness kernel uses the leaf shadow path.
+#if defined(DIRECT_DEFER_LOW_ALPHA_SUBSURFACE) && !defined(ENABLE_SURFACE_WETNESS)
+#undef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+#endif
 #define ATMOSPHERE_AVAILABLE
 // The [LightSamplingStats] counters, gated at runtime by cb.lightSamplingStatsEnabled.
 #define LIGHT_SAMPLING_STATS 1

@@ -807,6 +807,15 @@ float opaqueSurfaceMaterialInteractionCalcOpacity(
   return opacity;
 }
 
+#ifdef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+// Visibility uses scalar opacity for transparent and stochastic-alpha hits, even on thin subsurface materials.
+bool opaqueVisibilityUsesOpacity(float opacity, bool stochasticEnabled, float transparencyThreshold, float stochasticThreshold)
+{
+  const bool stochasticAlpha = stochasticEnabled && opacity > transparencyThreshold && opacity <= stochasticThreshold;
+  return stochasticAlpha || opacity <= transparencyThreshold;
+}
+
+#endif
 // Opaque Surface Material Interaction Functions
 
 OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
@@ -814,7 +823,12 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
   Surface surface,
   inout SurfaceInteraction surfaceInteraction,
   MinimalRayInteraction minimalRayInteraction,
+#ifdef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+  uint primitiveIndex = 0u,
+  bool deferVisibilitySubsurface = false)
+#else
   uint primitiveIndex = 0u)
+#endif
 {
   OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction;
   // Note: need initialize the flags explicitely to get rid of garbage data.
@@ -1614,8 +1628,17 @@ OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteractionCreate(
 
   opaqueSurfaceMaterialInteraction.emissiveRadiance = emissiveRadiance;
 
+#ifdef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+  uint subsurfaceIndex = opaqueSurfaceMaterial.subsurfaceMaterialIndex;
+  if (deferVisibilitySubsurface && opaqueVisibilityUsesOpacity(opaqueSurfaceMaterialInteraction.opacity,
+      cb.enableStochasticAlphaBlend, cb.resolveTransparencyThreshold, cb.resolveStochasticAlphaBlendThreshold))
+    subsurfaceIndex = SURFACE_INDEX_INVALID;
+  opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction =
+    subSurfaceMaterialReadHelper(subsurfaceIndex, surfaceInteraction, opaqueSurfaceMaterial.samplerIndex);
+#else
   opaqueSurfaceMaterialInteraction.subsurfaceMaterialInteraction =
     subSurfaceMaterialReadHelper(opaqueSurfaceMaterial.subsurfaceMaterialIndex, surfaceInteraction, opaqueSurfaceMaterial.samplerIndex);
+#endif
   opaqueSurfaceMaterialInteraction.dlssControlMask = opaqueSurfaceMaterial.dlssControlMask;
 
   // For an eye, load a secondary texture (iris) and blend on top of primary texture (whites)

@@ -146,6 +146,19 @@ vec3 handleVisibilityVertex<let VisibilityMode : uint>(Ray ray, RayHitInfo rayHi
     // Alpha-test reads use the coarse visibility mip. This does nothing when the option is off.
     visibilityApplyCoarseAlphaFootprint(surfaceInteraction);
 
+#ifdef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+    bool deferVisibilitySubsurface = false;
+    deferVisibilitySubsurface = (VisibilityMode & visibilityModeAccurateHitDistanceOptional) && (VisibilityMode & visibilityModeEnableSubsurfaceMaterials) &&
+      !surface.isFullyOpaque && !surface.isBlendingDisabled && !surface.invertedBlend && !surface.isEmissiveBlend &&
+      surface.blendType == uint8_t(BlendType::kAlpha) && surface.alphaTestType == uint8_t(AlphaTestType::kAlways) &&
+      !surface.isEye && !surface.isParticle && !surface.isDecal && !surface.isAnimatedWater && !opaqueSurfaceMaterial.hasValidDisplacement();
+    const OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction =
+      opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction, rayInteraction.primitiveIndex,
+        deferVisibilitySubsurface);
+
+    const bool isThinOpaqueSubsurface = (VisibilityMode & visibilityModeEnableSubsurfaceMaterials) && isThinOpaqueSubsurfaceMaterial(opaqueSurfaceMaterialInteraction);
+
+#else
     const OpaqueSurfaceMaterialInteraction opaqueSurfaceMaterialInteraction =
       opaqueSurfaceMaterialInteractionCreate(opaqueSurfaceMaterial, surface, surfaceInteraction, rayInteraction, rayInteraction.primitiveIndex);
 
@@ -156,11 +169,17 @@ vec3 handleVisibilityVertex<let VisibilityMode : uint>(Ray ray, RayHitInfo rayHi
       opaqueSurfaceMaterialInteraction.opacity > cb.resolveTransparencyThreshold &&
       opaqueSurfaceMaterialInteraction.opacity <= cb.resolveStochasticAlphaBlendThreshold;
 
+#endif
     // We need to calculate the attenuation with opaque surface opacity in these 2 cases:
     //   1. The surface doesn't have subsurface (do traditional alpha-blending)
     //   2. The surface has subsurface, but the surface point need to be discarded because it fails the alpha-test.
     //      This is necessary for subsurface material or the alpha-test will be ignored.
+#ifdef DIRECT_DEFER_LOW_ALPHA_SUBSURFACE
+    if (!isThinOpaqueSubsurface || opaqueVisibilityUsesOpacity(opaqueSurfaceMaterialInteraction.opacity,
+        cb.enableStochasticAlphaBlend, cb.resolveTransparencyThreshold, cb.resolveStochasticAlphaBlendThreshold))
+#else
     if (!isThinOpaqueSubsurface || handleStochasticAlphaBlend || opaqueSurfaceMaterialInteraction.opacity <= cb.resolveTransparencyThreshold)
+#endif
     {
       return vec3(1.0f - opaqueSurfaceMaterialInteraction.opacity);
     }

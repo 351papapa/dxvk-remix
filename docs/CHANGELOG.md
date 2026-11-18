@@ -1,5 +1,19 @@
 # Remix Plus changelog
 
+## 2026-11-18 — Skip unused thin-leaf transmission samples in direct shadow rays
+
+The Full wetness ray-query compute shader now checks the existing visibility
+opacity thresholds before reading the subsurface texture. When the original
+shadow calculation returns scalar transmission from opacity alone, it skips
+that texture read. Partially covered samples that use thin-leaf scattering
+follow the original material calculation.
+
+At a fixed camera 4.3 metres from a Vice City Monstera, four alternating
+captures reduced the direct-lighting GPU stage from 1.44 to 1.29 ms on
+average. With vegetation hidden, both builds took about 0.48 ms. The change
+reduced median total frame time by 0.10 ms with vegetation visible. P99
+varied between captures.
+
 ## 2026-11-18 — Keep retained geometry across unused D3D9 texture-factor changes
 
 The D3D9 frontend updates a retained instance's raw texture factor in place when
